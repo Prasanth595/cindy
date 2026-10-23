@@ -12771,10 +12771,13 @@
         "activity": "最近のアクティビティ",
         "recency": "時間順",
         "manual": "手動",
-        "priority": "優先度"
+        "priority": "優先度",
+        "running": "実行中を優先"
       },
       "filterSortByTip": {
-        "priority": "要対応を最上位に、次に未読、実行中、残りは時間順"
+        "priority": "要対応を最上位に、次に未読、実行中、残りは時間順",
+        "activity": "最後にメッセージを送信した日時順。実行状態や AI の返信では並び順は変わりません",
+        "running": "実行中のセッションを先に表示し、各グループ内は最後のメッセージ送信日時順に並べます"
       },
       "filterStatusHeading": "ステータス",
       "filterAgentHeading": "Harness",

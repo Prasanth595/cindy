@@ -1,23 +1,27 @@
 import type { Session } from '@/lib/ccAgent.types';
 
 import type { FilterProjectOrder, FilterSortBy } from '../hooks/helpers/sidebarFilterCore';
-import { compareSessionGroupsByPriority, type MainListPriorityContext } from './mainListModel';
+import {
+  compareSessionGroupsByPriority,
+  compareSessionGroupsByRunning,
+  sortSessionsForMainList,
+  type MainListPriorityContext,
+} from './mainListModel';
 import { normalizeManualProjectOrder } from '../hooks/helpers/sidebarFilterCore';
 import { sessionCreatedMs } from './dateSessionGrouping';
 import { projectKeyComparisonKey, type ProjectNode } from './projectGrouping';
 
 /**
- * 创建时间排序独立于活动变化;其它档位保留调用方已排好的顺序。
+ * 项目面板沿用主列表的状态排序；旧调用方未传上下文时保留既有优先级顺序。
  */
 export function sortSessionsForSidebar(
   sessions: readonly Session[],
   sortBy: FilterSortBy,
+  priorityContext?: MainListPriorityContext,
 ): Session[] {
-  return sortBy === 'created'
-    ? sessions
-        .slice()
-        .sort((a, b) => sessionCreatedMs(b) - sessionCreatedMs(a) || a.id.localeCompare(b.id))
-    : sessions.slice();
+  return sortBy === 'recency' || (sortBy === 'priority' && !priorityContext)
+    ? sessions.slice()
+    : sortSessionsForMainList(sessions, sortBy, priorityContext);
 }
 
 export function sortProjectsForSidebar(
@@ -30,7 +34,7 @@ export function sortProjectsForSidebar(
 ): ProjectNode[] {
   const withSortedSessions = projects.map((project) => ({
     ...project,
-    sessions: sortSessionsForSidebar(project.sessions, sortBy),
+    sessions: sortSessionsForSidebar(project.sessions, sortBy, priorityContext),
   }));
 
   if (projectOrder === 'custom') {
@@ -66,6 +70,11 @@ export function sortProjectsForSidebar(
   if (sortBy === 'priority' && priorityContext) {
     return withSortedSessions.sort((a, b) =>
       compareSessionGroupsByPriority(a.sessions, b.sessions, priorityContext),
+    );
+  }
+  if (sortBy === 'running' && priorityContext) {
+    return withSortedSessions.sort((a, b) =>
+      compareSessionGroupsByRunning(a.sessions, b.sessions, priorityContext),
     );
   }
 

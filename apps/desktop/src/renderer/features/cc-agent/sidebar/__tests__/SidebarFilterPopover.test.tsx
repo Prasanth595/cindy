@@ -109,7 +109,7 @@ describe('sidebar display settings menu', () => {
     expect(filter.setSortBy).toHaveBeenCalledWith('created');
   });
 
-  it('presents seven summarized parent rows with icons, and three direct task sorting choices', async () => {
+  it('presents summarized rows and lets users select running-first sorting (#6981)', async () => {
     const filter = makeFilter();
     render(<Preview filter={filter} />);
     const root = screen.getByRole('menu');
@@ -136,7 +136,9 @@ describe('sidebar display settings menu', () => {
       within(submenu)
         .getAllByRole('menuitem')
         .map((row) => row.textContent),
-    ).toEqual(['优先级', '最近活动', '创建时间']);
+    ).toEqual(['优先级', '最近活动', '运行中靠前', '创建时间']);
+    fireEvent.click(within(submenu).getByRole('menuitem', { name: '运行中靠前' }));
+    expect(filter.setSortBy).toHaveBeenCalledWith('running');
     fireEvent.click(within(submenu).getByRole('menuitem', { name: '创建时间' }));
     expect(filter.setSortBy).toHaveBeenCalledWith('created');
     expect(screen.getAllByRole('menu')).toHaveLength(2);

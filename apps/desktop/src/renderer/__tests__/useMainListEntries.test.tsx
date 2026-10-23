@@ -24,8 +24,9 @@ describe('sidebar sorting invalidation', () => {
     rerender({ ...initial, dialogues: [{ ...a, updatedAt: '2030-01-01', createdAt: '2030-01-01' }, b] });
     expect(ids(result.current)).toEqual(['a', 'b']);
   });
-  it('reorders priority when running state changes and keeps time ordering when switching modes', () => {
-    const initial = input('priority');
+  // #6981: running changes must invalidate the memo for both live sorting modes.
+  it.each(['priority', 'running'] as const)('reorders %s when running state changes and keeps time ordering when switching modes', (sortBy) => {
+    const initial = input(sortBy);
     const { result, rerender } = renderHook(useMainListEntries, { initialProps: initial });
     expect(ids(result.current)).toEqual(['a', 'b']);
     rerender({ ...initial, priorityContext: context('b') });

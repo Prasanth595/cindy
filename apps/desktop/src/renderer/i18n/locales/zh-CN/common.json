@@ -12771,10 +12771,13 @@
         "activity": "最近活动",
         "recency": "按时间排序",
         "manual": "手动排序",
-        "priority": "优先级"
+        "priority": "优先级",
+        "running": "运行中靠前"
       },
       "filterSortByTip": {
-        "priority": "等你处理的排在最前，然后是未读、运行中，其余按时间"
+        "priority": "等你处理的排在最前，然后是未读、运行中，其余按时间",
+        "activity": "按最后发送消息的时间排序；运行状态和 AI 回复不改变顺序",
+        "running": "运行中的任务排在前面，同组按最后发送消息的时间排序"
       },
       "filterStatusHeading": "状态",
       "filterAgentHeading": "Harness",

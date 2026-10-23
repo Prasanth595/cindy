@@ -12819,10 +12819,13 @@
         "activity": "Recent Activity",
         "recency": "By time",
         "manual": "Manual",
-        "priority": "Priority"
+        "priority": "Priority",
+        "running": "Running first"
       },
       "filterSortByTip": {
-        "priority": "Waiting on you first, then unread, then running, then by time"
+        "priority": "Waiting on you first, then unread, then running, then by time",
+        "activity": "Sorted by the last message you sent; running status and AI replies do not change the order",
+        "running": "Running sessions first, then by the last message you sent within each group"
       },
       "filterStatusHeading": "Status",
       "filterAgentHeading": "Harness",

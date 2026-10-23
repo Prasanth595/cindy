@@ -4,7 +4,7 @@ import {
   sortProjectsForSidebar,
   sortSessionsForSidebar,
 } from '@/features/cc-agent/lib/sidebarProjectSorting';
-import { advanceViewedPriorityHold, buildMainListEntries, type MainListPriorityContext } from '@/features/cc-agent/lib/mainListModel';
+import { advanceViewedPriorityHold, buildMainListEntries, sortSessionsForMainList, type MainListPriorityContext } from '@/features/cc-agent/lib/mainListModel';
 import { LIVE_TASK_PRIORITY } from '../../shared/liveTaskPriority';
 import { sessionActivityMs } from '@/features/cc-agent/lib/dateSessionGrouping';
 import type { ProjectNode } from '@/features/cc-agent/lib/projectGrouping';
@@ -59,6 +59,49 @@ function project(
 }
 
 describe('sidebar project sorting', () => {
+  // #6981, unit: live project-panel sorting was not covered by the existing
+  // group-order tests. Minimal input: old running work behind newer idle work.
+  it.each([
+    ['running', ['run-new', 'run-old', 'idle', 'waiting']],
+    ['priority', ['waiting', 'run-new', 'run-old', 'idle']],
+  ] as const)('sorts project-panel tasks by %s using the main-list comparator', (mode, expected) => {
+    const tasks = [
+      session({ id: 'idle', userSendAt: '2026-10-23' }),
+      session({ id: 'run-old', userSendAt: '2026-10-01', updatedAt: '2027-01-01' }),
+      session({ id: 'waiting', userSendAt: '2026-09-01' }),
+      session({ id: 'run-new', userSendAt: '2026-10-02' }),
+    ];
+    const ctx: MainListPriorityContext = {
+      runningSessionIds: new Set(['run-old', 'run-new']),
+      attentionSessionIds: new Set(['waiting']),
+      waitingSessionIds: new Set(['waiting']),
+    };
+    const result = sortSessionsForSidebar(tasks, mode, ctx);
+    expect(result.map(s => s.id)).toEqual(expected);
+    expect(result).toEqual(sortSessionsForMainList(tasks, mode, ctx));
+    if (mode === 'running') {
+      ctx.runningSessionIds = new Set(['run-old']);
+      expect(sortSessionsForSidebar(tasks, mode, ctx).map(s => s.id))
+        .toEqual(['run-old', 'idle', 'run-new', 'waiting']);
+    }
+  });
+
+  it.each(['activity', 'custom'] as const)('keeps running-first ordering consistent with %s project order (#6981)', (projectOrder) => {
+    const idle = session({ id: 'idle', userSendAt: '2026-10-23' });
+    const running = session({ id: 'running', userSendAt: '2026-10-01' });
+    const projects = [
+      project({ workingDir: '/idle', displayName: 'idle', sessions: [idle] }),
+      project({ workingDir: '/running', displayName: 'running', sessions: [idle, running] }),
+    ];
+    const manual = projectKeys(projects);
+    const ctx = { runningSessionIds: new Set(['running']), attentionSessionIds: new Set<string>() };
+    const result = sortProjectsForSidebar(projects, 'running', manual, projectOrder, '', ctx);
+    expect(projectKeys(result)).toEqual(projectOrder === 'custom' ? manual : [...manual].reverse());
+    expect(projectKeys(result)).toEqual(expandedProjectKeys(projects, 'running', projectOrder, manual, ctx));
+    expect(result.find(p => p.displayName === 'running')?.sessions.map(s => s.id)).toEqual(['running', 'idle']);
+    expect(projects[1].sessions.map(s => s.id)).toEqual(['idle', 'running']);
+  });
+
   it('applies manual project order with unranked projects after ranked projects', () => {
     const sorted = sortProjectsForSidebar(
       [
@@ -174,7 +217,7 @@ function projectKeys(projects: readonly { projectKey: string }[]): string[] {
 
 function expandedProjectKeys(
   projects: ProjectNode[],
-  sortBy: 'priority' | 'recency' | 'created',
+  sortBy: 'priority' | 'recency' | 'created' | 'running',
   projectOrder: 'activity' | 'custom',
   manualOrder: readonly string[],
   priorityContext?: MainListPriorityContext,

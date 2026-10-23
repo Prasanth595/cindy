@@ -226,6 +226,19 @@ function sessionGroupPriorityRank(
   return min;
 }
 
+/** Running-first uses the same send-time clock as recency, without viewed-rank holds. */
+export function compareSessionGroupsByRunning(
+  a: readonly Session[],
+  b: readonly Session[],
+  ctx: MainListPriorityContext,
+): number {
+  return (
+    Number(b.some((session) => ctx.runningSessionIds.has(session.id))) -
+      Number(a.some((session) => ctx.runningSessionIds.has(session.id))) ||
+    Math.max(0, ...b.map(sessionActivityMs)) - Math.max(0, ...a.map(sessionActivityMs))
+  );
+}
+
 /** 项目行与折叠侧栏共用的优先级比较：档位优先，同档再比最近活动。 */
 export function compareSessionGroupsByPriority(
   a: readonly Session[],
@@ -242,6 +255,7 @@ export function compareSessionGroupsByPriority(
  * 组内(项目 / 对话组)会话排序的唯一入口。
  *   - priority:分档 + 同档 recency
  *   - recency:一律按最近活动倒序
+ *   - running:运行中在前，同档按最近发送时间倒序，不使用浏览时的档位保留
  *   - created:按创建时间倒序,消息和状态更新不改序
  * 自定义项目顺序只影响顶层项目行,组内仍走当前 sortBy。不得沿用 groupSessions 的
  * active-first 入参序——状态=全部时,刚归档的任务必须能排在陈旧活跃任务前面。
@@ -251,6 +265,13 @@ export function sortSessionsForMainList(
   sortBy: FilterSortBy,
   ctx: MainListPriorityContext = EMPTY_PRIORITY_CONTEXT,
 ): Session[] {
+  if (sortBy === 'running') {
+    return sessions.slice().sort(
+      (a, b) =>
+        Number(ctx.runningSessionIds.has(b.id)) - Number(ctx.runningSessionIds.has(a.id)) ||
+        sessionActivityMs(b) - sessionActivityMs(a),
+    );
+  }
   if (sortBy === 'priority') {
     return sessions
       .slice()
@@ -469,6 +490,11 @@ function compareEntriesBySortBy(
   sortBy: FilterSortBy,
   ctx: MainListPriorityContext,
 ): number {
+  if (sortBy === 'running') {
+    return compareSessionGroupsByRunning(
+      getMainListEntrySessions(a), getMainListEntrySessions(b), ctx,
+    );
+  }
   if (sortBy === 'priority') {
     return compareSessionGroupsByPriority(
       getMainListEntrySessions(a),

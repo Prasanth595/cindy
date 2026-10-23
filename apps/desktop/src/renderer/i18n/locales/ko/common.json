@@ -12771,10 +12771,13 @@
         "activity": "최근 활동",
         "recency": "시간순",
         "manual": "수동",
-        "priority": "우선순위"
+        "priority": "우선순위",
+        "running": "실행 중 우선"
       },
       "filterSortByTip": {
-        "priority": "확인이 필요한 항목 먼저, 다음 읽지 않음, 실행 중, 나머지는 시간순"
+        "priority": "확인이 필요한 항목 먼저, 다음 읽지 않음, 실행 중, 나머지는 시간순",
+        "activity": "마지막 메시지 전송 시간순으로 정렬하며, 실행 상태와 AI 응답은 순서에 영향을 주지 않습니다",
+        "running": "실행 중인 세션을 먼저 표시하고 각 그룹 내에서는 마지막 메시지 전송 시간순으로 정렬합니다"
       },
       "filterStatusHeading": "상태",
       "filterAgentHeading": "Harness",

@@ -2,7 +2,7 @@
  * SidebarFilterPopover — 侧边栏显示设置菜单
  * ---------------------------------------------------------------------------
  * 一级入口：分组 / 任务排序 / 项目排序 / 任务状态 / 筛选 / 显示 / 任务信息。
- * 每行显示当前设置，具体选项在子菜单中；任务排序直接三选一，优先级在前。
+ * 每行显示当前设置，具体选项在子菜单中；任务排序直接选择，优先级在前。
  * 分组、排序保持原有语义；筛选只包含项目 / Harness / 最近活跃，不重置任务状态。
  *
  * 入口仍复用 sliders-horizontal 图标；内容为行式菜单 + 子菜单。
@@ -102,7 +102,7 @@ type Option<T extends string> = {
   /**
    * hover 说明(2026-08-13 用户裁决)。只给「光看标签猜不出排序依据」的选项——
    * 「优先级」不说清按什么排,用户无从判断它和「按时间排序」的差别;
-   * 「按时间排序」名字自解释,不加提示避免菜单变成说明书。
+   * 「最近活动」解释最后发送时间，避免被理解成持续输出或运行状态。
    */
   tipKey?: string;
 };
@@ -140,8 +140,15 @@ const SORT_BY_OPTIONS: ReadonlyArray<Option<FilterSortBy>> = [
   {
     value: 'recency',
     labelKey: 'ccAgent.sidebar.filterSortBy.activity',
+    tipKey: 'ccAgent.sidebar.filterSortByTip.activity',
     menuLabelKey: 'ccAgent.sidebar.sortTaskBy.activity',
     Icon: Clock,
+  },
+  {
+    value: 'running',
+    labelKey: 'ccAgent.sidebar.filterSortBy.running',
+    tipKey: 'ccAgent.sidebar.filterSortByTip.running',
+    Icon: ArrowDownWideNarrow,
   },
   {
     value: 'created',
