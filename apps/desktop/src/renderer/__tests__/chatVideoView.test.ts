@@ -22,6 +22,7 @@ vi.mock('@/hooks/useRemoteMediaUrl', () => ({
 }));
 
 import { ChatVideoView } from '../components/chat/ChatVideoView';
+import { Tooltip } from '@/components/ui/tooltip';
 import { __resetMediaBusForTests } from '@/lib/mediaPlaybackBus';
 
 describe('ChatVideoView 键盘交互(真实 VideoLightbox)', () => {
@@ -75,3 +76,21 @@ describe('ChatVideoView 键盘交互(真实 VideoLightbox)', () => {
     expect(screen.getByRole('button', { name: 'clip.mp4' })).toBeTruthy();
   });
 });
+
+describe('ChatVideoView 加载失败', () => {
+  // 嵌入视频的地址会在挂载后变化(远程改写落地、相对路径解析出任务目录里的真实文件)。
+  // 失败态必须跟着地址走:旧地址失败后换成新地址要重新加载,不能一直停在「视频不可用」。
+  it('换成新地址后重新加载，不沿用上一个地址的失败态', () => {
+    const video = (src: string) =>
+      React.createElement(Tooltip.Provider, null,
+        React.createElement(ChatVideoView, { src, filename: 'clip.mp4', variant: 'tool-output' }));
+    const view = render(video('xdt-file://local/?path=%2Ftask%2Fmissing.mp4'));
+    fireEvent.error(view.container.querySelector('video')!);
+    expect(screen.getByText('chat.media.videoUnavailable')).toBeTruthy();
+
+    view.rerender(video('xdt-file://local/?path=%2Ftask%2Ffilm%2Fclip.mp4'));
+    expect(screen.queryByText('chat.media.videoUnavailable')).toBeNull();
+    expect(view.container.querySelector('video')?.getAttribute('src')).toBe('xdt-file://local/?path=%2Ftask%2Ffilm%2Fclip.mp4');
+  });
+});
+

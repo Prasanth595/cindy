@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../ChatVideoView', () => ({
@@ -35,7 +35,7 @@ vi.mock('../ChatSessionFileContext', async (importOriginal) => ({
 }));
 
 import { parseRemoteMediaUrl } from '../../../../shared/remoteMediaUrl';
-import { _clearSmartResolveCache, toLocalFileUrl } from '@/lib/localPathResolver';
+import { _clearSmartResolveCache, localFileUrlToAudioUrl, toLocalFileUrl } from '@/lib/localPathResolver';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 
 afterEach(() => {
@@ -85,49 +85,80 @@ describe('MarkdownRenderer managed video targets', () => {
 // 嵌入的播放器和图片就是坏的（路径 chip 却能靠任务目录搜索点亮）。本机会话里媒体要复用同一套
 // 解析：唯一命中换成真实文件，没有命中保持原拼接；远程会话不在本机搜索远端路径。
 describe('MarkdownRenderer workspace-relative media in local sessions', () => {
-  const richVideo = '```cindy-ui\n' + JSON.stringify({
-    version: 1, seq: 1, op: 'create', id: 'v', kind: 'video',
-    props: { src: 'renders/out/clip.mp4', alt: 'clip' },
+  const richNode = (kind: 'video' | 'audio', src: string) => '```cindy-ui\n' + JSON.stringify({
+    version: 1, seq: 1, op: 'create', id: 'm', kind, props: { src, alt: 'clip' },
   }) + '\n```';
+  const richVideo = richNode('video', 'renders/out/clip.mp4');
+  const mediaSrc = (container: HTMLElement) => {
+    const el = container.querySelector('[data-testid="markdown-video"], img, audio');
+    return el?.getAttribute('data-src') ?? el?.getAttribute('src') ?? null;
+  };
 
-  function mount(content: string, origin: object, batch: Record<string, unknown>) {
+  function mount(
+    content: string,
+    origin: object,
+    batch: Record<string, unknown> | Promise<Record<string, unknown>>,
+  ) {
     sessionFile.current = { sessionId: 's1', workingDir: '/task', origin };
     const resolvePathBatch = vi.fn(async () => batch);
     (window as unknown as { electronAPI: unknown }).electronAPI = { resolvePathBatch };
-    const view = render(
-      <MarkdownRenderer workingDir="/task" currentSessionId="s1" renderRichAnswers content={content} />,
+    const renderWith = (title?: string) => (
+      <MarkdownRenderer workingDir="/task" currentSessionId="s1" currentSessionTitle={title} renderRichAnswers content={content} />
     );
-    return { view, resolvePathBatch };
+    const view = render(renderWith());
+    return { view, renderWith, resolvePathBatch };
   }
+  const unique = (href: string) => ({ [href]: { status: 'unique', candidates: [`/task/film/${href}`], kind: 'file' } });
 
   it.each([
-    ['cindy-ui video', richVideo, 'renders/out/clip.mp4'],
-    ['Markdown image', '![sheet](work/sheet.jpg)', 'work/sheet.jpg'],
-  ])('plays the unique workspace match for a %s whose joined path is missing', async (_label, content, href) => {
-    const { view } = mount(content, { kind: 'local' }, {
-      [href]: { status: 'unique', candidates: [`/task/film/${href}`], kind: 'file' },
-    });
-    const media = () => view.container.querySelector('[data-testid="markdown-video"], img');
-    await waitFor(() => {
-      const src = media()?.getAttribute('data-src') ?? media()?.getAttribute('src');
-      expect(src).toBe(toLocalFileUrl(`/task/film/${href}`));
-    });
+    ['cindy-ui video', richVideo, 'renders/out/clip.mp4', toLocalFileUrl],
+    ['Markdown image', '![sheet](work/sheet.jpg)', 'work/sheet.jpg', toLocalFileUrl],
+    // 本地音频要走 xdt-audio://，xdt-file:// 不放行音频。
+    ['cindy-ui audio', richNode('audio', 'sfx/hit.wav'), 'sfx/hit.wav',
+      (absPath: string) => localFileUrlToAudioUrl(toLocalFileUrl(absPath))],
+  ])('plays the unique workspace match for a %s whose joined path is missing', async (_label, content, href, toUrl) => {
+    const { view } = mount(content, { kind: 'local' }, unique(href));
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toUrl(`/task/film/${href}`)));
+  });
+
+  // 解析结果晚到时，播放器不能先拿拼接出来的坏地址加载：那会先进入「视频不可用」。
+  it('does not load the joined path before the workspace answer arrives', async () => {
+    let answer!: (batch: Record<string, unknown>) => void;
+    const { view } = mount(richVideo, { kind: 'local' }, new Promise((resolve) => { answer = resolve; }));
+    await act(async () => {});
+    expect(mediaSrc(view.container)).toBeNull();
+
+    await act(async () => answer(unique('renders/out/clip.mp4')));
+    expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4'));
+  });
+
+  // 共享解析缓存有容量上限；被其他引用挤掉后，已经找到的媒体不能退回拼接出来的坏地址。
+  it('keeps a found file after the shared resolve cache drops it', async () => {
+    const { view, renderWith, resolvePathBatch } = mount(richVideo, { kind: 'local' }, unique('renders/out/clip.mp4'));
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4')));
+
+    _clearSmartResolveCache();
+    // 同一个播放器再次渲染(不重新挂载，所以不会重新解析)。
+    view.rerender(renderWith('renamed task'));
+    expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4'));
+    expect(resolvePathBatch).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the joined path when the workspace has no match', async () => {
-    const { resolvePathBatch } = mount(richVideo, { kind: 'local' }, {
-      'renders/out/clip.mp4': { status: 'none', candidates: [] },
-    });
-    await waitFor(() => expect(resolvePathBatch).toHaveBeenCalled());
-    expect(screen.getByTestId('markdown-video').getAttribute('data-src')).toBe(
-      toLocalFileUrl('/task/renders/out/clip.mp4'),
-    );
+    const { view } = mount(richVideo, { kind: 'local' }, { 'renders/out/clip.mp4': { status: 'none', candidates: [] } });
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/renders/out/clip.mp4')));
   });
 
-  it('does not search the local disk for a remote session', () => {
-    const { resolvePathBatch } = mount(richVideo, { kind: 'device', deviceId: 'dev-1' }, {});
-    expect(parseRemoteMediaUrl(screen.getByTestId('markdown-video').getAttribute('data-src') ?? '')?.origUrl)
-      .toBe(toLocalFileUrl('/task/renders/out/clip.mp4'));
+  // `%` 可能是字面文件名；主进程查找前会解码，可能换成另一个文件，所以这类路径不搜索。
+  it.each([
+    ['a remote session', { kind: 'device', deviceId: 'dev-1' }, 'renders/out/clip.mp4'],
+    ['a path containing %', { kind: 'local' }, 'renders/out/clip%20final.mp4'],
+  ])('does not search the local disk for %s', async (_label, origin, href) => {
+    const { view, resolvePathBatch } = mount(richNode('video', href), origin, {});
+    // 搜索请求按微任务批量发出；先让它有机会发出再断言。
+    await act(async () => {});
+    const src = mediaSrc(view.container) ?? '';
+    expect(parseRemoteMediaUrl(src)?.origUrl ?? src).toBe(toLocalFileUrl(`/task/${href}`));
     expect(resolvePathBatch).not.toHaveBeenCalled();
   });
 });

@@ -9,8 +9,13 @@
  *   这种写法；嵌入媒体此前只做直接拼接，于是同一条回复里路径能点、播放器却是坏的。
  *
  * 行为:
- *   复用路径 chip 的同一套解析与缓存。直接拼接能找到、没有命中或命中多个时都保持原路径（原
- *   行为），只有唯一命中且位置与直接拼接不同才替换成绝对路径。
+ *   - 复用路径 chip 的同一套解析与缓存。直接拼接能找到、没有命中或命中多个时都保持原路径
+ *     （原行为），只有唯一命中且位置与直接拼接不同才替换成绝对路径。
+ *   - 解析完成前不交出地址（pending）：先拿拼接地址加载会让播放器进入失败态，解析结果晚到
+ *     时界面已经显示过「不可用」。缓存命中时同步给出结论，没有等待。
+ *   - 含 `%` 的路径不搜索：主进程查找前会先做 URL 解码，任务目录同时有 `a%20b.jpg` 与
+ *     `a b.jpg` 时会换成另一个文件，违背「直接拼接能找到时保持原地址」。
+ *   - 结论在组件里另存一份：共享缓存有容量上限，被其他引用挤掉后不能退回坏地址。
  *
  * 范围:
  *   只用于本机会话。远程会话的路径解析不在远端搜索（见 MarkdownRenderer 的
@@ -23,6 +28,7 @@ import {
   peekResolveLocalPathSmart,
   resolveLocalPath,
   resolveLocalPathSmartCached,
+  type SmartResolveResult,
 } from '@/lib/localPathResolver';
 
 const WIN_ABS_RE = /^[A-Za-z]:[\\/]/;
@@ -40,34 +46,57 @@ function isSamePath(a: string, b: string): boolean {
   return a.replace(/\\/g, '/') === b.replace(/\\/g, '/');
 }
 
+export interface WorkspaceMediaPath {
+  /** 用于加载的路径；pending 时为 undefined。 */
+  src: string | undefined;
+  /** 相对路径还在任务目录里解析，调用方此时不应加载媒体。 */
+  pending: boolean;
+}
+
 export function useWorkspaceMediaPath(
   src: string | undefined,
   workingDir: string,
   enabled: boolean,
-): string | undefined {
-  const href = enabled && src && workingDir && isRelativeLocalPath(src) ? src : null;
-  // 结论只存在 localPathResolver 的模块缓存里；这里只在异步解析落缓存后触发一次重渲染，
-  // 渲染时统一从缓存派生，换 src / 换会话都不会读到上一条路径的结论。
-  const [, setResolvedGeneration] = useState(0);
+): WorkspaceMediaPath {
+  const href =
+    enabled && src && workingDir && isRelativeLocalPath(src) && !src.includes('%') ? src : null;
+  const key = href ? `${workingDir}::${href}` : null;
+  const [settled, setSettled] = useState<{ key: string; result: SmartResolveResult } | null>(null);
   useEffect(() => {
-    if (!href || peekResolveLocalPathSmart(href, workingDir)) return;
+    if (!href || !key) return;
+    const cached = peekResolveLocalPathSmart(href, workingDir);
+    if (cached) {
+      setSettled((current) =>
+        current?.key === key && current.result === cached ? current : { key, result: cached },
+      );
+      return;
+    }
     let cancelled = false;
-    void resolveLocalPathSmartCached(href, workingDir).then(() => {
-      if (!cancelled) setResolvedGeneration((n) => n + 1);
+    void resolveLocalPathSmartCached(href, workingDir).then((result) => {
+      if (!cancelled) setSettled({ key, result });
     });
     return () => {
       cancelled = true;
     };
-  }, [href, workingDir]);
+  }, [href, key, workingDir]);
 
-  if (!href) return src;
-  const result = peekResolveLocalPathSmart(href, workingDir);
-  if (result?.status !== 'unique' || result.kind === 'directory') return src;
+  if (!href) return { src, pending: false };
+  const result =
+    peekResolveLocalPathSmart(href, workingDir) ??
+    (settled?.key === key ? settled.result : undefined);
+  if (!result) return { src: undefined, pending: true };
+  if (result.status !== 'unique' || result.kind === 'directory') return { src, pending: false };
   // 直接拼接本来就能找到时保持原写法，避免播放器因地址写法不同而重新加载。
-  return isSamePath(result.absPath, resolveLocalPath(href, workingDir)) ? src : result.absPath;
+  return {
+    src: isSamePath(result.absPath, resolveLocalPath(href, workingDir)) ? src : result.absPath,
+    pending: false,
+  };
 }
 
-/** render-prop 形态，供 react-markdown 的 `img` 组件映射等不能直接调用 hook 的位置使用。 */
+/**
+ * render-prop 形态，供 react-markdown 的 `img` 组件映射等不能直接调用 hook 的位置使用。
+ * 解析中不渲染媒体，结论出来后再交给 children。
+ */
 export function WorkspaceMediaSrc({
   src,
   workingDir,
@@ -79,5 +108,6 @@ export function WorkspaceMediaSrc({
   enabled: boolean;
   children: (src: string | undefined) => ReactNode;
 }) {
-  return <>{children(useWorkspaceMediaPath(src, workingDir, enabled))}</>;
+  const resolved = useWorkspaceMediaPath(src, workingDir, enabled);
+  return resolved.pending ? null : <>{children(resolved.src)}</>;
 }

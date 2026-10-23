@@ -63,6 +63,7 @@ import { useTranslation } from 'react-i18next';
 
 import { cn, basename } from '@/lib/utils';
 import {
+  localFileUrlToAudioUrl,
   looksLikeFilePath,
   MODEL_EXT_RE,
   normalizeMarkdownImageSrc,
@@ -2057,7 +2058,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(props: MarkdownRe
         {(localSrc = raw) => {
           const normalized = localSrc.startsWith('xdt-audio://') && allowPrivilegedLinks ? localSrc : normalizeMarkdownImageSrc(localSrc, props.workingDir, allowPrivilegedLinks);
           if (!normalized) return null;
-          const src = rewriteToRemoteMediaOrigin(normalized, props.currentSessionId ? toRemoteMediaOrigin(sessionFileCtx.origin, sessionFileCtx.workingDir) : undefined);
+          // 本地音频文件必须走 xdt-audio://；normalizeMarkdownImageSrc 产出的 xdt-file:// 只放行图片和视频。
+          const mediaSrc = node.kind === 'audio' ? localFileUrlToAudioUrl(normalized) : normalized;
+          const src = rewriteToRemoteMediaOrigin(mediaSrc, props.currentSessionId ? toRemoteMediaOrigin(sessionFileCtx.origin, sessionFileCtx.workingDir) : undefined);
           return node.kind === 'audio' ? <InlineXdtAudioPlayer src={src} /> : <ChatVideoView src={src} filename={richString(node, 'alt', 'video')} variant="tool-output" sessionId={props.currentSessionId} />;
         }}
       </WorkspaceMediaSrc>

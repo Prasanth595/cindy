@@ -587,6 +587,17 @@ export function toLocalFileUrl(absPath: string, revision?: string): string {
 }
 
 /**
+ * Re-target a local `xdt-file://` URL at the audio protocol. `xdt-file://` only
+ * serves images and video; local audio must go through `xdt-audio://`
+ * (apps/desktop/src/main/audioFileProtocol.ts), which uses the same
+ * `local/?path=` URL shape. Other URLs are returned unchanged.
+ */
+export function localFileUrlToAudioUrl(url: string): string {
+  const prefix = 'xdt-file://local/';
+  return url.startsWith(prefix) ? `xdt-audio://local/${url.slice(prefix.length)}` : url;
+}
+
+/**
  * Normalize the legacy path-shaped `xdt-file:///...` URL used by older
  * messages into the query-shaped URL understood by the main-process handler.
  *
