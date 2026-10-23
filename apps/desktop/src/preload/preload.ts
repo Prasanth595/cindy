@@ -1297,7 +1297,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 意识仓库 (shared/ghost.ts)。listSync 走 sendSync:意识面板要与内置
   // 面板同帧注册进布局引擎(规则 7 无跳变);目录扫描极小,同步读不卡启动。
   ghosts: {
-    mailPreview: (sessionId: string, url: string, read: boolean, opened = false) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened),
+    mailPreview: (sessionId: string, url: string, read: boolean, opened = false, providerId?: string) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened, providerId),
     openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget): Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView> =>
       ipcRenderer.invoke('device-link:plugin-settings:open', target),
     closeRemoteSettings: (id: string): Promise<void> => ipcRenderer.invoke('device-link:plugin-settings:close', id),
@@ -5761,6 +5761,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         locale?: import('../shared/locale').SupportedLocale;
       }): Promise<unknown[]> => ipcRenderer.invoke('local-db:bots:list', body),
       get: (botId: string): Promise<unknown> => ipcRenderer.invoke('local-db:bots:get', botId),
+      chooseAvatarSource: (): Promise<{ canceled: boolean; previewDataUrl?: string }> =>
+        ipcRenderer.invoke('local-db:bots:choose-avatar-source'),
       chooseAvatar: (body: { botId: string; avatarImageBase64?: string }): Promise<unknown> =>
         ipcRenderer.invoke('local-db:bots:choose-avatar', body),
       searchHistory: (body: unknown): Promise<unknown> =>
@@ -7222,14 +7224,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // providerId 可选 —— 选了某供应商的模型时一并传,决定本会话路由到哪个上游/钥匙。
     // 不传 = 不改动该会话的供应商选择(老调用兼容);传 null = 清除选择回落默认路由。
     // 返回 { deferred } —— deferred=true 表示会话自己在跑 turn,凭证切换已登记为
-    // pending、turn 结束自动生效(renderer 据此提示"任务结束后生效")。旧被控端 /
+    // pending、turn 结束自动生效(renderer 据此提示“任务结束后生效”)。旧被控端 /
     // 老 host 可能返回 undefined,调用方按非 deferred 处理。
+    // selection.thinking(Pi-only) = 目标模型的思考开关意图，Pi 用它收敛切模后的
+    // thinking level；其它引擎忽略。
     setModel: (
       sessionId: string,
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean },
     ): Promise<{ deferred: boolean; superseded?: boolean } | undefined> =>
       ipcRenderer.invoke(
         'maker:set-model',
@@ -7254,6 +7258,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       fastMode?: boolean | 'ultrafast',
       // 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
+      thinking?: boolean,
     ): Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';
@@ -7263,7 +7268,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       sameEngineRevision?: number;
       sameEngineSuperseded?: boolean;
     }> =>
-      options
+      options || thinking !== undefined
         ? ipcRenderer.invoke(
             'maker:switch-session-agent',
             sessionId,
@@ -7273,6 +7278,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
             effort,
             fastMode,
             options,
+            thinking,
           )
         : ipcRenderer.invoke(
             'maker:switch-session-agent',

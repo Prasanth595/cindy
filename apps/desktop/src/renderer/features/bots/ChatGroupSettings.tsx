@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Crown, Shield } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -16,6 +16,7 @@ import { BotAvatar } from './BotAvatar';
 import { chatErrorKey } from './ChatServerControls';
 import { refreshBotGroups } from './botGroupStore';
 import { chatGroupMembership } from '@cindy/maker-shared/botGroupPresentation';
+import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
 
 const key = (name: string) => `bots.groupChat.server.settings.${name}`;
 /** Labels shared with the local group settings, so both read the same. */
@@ -28,6 +29,7 @@ const api = () => window.electronAPI.maker.chatServer;
 export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { confirm } = useConfirmDialog();
   const profiles = useBotProfiles();
   const companions = group.members.filter(member => member.actorKind === 'bot');
@@ -130,11 +132,11 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
           onChange={event => { editGroup(); setTopic(event); }} />}</FormField>
         <FormField label={t(key('description'))}>{props => <Input {...props} value={description} maxLength={2000} disabled={!manager || busy}
           onChange={event => { editGroup(); setDescription(event); }} />}</FormField>
-        {/* One teammate at a time: who answers follows @ (everyone queues when nobody is named), not a group mode. */}
-        {group.singleSpeaker ? null : <>
+        {/* Whether unmentioned messages trigger replies is independent of the speaking order. */}
         <FormField label={t(shared('replyMode'))}>{props => <Select {...props} label={t(shared('replyMode'))} value={replyMode}
           disabled={!manager || busy} options={(['all', 'mentioned'] as const).map(value => ({ value, label: t(REPLY_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setReplyMode(value as typeof replyMode); }} />}</FormField>
+        {group.singleSpeaker ? null : <>
         <FormField label={t(shared('speakingMode'))}>{props => <Select {...props} label={t(shared('speakingMode'))} value={speakingMode}
           disabled={!manager || busy} options={(['auto', 'sequential'] as const).map(value => ({ value, label: t(SPEAKING_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setSpeakingMode(value as typeof speakingMode); }} />}</FormField>
@@ -179,10 +181,19 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
             </div>
           </div>
           <ChatBotAccessField groupId={group.id} member={member} disabled={busy || !!group.dissolvedAt} />
-          {member.isOwned && profiles.some(bot => bot.id === member.botId) && <Button size="sm" variant="secondary"
-            onClick={() => navigate(`/bots/${encodeURIComponent(member.botId)}?settings=1&settingsPage=capabilities`)}>
-            {t(key('configureCapabilities'))}
-          </Button>}
+          {member.isOwned && profiles.some(bot => bot.id === member.botId) && <div className="space-y-2">
+            <Button size="sm" variant="secondary" onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete(BOT_GROUP_SETTINGS_PARAM);
+              next.set('settings', '1');
+              next.set('settingsPage', 'capabilities');
+              next.set('settingsBot', member.botId);
+              setSearchParams(next);
+            }}>
+              {t(key('configureCapabilities'))}
+            </Button>
+            <p className="text-12 leading-5 text-[var(--text-secondary)]">{t(key('capabilityScope'), { name: member.name })}</p>
+          </div>}
         </div>)}
       </section>}
       <section className="space-y-3 border-t border-[var(--border-default)] pt-5">

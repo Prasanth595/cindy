@@ -5,7 +5,9 @@
     "title": "Mail",
     "openMailbox": "Open in mailbox",
     "loading": "Loading email…",
-    "failed": "Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.",
+    "failed": "Could not load this email. Retry or open it in your mailbox.",
+    "unavailable": "No email plugin is available. You can open this email in your mailbox.",
+    "notReady": "The email plugin is not set up. Connect your mailbox or open the original link.",
     "retry": "Retry",
     "to": "To",
     "cc": "Cc",
@@ -20,7 +22,9 @@
     "collapseMessage": "Collapse email from {{from}}",
     "conversationFailed": "Other emails in this conversation could not be loaded.",
     "messageCount": "{{count}} emails",
-    "showMessages": "Show {{count}} emails"
+    "showMessages": "Show {{count}} emails",
+    "choosePlugin": "Choose a plugin to open this email.",
+    "personalPlugin": "Personal plugin"
   },
   "taskActionConfirmation": {
     "title": "Confirm session action",
@@ -978,6 +982,9 @@
     "handoffWindow": "Input handoff · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "This SSH task cannot switch Harness. Choose a model in its current Harness, or create a new SSH task with the Harness you need.",
+    "MODEL_SELECTION_UNAVAILABLE": "The selected model is no longer available from its provider. Check the connection in Settings or choose another available model.",
+    "HARNESS_SWITCH_NOT_READY": "The Harness switch is not ready. Check the error details and retry after the Harness is ready.",
     "DEVICE_LINK_BUSY": "The remote computer is busy. Please try again shortly.",
     "INVALID_PARAMS": "Invalid input. Please check and try again.",
     "PRECONDITION_FAILED": "This action is unavailable in the current state. Please try again.",
@@ -6666,7 +6673,7 @@
         "installMeta": "Version {{version}} · {{source}}",
         "updateMeta": "Version {{from}} → {{to}} · {{source}}",
         "installDescription": "Nothing is installed until you confirm. The plugin is enabled right after installing, and you can disable or uninstall it anytime on the Plugins page.",
-        "updateDescription": "The new version needs more permissions, so it won’t be installed until you confirm. The current version keeps working in the meantime.",
+        "updateDescription": "The update starts only after you confirm. The current version remains available until then.",
         "grantsTitle": "After installing it will have:",
         "noPermissions": "This plugin declares no additional permissions.",
         "addedTitle": "New or changed permissions:",
@@ -6683,7 +6690,11 @@
         "confirmInstall": "Install",
         "confirmUpdate": "Update",
         "cancel": "Cancel",
-        "updateNeedsConsent": "New permissions need confirmation"
+        "updateNeedsConsent": "New permissions need confirmation",
+        "targetIdentity": "Install for: {{name}}",
+        "personalTarget": "Personal",
+        "sourceChanged": "This update switches to a local source. Existing accounts and data are archived separately. Connect your accounts again after updating.",
+        "otherCopies": "There are {{count}} other copies of this plugin. They will stay installed and keep their current enabled state. A separate copy needs its own account connections."
       },
       "trust": {
         "official": "Official Cindy plugin",
@@ -9790,7 +9801,8 @@
           "archived": "This group is archived. History is still available.",
           "noneHint": "Only the companion’s owner can ask it to respond in this group.",
           "companionPermissions": "Companion permissions",
-          "configureCapabilities": "Tools and access settings"
+          "configureCapabilities": "Tools and access settings",
+          "capabilityScope": "These are {{name}}’s own tools and access, not settings for this group only."
         }
       },
       "lifecycle": {
@@ -12305,6 +12317,9 @@
       "daemonNotReady": "{{manager}} upgraded, but the remote daemon hasn't started yet — please resend your message manually"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "This SSH task cannot switch Harness. Choose a model in its current Harness, or create a new SSH task with the Harness you need.",
+      "MODEL_SELECTION_UNAVAILABLE": "The selected model is no longer available from its provider. Check the connection in Settings or choose another available model.",
+      "HARNESS_SWITCH_NOT_READY": "The Harness switch is not ready. Check the error details and retry after the Harness is ready.",
       "DEVICE_LINK_BUSY": "The remote computer is busy. Please try again shortly.",
       "REMOTE_DAEMON_CLOSED": "The remote connection dropped, possibly during an update. This turn has ended. Send the message again.",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "Local file/image attachments aren't accessible in remote sessions. Paste the content directly instead.",
@@ -12999,6 +13014,7 @@
         "moveToProjectRunningBlocked": "This session is running. Move it after it finishes.",
         "moveToProjectAttachedBlocked": "This session is being controlled remotely. Move it after control ends.",
         "moveToProjectRemoteUnsupported": "Moving remote sessions is not supported yet",
+        "moveToProjectWorktreeBlocked": "This task's working directory is a worktree, so it can't be moved to another project yet",
         "openInNewWindow": "Open in new window",
         "exportShare": "Export session…",
         "exportHtml": "Export to HTML…",
@@ -17097,6 +17113,10 @@
     "exitFullscreen": "Exit Fullscreen"
   },
   "richAnswer": {
+    "send": "Send Message",
+    "sending": "Sending…",
+    "sent": "Submitted",
+    "sendFailed": "The message was not submitted. Your entries are still here.",
     "playVideo": "Play video",
     "openVideoSource": "Open original video",
     "calculationUnavailable": "Unable to calculate this value.",

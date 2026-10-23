@@ -11,6 +11,7 @@ import { parsePeerAttachmentRef } from '@cindy/device-link';
 import { capturePluginOauthPeer } from '../plugin-oauth/runtime.js';
 import { readMobilePreview } from './mobilePreview.js';
 import { createMailReader, mailReaderRemoteProvider } from './mailReader.js';
+import { resolveForgeInstallTarget, ghostInstallTargetContext } from './ghostInstallTarget.js';
 import { assertRemoteBotInvocationAllowed } from '../device-link/remoteBotSessionBoundary.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { MobileTaskSettings } from './mobileTaskSettings.js';
@@ -235,6 +236,7 @@ import {
   parsePluginInstallRelId,
   parsePluginInstanceId,
   parsePluginStoragePart,
+  pluginStoragePart,
   pluginInstallStoragePart,
   isValidPluginInstallRelId,
   isPluginInstanceKey,
@@ -7059,6 +7061,7 @@ async function updateLocalGhostPackageLocked(
   consent: GhostInstallConsentDecision,
   installOrigin?: 'agent-forge',
   isCurrent?: () => boolean,
+  expectedSourceChanged?: boolean,
 ): Promise<InstalledGhost> {
   if (isCurrent?.() === false) {
     throwIpcError(
@@ -7083,6 +7086,8 @@ async function updateLocalGhostPackageLocked(
   const { marketRecord, sourceChanged, authorizationOverrides } = readLocalGhostUpdateSource(
     manager, previousGhost, inspected, installOrigin,
   );
+  if (expectedSourceChanged !== undefined && sourceChanged !== expectedSourceChanged)
+    throwIpcError('PRECONDITION_FAILED', '插件来源在确认后已变化，请重新选择');
   if (sourceChanged) assertGhostRelocationIdle(instanceId);
   rejectUnauthorizedTokenBroker(inspected.canonicalManifest, authorizationOverrides);
   const releaseSync = pluginDeviceSync.beginMutation(instanceId);
@@ -7197,8 +7202,11 @@ export async function installOrUpdateLocalGhostPackageFromForge(
     /** packing 租约内捕获的 owner；确认与等锁都不持租约，落位前用这份身份取新租约。 */
     mutationOwner: ActiveAppSession;
     isCurrent?: () => boolean;
+    targetInstanceId?: string;
+    installCopy?: boolean;
+    namespace?: string | null;
   },
-): Promise<{ ghost: InstalledGhost; action: 'installed' | 'updated' }> {
+): Promise<{ ghost: InstalledGhost; action: 'installed' | 'updated'; sourceChanged?: boolean }> {
   const manager = getGhostManager();
   const inspected = await manager.inspect(cindyFilePath);
   if ('rejection' in inspected) throwInstallError(inspected.rejection);
@@ -7211,39 +7219,42 @@ export async function installOrUpdateLocalGhostPackageFromForge(
   rejectReservedGhostId(inspected.manifest.id);
   rejectBrokerWithoutDeclaredRedirectPort(inspected.manifest);
 
+  // Revalidate the packing owner before exposing installed-instance choices.
+  // Release immediately: no lease may span the user's confirmation.
+  const releaseInspection = beginGhostMutation(expected.mutationOwner);
+  releaseInspection();
+  if (expected.isCurrent?.() === false) throwIpcError('PRECONDITION_FAILED', 'Plugin operation is no longer current');
   const authState = getAuthState();
   const user = authState.isAuthenticated ? authState.user : null;
   const membershipKind = user?.membershipKind ?? 'personal';
   const installOrigin = forgeInstallOriginForMembership(membershipKind);
-  let forgeNamespace: string | null = null;
-  if (membershipKind === 'org') {
-    if (!user?.orgSlug || !isValidPluginNamespace(user.orgSlug)) {
-      throwIpcError('PRECONDITION_FAILED', '无法确认当前企业身份，请重新登录后重试');
-    }
-    forgeNamespace = user.orgSlug;
-  }
-  const existingForForge = findInstalledGhostForDeliveryTarget(
-    manager.list(),
-    { ghostId: inspected.manifest.id, namespace: forgeNamespace },
-  );
+  const currentNamespace = membershipKind === 'org' && user?.orgSlug && isValidPluginNamespace(user.orgSlug) ? user.orgSlug : null;
+  const target = resolveForgeInstallTarget(manager.list(), inspected.manifest.id, currentNamespace, expected);
+  const forgeNamespace = target.namespace;
+  const existingForForge = target.installed;
+  const receiverApproval = existingForForge ? ghostInstallApprovalToken(existingForForge.approval) : null;
+  const updateSource = existingForForge ? readLocalGhostUpdateSource(manager, existingForForge, inspected, installOrigin) : null;
+  const targetContext = ghostInstallTargetContext(manager.list(), inspected.manifest.id, forgeNamespace, existingForForge, updateSource?.sourceChanged === true);
   // A same-id install in another namespace is a new instance, not an update.
   if (!existingForForge && !isValidNewGhostId(inspected.manifest.id)) {
     throwIpcError('GHOST_FILE_INVALID', '新建插件 id 必须以小写字母开头，只能包含小写字母、数字和连字符，最长 32 个字符');
   }
-  rejectUnauthorizedTokenBroker(inspected.canonicalManifest, existingForForge
-    ? readLocalGhostUpdateSource(manager, existingForForge, inspected, installOrigin).authorizationOverrides
+  rejectUnauthorizedTokenBroker(inspected.canonicalManifest, updateSource
+    ? updateSource.authorizationOverrides
     : {
     ...(installOrigin ? { installOrigin } : {}),
     namespace: forgeNamespace ?? null,
   });
   // 首装与扩权更新先在任务里请用户确认；权限没变多的更新不打扰。
   const consent = await obtainGhostInstallConsent(
-    { mode: 'prompt', prompt: expected.consentPrompt, initiator: 'agent', origin: 'forge' },
+    { mode: 'prompt', prompt: expected.consentPrompt, initiator: 'agent', origin: 'forge',
+      force: targetContext.sourceChanged || targetContext.otherCopies > 0,
+      target: targetContext },
     existingForForge,
     inspected.manifest,
     inspected.packageSha256,
   );
-  const confirmFacts = forgeOidcInstallConfirmFacts(inspected.manifest, membershipKind);
+  const confirmFacts = forgeOidcInstallConfirmFacts(inspected.manifest, forgeNamespace === null ? 'personal' : membershipKind);
   if (confirmFacts) {
     let confirmed = false;
     try {
@@ -7276,6 +7287,10 @@ export async function installOrUpdateLocalGhostPackageFromForge(
         manager.list(),
         { ghostId: inspected.manifest.id, namespace: forgeNamespace },
       );
+      if ((installed ? ghostInstallApprovalToken(installed.approval) : null) !== receiverApproval ||
+          (installed && existingForForge && installedGhostStoragePart(installed) !== installedGhostStoragePart(existingForForge))) {
+        throwIpcError('PRECONDITION_FAILED', '目标插件在确认后已变化，请重新选择');
+      }
       if (!installed) {
         return {
           ghost: await installAndDockLocked(manager, cindyFilePath, {
@@ -7307,8 +7322,10 @@ export async function installOrUpdateLocalGhostPackageFromForge(
           consent,
           installOrigin,
           expected.isCurrent,
+          updateSource?.sourceChanged,
         ),
         action: 'updated',
+        sourceChanged: updateSource?.sourceChanged === true,
       };
     } finally {
       releaseMutation();
@@ -7962,14 +7979,16 @@ async function installRemoteGhostFile(peer: string, attachment: string, target: 
     const updateSource = existing ? readLocalGhostUpdateSource(manager, existing, inspected) : undefined;
     rejectUnauthorizedTokenBroker(inspected.canonicalManifest, updateSource?.authorizationOverrides);
     const token = existing ? ghostInstallApprovalToken(existing.approval) : undefined;
-    const consent = await obtainGhostInstallConsent({ mode: 'prompt', prompt, initiator: 'user', origin: 'local-file' },
+    const consent = await obtainGhostInstallConsent({ mode: 'prompt', prompt, initiator: 'user', origin: 'local-file',
+      force: updateSource?.sourceChanged,
+      target: ghostInstallTargetContext(manager.list(), inspected.manifest.id, null, existing, updateSource?.sourceChanged === true) },
       existing, inspected.manifest, inspected.packageSha256);
     assertCurrent();
     const release = beginGhostMutation(owner);
     try {
       const current = () => { assertCurrent(); return true; };
       if (existing) await withGhostInstallLock(inspected.manifest.id, () => updateLocalGhostPackageLocked(
-        manager, file, inspected, inspected.packageSha256, token!, installedGhostStoragePart(existing), consent, undefined, current));
+        manager, file, inspected, inspected.packageSha256, token!, installedGhostStoragePart(existing), consent, undefined, current, updateSource?.sourceChanged));
       else await installAndDock(manager, file, { ghostId: inspected.manifest.id, namespace: null, enable: true,
         expectedPackageSha256: inspected.packageSha256, consent: { decision: consent, manifest: inspected.manifest }, beforePackagePlacement: assertCurrent });
     } finally { release(); }
@@ -7991,9 +8010,14 @@ export function registerGhostIpc(): void {
   if (ipcRegistered) return;
   ipcRegistered = true;
   const readMail = createMailReader({
-    plugins: () => availableGhosts().flatMap(g => g.enabled && g.approval.state === 'approved' && g.manifest.mail === true && g.manifest.mailReader &&
-      g.manifest.tools?.some(t => t.name === g.manifest.mailReader!.tool)
-      ? [{ id: g.instanceKey || g.manifest.id, namespace: g.instanceKey ? undefined : g.namespace, enabled: true, reader: g.manifest.mailReader }] : []),
+    plugins: () => availableGhosts().flatMap(g => {
+      if (!g.enabled || g.approval.state !== 'approved' || g.manifest.mail !== true || !g.manifest.mailReader ||
+          !g.manifest.tools?.some(t => t.name === g.manifest.mailReader!.tool)) return [];
+      let ready = false;
+      try { ready = getGhostSetupAssessment(installedGhostStoragePart(g)).state === 'ready'; }
+      catch { /* Unknown setup must not outrank a configured instance or hide every reader. */ }
+      return [{ id: g.instanceKey || g.manifest.id, namespace: g.namespace, name: g.manifest.name, enabled: true, ready, reader: g.manifest.mailReader }];
+    }),
     authorize: async sessionId => {
       // A shared task does not grant access to the owner's mailbox.
       if (getDeviceLinkInvokeContext()?.sharedTask || !await getSessionRowSnapshot(sessionId))
@@ -8001,12 +8025,39 @@ export function registerGhostIpc(): void {
       await assertRemoteBotInvocationAllowed([sessionId]);
     },
     captureScope: () => { const scope = captureDataOwnerBroadcastScope(); return () => isDataOwnerBroadcastScopeCurrent(scope); },
-    call: (plugin, sessionId, url, markRead) => getGhostPipeDispatcher().callGhostTool({ ghostId: plugin.id, namespace: plugin.namespace, tool: plugin.reader.tool, args: { url }, sessionId, ...(markRead ? { mailReaderOpened: true as const } : {}) }),
+    call: async (plugin, sessionId, url, opened) => {
+      const ghost = findGhostForInstanceId(plugin.id);
+      if (!ghost?.enabled || ghost.approval.state !== 'approved') return { ok: false };
+      const sender = installedGhostStoragePart(ghost), cards = getGhostCardService();
+      const callId = randomUUID(), scope = captureDataOwnerBroadcastScope(), approval = ghostInstallApprovalToken(ghost.approval);
+      const current = () => {
+        const installed = findGhostForInstanceId(plugin.id);
+        return isDataOwnerBroadcastScopeCurrent(scope) && !!installed?.enabled &&
+          installed.approval.state === 'approved' && ghostInstallApprovalToken(installed.approval) === approval;
+      };
+      // Native opens use the existing card ownership/transport, just like a tool
+      // draft read. Background reads never acquire a card publication window.
+      if (opened) cards.registerCall(callId, { ghostId: sender, sessionId, toolUseId: null,
+        logicalGhostId: pluginStoragePart(installedGhostLogicalIdentity(ghost)), remoteHostId: null });
+      try {
+        // Already selected an exact installation; namespace is only for logical-name queries.
+        const result = await getGhostPipeDispatcher().callGhostTool({ ghostId: plugin.id,
+          tool: plugin.reader.tool, args: { url }, sessionId, callId, ...(opened ? { mailReaderOpened: true as const } : {}) });
+        if (!opened || !result.ok || !current()) return result;
+        const mail = result.result as { accountId?: unknown; draftId?: unknown } | undefined;
+        const draftCallId = await getMailCardService().resolveLink(sender, sessionId, callId, mail?.accountId, mail?.draftId, current);
+        return { ...result, ...(draftCallId ? { draftCallId } : {}) };
+      } finally {
+        // Closing the call's capability window must also happen after owner or
+        // installation invalidation. current() controls editor binding, not cleanup.
+        if (opened) cards.finalizeCall(callId);
+      }
+    },
   });
   remoteResourceRegistry.register(mailReaderRemoteProvider(readMail));
-  ipcMain.handle('ghosts:mail-preview', (event, sessionId: unknown, url: unknown, read: unknown, opened: unknown = false) => {
+  ipcMain.handle('ghosts:mail-preview', (event, sessionId: unknown, url: unknown, read: unknown, opened: unknown = false, providerId: unknown = undefined) => {
     assertTrustedAppRendererEvent(event);
-    return readMail(sessionId, url, read, opened);
+    return readMail(sessionId, url, read, opened, providerId);
   });
   const manager = getGhostManager();
   const runtime = getGhostRuntime();
@@ -9306,6 +9357,7 @@ export function registerGhostIpc(): void {
         prompt: createWindowGhostInstallConsentPrompt(event.sender),
         initiator: 'user',
         origin: 'local-file',
+        target: ghostInstallTargetContext(manager.list(), probe.manifest.id, null, undefined, false),
       },
       findInstalledGhostForDeliveryTarget(manager.list(), { ghostId: probe.manifest.id, namespace: null }),
       probe.manifest,
@@ -9392,6 +9444,8 @@ export function registerGhostIpc(): void {
         prompt: createWindowGhostInstallConsentPrompt(event.sender),
         initiator: 'user',
         origin: 'local-file',
+        force: updateSource.sourceChanged,
+        target: ghostInstallTargetContext(manager.list(), inspected.manifest.id, existingForUpdate.namespace ?? null, existingForUpdate, updateSource.sourceChanged),
       },
       existingForUpdate,
       inspected.manifest,
@@ -9413,6 +9467,9 @@ export function registerGhostIpc(): void {
             expectedInstalledApproval,
             expectedInstalledInstanceId,
             consent,
+            undefined,
+            undefined,
+            updateSource.sourceChanged,
           ),
         ),
       };

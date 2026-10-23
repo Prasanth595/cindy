@@ -198,11 +198,12 @@ describe('mobile optimistic composer while session is not ready', () => {
   it('keeps legacy Plan out of deferred delivery without affecting the modern Plan path', () => {
     const source = readSource(SCREEN);
     const guardStart = source.indexOf('const legacyPlanRequiresLiveDispatch =');
-    const optimisticClearStart = source.indexOf('if (text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
+    const optimisticClearStart = source.indexOf('if (!independent && text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
     const outboxStart = source.indexOf('if (useLocalOutbox) {', guardStart);
     const guard = source.slice(guardStart, outboxStart);
 
     expect(guardStart).toBeGreaterThan(-1);
+    expect(optimisticClearStart).toBeGreaterThan(-1);
     expect(guardStart).toBeLessThan(optimisticClearStart);
     expect(guard).toContain("runtimeOptions?.planModeSupported !== true");
     expect(guard).toContain('const useLocalOutbox = useDurableOutbox;');
@@ -286,7 +287,7 @@ describe('mobile optimistic composer while session is not ready', () => {
     expect(source).toContain('const hydratedDocumentAtSend = await hydrateComposerMessageReferenceBodies(');
     expect(source).toContain('if (!sendScopeStillAlive()) {\n      recoverCapturedDraftForScopeExit();');
     expect(source).toContain('await waitForPastePlaceholdersSettled();\n          if (!sendScopeStillAlive()) {');
-    expect(source).toContain('const { failedCount } = await waitForPendingUploads();\n      if (!sendScopeStillAlive()) {');
+    expect(source).toContain('const { failedCount } = independent ? { failedCount: 0 } : await waitForPendingUploads();\n      if (!sendScopeStillAlive()) {');
     expect(source).toContain('if (!sendScopeStillAlive() || !isMobileAuthOwnerCurrent(ownerAtSend)) return;');
   });
 
@@ -303,11 +304,19 @@ describe('mobile optimistic composer while session is not ready', () => {
 
   it('copies attachment bytes before committing the ownership handoff', () => {
     const source = readSource(SCREEN);
-    const branch = source.slice(source.indexOf('const handoff = await beginOutboxAttachmentHandoff()'));
+    // 正文提交不接管输入框附件；普通发送仍须先准备/复制，再持久入队，最后释放。
+    const handoffStart = source.indexOf('const handoff = independent ? null : await beginOutboxAttachmentHandoff();');
+    expect(handoffStart).toBeGreaterThan(-1);
+    const branch = source.slice(handoffStart);
+    expect(branch).toContain('const pendingSources = handoff ? await handoff.prepare() : [];');
+    expect(branch).toContain('const readyAttachments = independent ? [] : [...attachmentsRef.current];');
+    for (const step of ['await handoff.prepare()', 'await retainOutboxFile', 'await mobileDurableOutbox.add(record)', 'handoff?.release(true)']) {
+      expect(branch.indexOf(step)).toBeGreaterThan(-1);
+    }
     expect(branch.indexOf('await handoff.prepare()')).toBeLessThan(branch.indexOf('await retainOutboxFile'));
     expect(branch.indexOf('await retainOutboxFile')).toBeLessThan(branch.indexOf('await mobileDurableOutbox.add(record)'));
-    expect(branch.indexOf('await mobileDurableOutbox.add(record)')).toBeLessThan(branch.indexOf('handoff.release(true)'));
-    expect(branch).toContain('handoff.release(committed)');
+    expect(branch.indexOf('await mobileDurableOutbox.add(record)')).toBeLessThan(branch.indexOf('handoff?.release(true)'));
+    expect(branch).toContain('handoff?.release(committed)');
   });
 
   it('carries follow-ups and a pending picker warning back when creation itself failed', async () => {
@@ -499,7 +508,8 @@ describe('mobile optimistic composer while session is not ready', () => {
     const source = readSource(SCREEN);
     const gate = source.indexOf('commandNeedsRemoteSession(earlyLocalCommand, earlyDesktopCommand)');
     expect(gate).toBeGreaterThan(-1);
-    const clear = source.indexOf('if (text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
+    const clear = source.indexOf('if (!independent && text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
+    expect(clear).toBeGreaterThan(-1);
     expect(gate).toBeLessThan(clear);
     const branch = source.slice(gate, clear);
     expect(branch).toContain('isRemoteSessionMissing(readSessionRowNow())');

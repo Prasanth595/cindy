@@ -237,6 +237,12 @@ export interface PiNativeModelSpec {
  */
 export interface RemoteAgentFileOps {
   stat(file: string): Promise<{ isFile: boolean } | null>;
+  /**
+   * lstat without following symlinks, used to keep namespace traversal inside
+   * the discovery root. Absent on older hosts; callers must treat a missing
+   * implementation as "cannot verify" and stay conservative.
+   */
+  lstat?(file: string): Promise<{ isSymbolicLink: boolean } | null>;
   /** Missing/unreadable directories return an empty array. */
   listDir(dir: string): Promise<string[]>;
   /** Bounded UTF-8 read used for remote runtime metadata such as SKILL.md. */
@@ -2502,8 +2508,8 @@ export interface AgentSessionHandle {
   /** Actual runtime reviewer, not subscription availability. Only applies to harness-dispatched tools. */
   getAutoReviewOwner?(): 'native' | 'cindy';
 
-  /** 运行时切换模型 —— 不支持时抛 NotSupportedError */
-  setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort }): Promise<void>;
+  /** 运行时切换模型 —— 不支持时抛 NotSupportedError。thinkingEnabled = 目标模型的思考开关意图（Pi 用它收敛切模后的 thinking level）。 */
+  setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean }): Promise<void>;
 
   /** Read-only Pi preflight before the host changes its persisted route or context. */
   previewModelSwitch?(

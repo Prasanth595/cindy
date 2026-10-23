@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import * as sessionService from '@/lib/sessionService';
 import { extractIpcError } from '@/utils/ipcError';
+import { parseAgentErrorCode } from '@cindy/maker-shared/error-redaction';
 import { Tip } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { useAgentCapabilities } from '@/hooks/useAgentCapabilities';
@@ -132,7 +133,7 @@ export function ScheduleFormDialog({
   editProjectSchedule = false,
   requestedByGhostName = null,
 }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const formApi = useScheduleForm(initial);
   const { form, setField, selectModelConfiguration, setDestination, setRunMode, selectBoundSession, applyTemplateAgentFields, reset, toInput, validate } = formApi;
   // "运行会话"三态(fresh / persistent / bound)与心跳形态派生值。
@@ -159,6 +160,18 @@ export function ScheduleFormDialog({
   const modelCatalogReady = (!isBound || !!boundSessionReference) && !caps.loading && !providersLoading;
   const hideWorkspaceFields = runMode === 'bound' || isBound;
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  useEffect(() => { setSubmitError(null); }, [open, initial]);
+  const showSubmitError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = parseAgentErrorCode(message)?.code;
+    if (code && i18n.exists(`chat.remoteError.${code}`)) {
+      setSubmitError(message);
+      // Save may be below the notice in a scrolled form. The shared alert toast
+      // stays visible above the dialog and announces the localized failure.
+      toast.error(t(`chat.remoteError.${code}`));
+    } else toast.error(message);
+  };
   const [mode, setMode] = useState<'gallery' | 'form'>('form');
   // 前置检查「测试运行」状态:结果只在弹窗内展示,不落任何记录。
   const [hookTesting, setHookTesting] = useState(false);
@@ -512,6 +525,7 @@ export function ScheduleFormDialog({
   }, [modelCatalogReady, form.modelAgentKind, providers.length, form.fastMode, showFastModeToggle, setField]);
 
   const handleSubmit = async () => {
+    setSubmitError(null);
     const err = validate();
     if (err) {
       toast.warning(t(err.key, err.values));
@@ -550,7 +564,7 @@ export function ScheduleFormDialog({
         // （文案含项目名 + 增删改数量），此处不要再弹通用 toast，否则保存一次会出现两条提示。
         onOpenChange(false);
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : String(e));
+        showSubmitError(e);
       } finally {
         setSubmitting(false);
       }
@@ -579,7 +593,7 @@ export function ScheduleFormDialog({
       if (!isEdit) rememberScheduleFormPrefs(form);
       onOpenChange(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      showSubmitError(e);
     } finally {
       setSubmitting(false);
     }
@@ -671,6 +685,12 @@ export function ScheduleFormDialog({
           // overflow-y-auto:内容超过弹窗 max-h 时整体滚动;
           // 提示词编辑框是固定高度,不会被可展开区块挤压。
           <div className="flex min-h-0 flex-1 flex-col gap-[18px] overflow-y-auto pt-[18px] pr-6 pb-[22px] pl-6">
+            {submitError && (
+              <ErrorNotice
+                message={t(`chat.remoteError.${parseAgentErrorCode(submitError)?.code}`)}
+                details={submitError}
+              />
+            )}
             <div className="flex flex-col gap-2">
               <label className="text-xs leading-[1.33] text-[var(--cmd-palette-item-meta)] dark:text-[var(--settings-section-desc)]">{t('scheduler.editor.fields.title')}</label>
               <div className="flex h-11 items-center rounded-full border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] px-4">

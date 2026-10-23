@@ -2625,6 +2625,13 @@ describe('CodexAgent permissions', () => {
       suggestions: undefined,
     });
     if (!handle.setPermissionMode) throw new Error('expected setPermissionMode');
+    // Owner takeover must apply to subsequent approvals in this same policy turn.
+    await handle.setPermissionMode('bypassPermissions');
+    await expect(handlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-wechat-policy', itemId: 'cmd-owner-takeover',
+      command: 'rm -rf build', cwd: '/repo',
+    })).resolves.toEqual({ decision: 'accept' });
+    expect(resolver).toHaveBeenCalledOnce();
     await handle.setPermissionMode('ask');
     expect(host.request).toHaveBeenCalledWith(Method.TurnInterrupt, {
       threadId: 'start-thread-id',
@@ -16080,7 +16087,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
-  it.each([false, true])('Auto to Full access retains turn scope without restoring MCP forced prompts (%s)', async (restricted) => {
+  it.each([false, true])('Auto to Full access applies the owner choice during review (IM policy=%s)', async (restricted) => {
     const gate = deferred<{ verdict: 'allow' }>();
     const review = vi.fn<AutoReviewDelegate>(() => gate.promise);
     const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction: review, getMcpToolApprovalPolicy: () => 'prompt-each-time' }));
@@ -16100,7 +16107,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     await vi.waitFor(() => expect(review).toHaveBeenCalledOnce());
     await handle.setPermissionMode!('bypassPermissions');
     gate.resolve({ verdict: 'allow' });
-    expect(await pending).toEqual({ action: restricted ? 'decline' : 'accept', content: null, _meta: null });
+    expect(await pending).toEqual({ action: 'accept', content: null, _meta: null });
     expect(resolver).not.toHaveBeenCalled();
     await handle.close();
   });
@@ -16518,18 +16525,22 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
-  it.each(['auto', 'bypassPermissions'] as const)('pending MCP approvals follow a switch to %s', async (mode) => {
+  it.each((['auto', 'bypassPermissions'] as const).flatMap(mode => [false, true].map(imPolicy => ({ mode, imPolicy }))))('pending MCP approvals follow a switch to $mode (IM policy=$imPolicy)', async ({ mode, imPolicy }) => {
     // Full 批准挂起请求；Auto 不能将尚未审阅的旧请求批量批准。
     const agent = new CodexAgent(createDeps({}, {
       getMcpToolApprovalPolicy: () => 'prompt-each-time',
     }));
-    const host = installFakeHost(agent);
+    const host = installFakeHost(agent, method => method === Method.TurnStart
+      ? { turn: { id: 'turn-1' } } : undefined);
 
     const handle = await agent.startSession({
       sessionId: 'session-high-risk-mode-switch',
       model: 'gpt-5.4',
       workingDir: '/repo',
       permissionMode: 'ask',
+    });
+    if (imPolicy) await handle.send({ type: 'user', content: 'Merge the contacts.' }, {
+      turnPermissionPolicy: { origin: { kind: 'im', channel: 'feishu' }, confirmationSurface: 'channel', forceConfirmToolCall: () => true },
     });
     const iterator = handle.events()[Symbol.asyncIterator]();
     const handlers = host.getThreadHandlers();
@@ -16554,7 +16565,9 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.setPermissionMode(mode);
 
     await expect(responsePromise).resolves.toEqual({ action: mode === 'auto' ? 'decline' : 'accept', content: null, _meta: null });
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
+    let dismissed = await nextEvent(iterator);
+    while (dismissed.type !== 'interaction_dismissed') dismissed = await nextEvent(iterator);
+    expect(dismissed).toMatchObject({
       type: 'interaction_dismissed',
       data: {
         reason: `permission_mode_changed_to_${mode}`,
@@ -21422,7 +21435,7 @@ describe('CodexAgent yield continuation', () => {
     await handle.close();
   });
 
-  it.each([false, true])('inherits the origin policies on yield continuation (text-only=%s)', async (toolsDisabled) => {
+  it.each([[false, false], [true, false], [false, true]])('inherits origin policies and current permissions on yield continuation (text-only=%s, Full access=%s)', async (toolsDisabled, fullAccess) => {
     const agent = new CodexAgent(createDeps({}, { registerCodexTextOnlyPolicy: () => () => {} }));
     let turnSeq = 0;
     const host = installFakeHost(agent, (method) => {
@@ -21451,6 +21464,7 @@ describe('CodexAgent yield continuation', () => {
     // The fake notification exercises continuation policy even though a real
     // text-only tool would have been denied before producing this output.
     await handle.send({ type: 'user', content: 'run typecheck' }, { turnPermissionPolicy: policy, toolsDisabled });
+    if (fullAccess) await handle.setPermissionMode!('bypassPermissions');
     const resumesBeforeContinuation = host.request.mock.calls.filter(([method]) => method === Method.ThreadResume).length;
     handlers.itemCompleted({
       threadId: 'start-thread-id',
@@ -21471,7 +21485,10 @@ describe('CodexAgent yield continuation', () => {
       expect(yieldTurnStartCalls(host)).toHaveLength(1);
     });
     const [, continuationParams] = yieldTurnStartCalls(host)[0] as [string, Record<string, unknown>];
-    expect(continuationParams).toMatchObject({
+    expect(continuationParams).toMatchObject(fullAccess ? {
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    } : {
       approvalPolicy: 'untrusted',
       sandboxPolicy: { type: 'readOnly' },
     });

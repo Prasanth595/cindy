@@ -5,7 +5,9 @@
     "title": "邮件",
     "openMailbox": "在邮箱中打开",
     "loading": "正在读取邮件…",
-    "failed": "未能读取这封邮件。请检查连接的邮箱账号后重试，或在邮箱中打开。",
+    "failed": "未能读取这封邮件。可以重试，或在邮箱中打开。",
+    "unavailable": "当前没有可用的邮件插件，可以在邮箱中打开这封邮件。",
+    "notReady": "邮件插件尚未完成设置。请先连接邮箱，或直接打开原链接。",
     "retry": "重试",
     "to": "收件人",
     "cc": "抄送",
@@ -20,7 +22,9 @@
     "collapseMessage": "收起来自 {{from}} 的邮件",
     "conversationFailed": "暂时无法读取前后邮件。",
     "messageCount": "共 {{count}} 封邮件",
-    "showMessages": "展开 {{count}} 封邮件"
+    "showMessages": "展开 {{count}} 封邮件",
+    "choosePlugin": "选择用哪个插件打开这封邮件。",
+    "personalPlugin": "个人插件"
   },
   "taskActionConfirmation": {
     "title": "确认任务操作",
@@ -966,6 +970,9 @@
     "handoffWindow": "代输入 · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任务暂不支持切换 Harness。请选择当前 Harness 下的模型，或使用所需 Harness 新建 SSH 任务。",
+    "MODEL_SELECTION_UNAVAILABLE": "所选模型在该供应商下已不可用。请在设置中检查连接，或重新选择可用模型。",
+    "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切换。请查看错误详情，待 Harness 就绪后重试。",
     "DEVICE_LINK_BUSY": "远端繁忙，请稍后重试。",
     "INVALID_PARAMS": "参数无效，请检查后重试。",
     "PRECONDITION_FAILED": "当前状态下无法执行此操作，请稍后重试。",
@@ -6635,7 +6642,7 @@
         "installMeta": "版本 {{version}} · {{source}}",
         "updateMeta": "版本 {{from}} → {{to}} · {{source}}",
         "installDescription": "确认后才会安装，装好后立即启用，可随时在插件页停用或卸载。",
-        "updateDescription": "新版本需要更多权限，确认后才会更新；在此之前旧版本照常可用。",
+        "updateDescription": "确认后才会更新；在此之前旧版本照常可用。",
         "grantsTitle": "安装后它将拥有：",
         "noPermissions": "这个插件没有声明额外权限。",
         "addedTitle": "新增或变化的权限：",
@@ -6652,7 +6659,11 @@
         "confirmInstall": "安装",
         "confirmUpdate": "更新",
         "cancel": "取消",
-        "updateNeedsConsent": "需确认新权限"
+        "updateNeedsConsent": "需确认新权限",
+        "targetIdentity": "安装位置：{{name}}",
+        "personalTarget": "个人",
+        "sourceChanged": "这次更新会改为本地来源。旧账号和数据会隔离保存，需要重新连接账号。",
+        "otherCopies": "已有 {{count}} 份同名插件；它们不会被覆盖或停用。另装的插件需要单独连接账号。"
       },
       "trust": {
         "official": "Cindy 官方插件",
@@ -9756,7 +9767,8 @@
           "archived": "本群已归档，可继续查看历史记录。",
           "noneHint": "本群只有伙伴的主人可以让伙伴回应。",
           "companionPermissions": "伙伴权限",
-          "configureCapabilities": "工具与授权设置"
+          "configureCapabilities": "工具与授权设置",
+          "capabilityScope": "这是 {{name}} 自己的工具与授权，不是仅限本群的设置。"
         }
       },
       "lifecycle": {
@@ -12266,6 +12278,9 @@
       "daemonNotReady": "{{manager}} 升级完成，但远端 daemon 暂未启动 — 请手动重新发送消息"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任务暂不支持切换 Harness。请选择当前 Harness 下的模型，或使用所需 Harness 新建 SSH 任务。",
+      "MODEL_SELECTION_UNAVAILABLE": "所选模型在该供应商下已不可用。请在设置中检查连接，或重新选择可用模型。",
+      "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切换。请查看错误详情，待 Harness 就绪后重试。",
       "DEVICE_LINK_BUSY": "远端繁忙，请稍后重试。",
       "REMOTE_DAEMON_CLOSED": "远端连接中断了，可能正在更新。这一轮已经结束，请重新发送。",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "远端任务无法访问本地文件/图片附件。请直接粘贴内容。",
@@ -12951,6 +12966,7 @@
         "moveToProjectRunningBlocked": "任务正在运行，结束后再移动",
         "moveToProjectAttachedBlocked": "任务正在被接管，结束接管后再移动",
         "moveToProjectRemoteUnsupported": "暂不支持移动远程任务",
+        "moveToProjectWorktreeBlocked": "该任务的工作目录是 worktree，暂不支持移动到其他项目",
         "openInNewWindow": "在新窗口打开",
         "exportShare": "导出任务…",
         "exportHtml": "导出为 HTML…",
@@ -17043,6 +17059,10 @@
     "exitFullscreen": "退出全屏"
   },
   "richAnswer": {
+    "send": "发送消息",
+    "sending": "正在发送…",
+    "sent": "已提交",
+    "sendFailed": "消息未提交，已保留填写内容",
     "playVideo": "播放视频",
     "openVideoSource": "打开原视频",
     "calculationUnavailable": "此项暂时无法计算。",

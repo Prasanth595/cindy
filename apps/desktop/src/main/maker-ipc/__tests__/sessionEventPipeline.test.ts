@@ -3,6 +3,7 @@ import type { TurnUsageContext } from '../turnUsageContext.js';
 import { Session, type AgentEvent, type AgentSessionHandle } from '@cindy/maker-core';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { handleSessionEvent, type SessionEventDependencies } from '../sessionEventPipeline.js';
+import { createBotCompactRuntimeRefreshCoordinator } from '../botCompactRuntimeRefresh.js';
 import { createContextOverflowRollover } from '../contextOverflowRollover.js';
 import { setMainLocale } from '../../i18n.js';
 import { installSessionTurnObserver } from '../sessionTurnObserver.js';
@@ -68,6 +69,9 @@ vi.mock('../../turnCostBroadcaster.js', () => ({
 }));
 vi.mock('../../modelMismatchBroadcaster.js', () => ({
   recordModelMismatchOnMessage: effects.fn('recordModelMismatchOnMessage'),
+}));
+vi.mock('../botLearningReview.js', () => ({
+  reviewTeammateLearning: effects.fn('reviewTeammateLearning'),
 }));
 vi.mock('../../usage/claudeAccountUsage.js', () => ({
   triggerClaudeAccountUsageRefresh: effects.fn('triggerClaudeAccountUsageRefresh'),
@@ -554,9 +558,11 @@ describe('production Session event pipeline', () => {
   it.each(['completed', 'failed', 'cancelled', 'interrupted'])(
     'runs the upstream-merge follow-up only for a successful product boundary: %s', async (status) => {
       const h = harness();
+      effects.fn('consumeLastTopLevelAssistantPersistId').mockReturnValueOnce('completed-reply');
       h.emit(event('status', { isRunning: true }));
       h.emit(event('done', { status }));
       await microtasks();
+      expect(effects.fn('reviewTeammateLearning')).not.toHaveBeenCalled();
       expect(h.deps.onSuccessfulProductTurn).toHaveBeenCalledTimes(status === 'completed' ? 1 : 0);
       expect(h.deps.onUnsuccessfulProductTurn).toHaveBeenCalledTimes(status === 'completed' ? 0 : 1);
       await h.dispose();
@@ -2214,10 +2220,18 @@ describe('Bot adapters in the shared event pipeline', () => {
     await h.dispose();
   });
 
-  it('carries a pending follow-up into task settlement and remembers compact boundaries without rebuilding early', async () => {
+  it('keeps native compaction in the current runtime while allowing explicit resource refresh', async () => {
     const h = harness();
+    const close = vi.fn(async () => {});
+    const bootstrap = vi.fn(async () => {});
+    const coordinator = createBotCompactRuntimeRefreshCoordinator({
+      hasPendingInteraction: () => false,
+      refresh: async () => { await close(); await bootstrap(); return 'refreshed'; },
+    });
+    h.deps.botCompactRuntimeRefreshCoordinator.noteBoundary = vi.fn(coordinator.noteBoundary);
+    h.deps.attemptBotCompactRuntimeRefresh.mockImplementation(() => { void coordinator.attempt(h.session); });
     h.emit(event('compact_boundary'));
-    expect(h.deps.botCompactRuntimeRefreshCoordinator.noteBoundary).toHaveBeenCalledWith(h.session);
+    expect(h.deps.botCompactRuntimeRefreshCoordinator.noteBoundary).not.toHaveBeenCalled();
     // 原生摘要可能丢掉账本内容:下一次发送补一份工作记忆。
     expect(h.deps.workingMemoryRefresh.markCompacted).toHaveBeenCalledWith('task');
     // 原生摘要可能丢掉了环境说明:下一轮整体重发。
@@ -2230,6 +2244,13 @@ describe('Bot adapters in the shared event pipeline', () => {
       childSessionId: 'task', resultText: 'first result', hadPendingInputAtTerminal: true,
     }));
     expect(h.deps.attemptBotCompactRuntimeRefresh).toHaveBeenCalledWith(h.session, 'event:done');
+    expect(close).not.toHaveBeenCalled();
+    expect(bootstrap).not.toHaveBeenCalled();
+    coordinator.noteBoundary(h.session);
+    await coordinator.attempt(h.session);
+    expect(close).toHaveBeenCalledOnce();
+    expect(bootstrap).toHaveBeenCalledOnce();
+    await h.dispose();
   });
 });
 

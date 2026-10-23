@@ -132,7 +132,8 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
 产品要求：Device Link 的设备间功能(含手机)在两端已授权、网络实际可达时优先直连，
 直连失败、超时或中途断开时自动改走 relay，不能让功能卡住，也不能重复执行命令。
 选路与兜底在 `packages/device-link` 统一实现(`directPath.ts` 与 `DeviceLinkClient`)，
-平台只负责建立通道并调用 `attachDirectPath`。
+`directNegotiation.ts` 在双方可靠链路确认后自动协商，平台提供数据专用 WebRTC runtime，
+由统一协商层调用 `attachDirectPath`，不要求用户手工建立通道。
 
 - **分工**：relay 仍是控制面——登录、在线状态、账号归属、link-open/accept/close、
   链路确认 ACK 都只走 relay。直连只承载已建立可靠链路上的 reliable-transport 帧
@@ -151,9 +152,22 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
   `packages/device-link/src/__tests__/client.test.ts`「直连优先、中继兜底」：两个控制端
   共用同一被控端，其中一个的直连静默，断言命令只执行一次、结果经 relay 送达，另一个
   控制端仍走直连、在途请求与 relay 连接不受影响。
-- **范围**：本阶段只有连接层选路与兜底，没有平台接入通道时行为与改动前完全相同，
-  也没有 wire 变更。relay 断线期间链路随之复位，直连暂不单独维持链路。Desktop 与
-  Mobile 经已授权信令建立 WebRTC 直连、手机局域网权限等平台接入另行实现。
+- **接入**：Desktop 复用 `DesktopCaptureWindow` 的隔离数据进程(`mode=direct`)，Mobile
+  使用 `DirectLinkTransport.tsx` 的隔离 WebView；二者共用 `directRtcRuntime.ts` 与
+  `directRuntimeBridge.ts`。只收集 host ICE candidates（不请求 STUN/TURN），局域网不可达
+  继续走现有 relay；协商不阻塞正在进行的业务请求。同账号远程供应商的控制、结果和推送
+  复用同一条数据路径。手机退后台、WebView 崩溃、账号/区域切换立即释放旧通道。
+- **兼容**：双方都声明 `direct-link-v1` 才尝试。信令以既有 relay push 承载，绑定两端
+  当前 stream；旧端、平台尚未就绪或协商失败均继续使用 relay。每对设备只有字典序较小的
+  deviceId 发起 offer，失败按 5–60 秒退避；最多 16 个 peer，单次协商 15 秒。
+  relay 断线仍复位链路，直连暂不独立维持；不新增服务端依赖或 Mobile 原生依赖/配置。
+- **验证**：`client.test.ts` 的自动协商矩阵覆盖新旧端、平台不可用、远程 Agent 调用和两个
+  控制端隔离回退；`directRuntimeBridge.test.ts` 覆盖桥接背压、迟到事件与流代次；
+  `scripts/direct-link-smoke.mjs <Chrome路径>` 运行真实 WebRTC 与手机静态 runtime，验证
+  UTF-8 大结果不经中继、断线回退只执行一次、另一控制端继续直连。该浏览器验证不能替代
+  iOS/Android 和两台真实电脑的跨设备验收。
+  `node scripts/direct-link-electron-smoke.mjs` 另外启动两个临时 Electron 进程，验证生产
+  Main/preload/隔离 renderer 的真实 IPC、WebRTC 与中继回退；账号和 userData 均为独立 fixture。
 
 ## 远程 Agent 的拉取与恢复(`maker:remote-agent:v1`)
 

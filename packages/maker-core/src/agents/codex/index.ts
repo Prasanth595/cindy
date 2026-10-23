@@ -4898,7 +4898,7 @@ assertRouteCurrent();
     };
     const forceTurnConfirmation = (toolName: string, input: unknown): boolean => {
       const policy = activeTurnPermissionPolicy;
-      if (!policy) return false;
+      if (!policy || mutablePermissionMode === 'bypassPermissions') return false;
       try {
         return policy.forceConfirmToolCall(toolName, input) === true;
       } catch (error) {
@@ -6732,7 +6732,7 @@ assertRouteCurrent();
       // those handlers auto-accept non-forced actions in Auto mode.
       const turnApprovalConfig: CodexPermissionConfig = reviewMode
         ? { approvalPolicy: 'never', sandbox: 'read-only' }
-        : activeTurnPermissionPolicy
+        : activeTurnPermissionPolicy && mutablePermissionMode !== 'bypassPermissions'
           ? {
             approvalPolicy: 'untrusted',
             sandbox: 'read-only',
@@ -6749,7 +6749,7 @@ assertRouteCurrent();
       };
       if (
         currentWorkspacePermissionProfile() !== undefined &&
-        !activeTurnPermissionPolicy
+        (!activeTurnPermissionPolicy || mutablePermissionMode === 'bypassPermissions')
       ) {
         // The profile was selected on thread/start or thread/resume. Repeating
         // the selector here makes Codex 0.145.0 reload its base config (which
@@ -7933,8 +7933,6 @@ assertRouteCurrent();
       reviewing?: boolean;
       turnId: string | null;
       itemId?: string;
-      /** 本轮来源/执行范围约束独立于 MCP 的逐次审批偏好。 */
-      turnPolicyForcePrompt?: boolean;
       /** Auto 审阅故障降级来的确认:系统收口不能当成用户点了拒绝。 */
       unavailableHandoff?: boolean;
       onSystemDenied?: (reason: string) => void;
@@ -8226,7 +8224,7 @@ assertRouteCurrent();
         // auto_review 负责；fallback 路由则由 user reviewer 把越界请求发回客户端，
         // 再由 Cindy reviewer 静默裁决。
         // MCP 的逐次审批标记不能覆盖用户选择的 Full access。
-        // 独立的本轮执行范围约束仍由 turn policy 决定。
+        // 主人运行中选择 Full access 后，本轮 IM 策略同样跟随当前权限。
         if (
           mutablePermissionMode === 'bypassPermissions' &&
           !turnPolicyForcePrompt
@@ -8286,11 +8284,6 @@ assertRouteCurrent();
           // await 期间经 setPermissionMode 的重赋值,仍视此处为 'auto';运行期确实可能已变。
           const modeAfterReview = mutablePermissionMode as PermissionMode;
           if (modeAfterReview === 'bypassPermissions') {
-            if (turnPolicyForcePrompt) {
-              denialReason = formatPermissionDenial('system', 'Permission mode changed; retry within the authorized turn scope.');
-              reportMcpDenial('system');
-              return 'decline';
-            }
             return 'accept';
           }
           if (modeAfterReview !== reviewPermissionMode) {
@@ -8330,7 +8323,6 @@ assertRouteCurrent();
             settled: false,
             turnId,
             ...(opts?.itemId ? { itemId: opts.itemId } : {}),
-            turnPolicyForcePrompt,
             ...(unavailableHandoff ? { unavailableHandoff: true } : {}),
             onSystemDenied: (reason) => reportMcpDenial('system', reason, false),
           };
@@ -8396,15 +8388,14 @@ assertRouteCurrent();
         if (entry.settled || (preserveReviewing && entry.reviewing)) continue;
         entry.settled = true;
         pendingApprovals.delete(requestId);
-        const effectiveResolveAs = resolveAs === 'allow' && entry.turnPolicyForcePrompt ? 'deny' : resolveAs;
-        if (effectiveResolveAs === 'deny') entry.onSystemDenied?.(reason);
-        if (effectiveResolveAs === 'deny' && entry.unavailableHandoff && entry.kind !== 'mcpServerElicitation') {
+        if (resolveAs === 'deny') entry.onSystemDenied?.(reason);
+        if (resolveAs === 'deny' && entry.unavailableHandoff && entry.kind !== 'mcpServerElicitation') {
           autoReviewConfirmUndeliveredNotice.notify();
         }
-        entry.resolve(effectiveResolveAs === 'allow' ? 'accept' : 'decline', reason);
+        entry.resolve(resolveAs === 'allow' ? 'accept' : 'decline', reason);
         eventQueue.push({
           type: 'interaction_dismissed',
-          data: { requestId, reason, resolvedAs: effectiveResolveAs },
+          data: { requestId, reason, resolvedAs: resolveAs },
           source: 'codex',
         });
       }
@@ -13266,7 +13257,11 @@ assertRouteCurrent();
         }
         if (
           sendOpts.turnPermissionPolicy &&
-          mutablePermissionMode === 'bypassPermissions'
+          mutablePermissionMode === 'bypassPermissions' &&
+          // Internal continuations belong to the turn the owner just took over.
+          // New externally supplied policy turns still undergo normal admission.
+          !(sendOpts as CodexInternalSendOptions)[CODEX_INTERNAL_CONTINUATION] &&
+          !(sendOpts as CodexInternalSendOptions)[CODEX_INTERACTION_CONTINUATION]
         ) {
           throw new TurnPermissionPolicyUnsupportedError(
             'codex',

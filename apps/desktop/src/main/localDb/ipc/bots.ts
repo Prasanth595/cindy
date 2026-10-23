@@ -10,6 +10,8 @@ import { listBotSkillsForBot } from '../../maker-ipc/botSkillService.js';
 import { provisionDefaultBot } from '../../maker-ipc/botDefaultProvisioning.js';
 import { BOT_TEMPLATE_PRESET_AVATARS, CINDY_DEFAULT_IDENTITY } from '../../../shared/botTemplatePreset.js';
 import fs from 'node:fs/promises';
+import { chooseAvatarSource } from '../../profileEdit.js';
+import { toSdrAvatarImage } from '../../hdrAvatarToSdr.js';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -2167,6 +2169,30 @@ export function registerBotIpc(): void {
     const profile = await readRemoteBotProfile(client, botId);
     if (!profile) throwIpcError('NOT_FOUND', 'Bot 不存在');
     return profile;
+  });
+
+  // Source preparation is local-only and account-independent, including for a
+  // Bot that has not been created yet. Saving still uses choose-avatar below.
+  ipcMain.handle('local-db:bots:choose-avatar-source', async (event) => {
+    assertTrustedAppRendererEvent(event);
+    const boundary = captureBotOperationOwner();
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const source = await chooseAvatarSource({
+      showAvatarOpenDialog: async () => {
+        const options: OpenDialogOptions = {
+          properties: ['openFile'],
+          filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+        };
+        const selection = owner
+          ? await dialog.showOpenDialog(owner, options)
+          : await dialog.showOpenDialog(options);
+        return selection.canceled ? null : selection.filePaths[0] ?? null;
+      },
+      readFile: (filePath) => fs.readFile(filePath),
+      toSdrAvatar: toSdrAvatarImage,
+    });
+    boundary.assertCurrent();
+    return source;
   });
 
   ipcMain.handle('local-db:bots:choose-avatar', async (event, raw: unknown) => {

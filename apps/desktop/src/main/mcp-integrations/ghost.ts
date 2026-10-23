@@ -110,6 +110,7 @@ import {
   isGhostAvailableForActiveSession,
 } from '../cindy-brain/index.js';
 import { writeForgeScaffoldWithStableParent } from '../cindy-brain/forgeScaffoldCapability.js';
+import { GhostInstallTargetRequiredError } from '../cindy-brain/ghostInstallTarget.js';
 import { getGhostSetupCoordinator } from '../cindy-brain/ghostSetupCoordinator.js';
 import { classifyGhostVisibility, classifyInstalledGhostVisibility } from '../cindy-brain/ghostVisibility.js';
 import { readInstalledGhostManual } from '../cindy-brain/ghostManual.js';
@@ -2584,7 +2585,7 @@ export function getCindyGhostsMcpDeps(
         };
       });
     },
-    async forgeInstall({ dir, iconSource }): Promise<CindyForgeInstallResult> {
+    async forgeInstall({ dir, iconSource, targetInstanceId, installCopy, namespace }): Promise<CindyForgeInstallResult> {
       const sessionContext = resolveSessionContext();
       const packedAttempt = await withForgeOwnerLease(async (mutationOwner) => {
         const gate = await getForgeSessionFsGate(sessionContext);
@@ -2623,6 +2624,9 @@ export function getCindyGhostsMcpDeps(
             packageSha256: createHash('sha256').update(packedAttempt.packed.buf).digest('hex'),
             consentPrompt: installConsentPrompt(),
             mutationOwner: packedAttempt.mutationOwner,
+            ...(targetInstanceId !== undefined ? { targetInstanceId } : {}),
+            ...(installCopy !== undefined ? { installCopy } : {}),
+            ...(namespace !== undefined ? { namespace } : {}),
             ...(packedAttempt.isCurrent ? { isCurrent: packedAttempt.isCurrent } : {}),
           },
         );
@@ -2639,12 +2643,20 @@ export function getCindyGhostsMcpDeps(
           name: installed.ghost.manifest.name,
           version: installed.ghost.manifest.version,
           enabled: installed.ghost.enabled,
+          instanceId: installedGhostStoragePart(installed.ghost),
+          namespace: installed.ghost.namespace ?? null,
           note:
             installed.action === 'installed'
               ? `${packedAttempt.iconNote}插件已完成校验、打包和安装，并已启用。`
-              : `${packedAttempt.iconNote}插件已完成校验、打包和原位更新；原有启用状态、配置与数据保持不变。`,
+              : installed.sourceChanged
+                ? `${packedAttempt.iconNote}插件已换为本地来源；旧账号与数据已隔离保存，需要在当前插件中重新连接账号。`
+                : `${packedAttempt.iconNote}插件已完成校验、打包和原位更新；原有启用状态、配置与数据保持不变。`,
         };
       } catch (err) {
+        if (err instanceof GhostInstallTargetRequiredError) return {
+          ok: false, errorCode: 'INSTALL_TARGET_REQUIRED', message: err.message,
+          targets: err.targets, copyNamespace: err.copyNamespace,
+        };
         if (isIpcError(err) && err.code === 'MUTATION_CANCELLED') {
           return {
             ok: false,

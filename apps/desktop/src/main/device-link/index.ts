@@ -15,6 +15,7 @@ import { PluginSyncAccess } from './pluginSyncAccess.js';
 
 import os from 'node:os';
 import { tryPeerInvoke, stopFilePeers } from './filePeer';
+import { desktopDirectRuntime } from './directLink';
 import { assertBackgroundLinkAccepted, linkOpenCapabilities } from './backgroundLink';
 import { deviceName, initializeDeviceName } from './deviceName';
 import { desktopTransferCodec } from './transferCodec';
@@ -704,6 +705,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     return membership && token ? { realm: authManager.getActiveAuthRealm(), membership, authDevice: authManager.getDeviceId(), token } : null;
   };
   client = new DeviceLinkClient({
+    directRuntime: desktopDirectRuntime,
     getWsUrl: wsUrl,
     transferCodec: desktopTransferCodec,
     getToken: async () => {

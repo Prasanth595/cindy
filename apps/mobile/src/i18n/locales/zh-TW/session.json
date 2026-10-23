@@ -585,6 +585,9 @@
     "taskAlreadyCreated": "電腦上已建立這個任務，已保存的訊息會在原任務中繼續傳送。"
   },
   "remoteError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任務暫不支援切換 Harness。請選擇目前 Harness 下的模型，或使用所需 Harness 建立新的 SSH 任務。",
+    "MODEL_SELECTION_UNAVAILABLE": "所選模型在該供應商下已無法使用。請在設定中檢查連線，或重新選擇可用模型。",
+    "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切換。請查看錯誤詳細資訊，待 Harness 就緒後重試。",
     "REMOTE_AGENT_GROUP_USAGE_LIMIT": "此模型的可用帳號已達到用量上限。可改用其他模型，或等配額重置後繼續。",
     "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以在電腦上這個供應商的「遠端與分享」頁查看組內電腦。",
     "REMOTE_DAEMON_CLOSED": "遠端連線中斷了，可能正在更新。這一輪已經結束，請重新傳送。",

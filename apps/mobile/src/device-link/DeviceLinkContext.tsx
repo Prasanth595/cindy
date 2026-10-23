@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { DirectLinkTransport } from './DirectLinkTransport';
 import { tryMobilePeerInvoke, resetMobilePeer } from './peerFileRegistry';
 import { isHistoryViewUnavailable, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import { findRemoteHistoryView } from '@/session/remoteHistoryView';
@@ -12,6 +13,7 @@ import { dispatchCredentialSwitchOutcome } from '@/session/credentialSwitchOutco
 import { mobileRuntimeIdentity } from '@/debug/mobileRuntimeIdentity';
 import {
   DeviceLinkClient,
+  createDirectRuntimeBridge,
   isSharedTaskPeer,
   probeSharedTaskHost,
   sharedTaskTopics,
@@ -385,6 +387,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
   }
 
   const auth = useAuth();
+  const [directBridge] = useState(() => createDirectRuntimeBridge());
   const sharedTaskApi = useSharedTaskApi();
   const currentDataOwnerIdRef = useRef<string | null>(auth.user?.id ?? null);
   currentDataOwnerIdRef.current = auth.user?.id ?? null;
@@ -953,6 +956,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     // 会被 scheduler generation 丢弃，不能写回新账号。
     peerRecoverySchedulerRef.current?.clear();
     const client = new DeviceLinkClient({
+      directRuntime: directBridge.runtime,
       getWsUrl: () => deviceLinkWsUrl(),
       getToken: auth.getAccessToken,
       getHello: () => ({
@@ -1656,7 +1660,11 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     subscriptionVersion,
   ]);
 
-  return <DeviceLinkContext.Provider value={value}>{children}</DeviceLinkContext.Provider>;
+  return <DeviceLinkContext.Provider value={value}>
+    <DirectLinkTransport key={`${auth.accountGeneration}:${connectionEpoch}`} bridge={directBridge}
+      owner={`${auth.accountGeneration}:${connectionEpoch}`} enabled={auth.isAuthenticated && status === 'online'} />
+    {children}
+  </DeviceLinkContext.Provider>;
 }
 
 function VisualMockDeviceLinkProvider({ children }: { children: ReactNode }) {

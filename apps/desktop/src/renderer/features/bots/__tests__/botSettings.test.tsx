@@ -7,6 +7,13 @@ import { MainViewHistoryContext, type MainViewHistory } from '@/contexts/MainVie
 import type { CustomMcpListContext, CustomMcpListResult } from '../../../../shared/customMcp';
 import { beginProvidersRefresh, commitProvidersSnapshot } from '@/lib/providersSnapshotStore';
 
+// #6889 unit regression: the real settings picker must wait for crop
+// confirmation; the old upload-only assertion skipped cancellation entirely.
+vi.mock('@/components/settings/avatarCropImage', () => ({
+  loadAvatarSource: async () => ({ bitmap: { close() {} }, size: { width: 800, height: 400 } }),
+  exportAvatarCrop: async () => ({ blob: new Blob(['cropped'], { type: 'image/png' }) }),
+}));
+
 vi.mock('@/state/modelVisibilityPrefs', () => ({ migrateModelVisibilityDefaults: vi.fn() }));
 
 vi.mock('@/hooks/useProviderOnboarding', () => ({
@@ -732,20 +739,35 @@ describe('Bot settings unified autosave', () => {
     }
   });
 
-  it('keeps the current avatar until uploading through the shared gallery', async () => {
-    vi.useFakeTimers();
-    renderSettings();
-    fireEvent.click(screen.getByRole('button', { name: 'bots.profile.changeAvatar' }));
-    expect(screen.getByRole('button', { name: 'Cindy' })).toBeTruthy();
-    expect(mocks.chooseBotAvatar).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'bots.guided.upload' }));
-    await act(async () => {
-      await vi.runAllTimersAsync();
-    });
-    expect(mocks.chooseBotAvatar).toHaveBeenCalledWith('bot-1');
-    expect(document.querySelector('img')?.getAttribute('src')).toBe(
-      `cindy-media://blobs/${'a'.repeat(64)}.png`,
-    );
+  it('keeps the local Bot avatar through crop cancellation and saves only confirmed bytes', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const source = vi.fn(async () => ({ canceled: false, previewDataUrl: 'data:image/png;base64,c2Ry' }));
+    window.electronAPI.localDb.bots.chooseAvatarSource = source;
+    window.electronAPI.profileChooseAvatar = vi.fn(async () => { throw new Error('Local mode has no account'); });
+    const previous = `cindy-media://blobs/${'b'.repeat(64)}.png`;
+    try {
+      renderSettings({ avatar: previous });
+      const upload = () => {
+        fireEvent.click(screen.getByRole('button', { name: 'bots.profile.changeAvatar' }));
+        fireEvent.click(screen.getByRole('button', { name: 'bots.guided.upload' }));
+      };
+      upload();
+      await screen.findByRole('alertdialog');
+      expect(mocks.chooseBotAvatar).not.toHaveBeenCalled();
+      expect(document.querySelector('img')?.getAttribute('src')).toBe(previous);
+      fireEvent.click(screen.getByRole('button', { name: 'settings.userProfile.edit.cancel' }));
+      expect(mocks.chooseBotAvatar).not.toHaveBeenCalled();
+      upload();
+      await screen.findByRole('alertdialog');
+      fireEvent.click(screen.getByRole('button', { name: 'settings.userProfile.edit.crop.done' }));
+      await waitFor(() => expect(mocks.chooseBotAvatar).toHaveBeenCalledExactlyOnceWith('bot-1', 'Y3JvcHBlZA=='));
+      expect(document.querySelector('img')?.getAttribute('src')).toBe(`cindy-media://blobs/${'a'.repeat(64)}.png`);
+      expect(mocks.updateBotProfile).not.toHaveBeenCalled();
+      expect(source).toHaveBeenCalledTimes(2);
+      expect(window.electronAPI.profileChooseAvatar).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('turns memory on and off from the memory page', async () => {

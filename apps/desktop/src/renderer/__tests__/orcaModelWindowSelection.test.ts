@@ -75,7 +75,7 @@ describe('Orca same-Agent window preflight', () => {
       h.confirmDialog.mockResolvedValue(true);
       expect(await h.pick(agent, 'small', 'provider')).toBe(true);
       expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', agent, 'small', 'provider', 'high', false,
-        { confirmedContextWindow: 200000 });
+        { confirmedContextWindow: 200000 }, undefined);
     }
   });
 
@@ -123,7 +123,7 @@ describe('Orca same-Agent window preflight', () => {
       expect(await h.pick('codex', 'small', 'provider')).toBe(true);
       expect(h.confirmDialog).not.toHaveBeenCalled();
       expect(h.bindings.toast.error).not.toHaveBeenCalled();
-      expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', 'codex', 'small', 'provider', 'high', false);
+      expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', 'codex', 'small', 'provider', 'high', false, undefined, undefined);
     }
   });
 
@@ -142,7 +142,7 @@ describe('Orca same-Agent window preflight', () => {
       expect(h.confirmDialog).not.toHaveBeenCalled();
       expect(h.bindings.resolveProviderModelContextWindow).not.toHaveBeenCalled();
       expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', 'codex', 'small', 'provider', 'high', false,
-        { agentDeviceId: 'share:alice-share' });
+        { agentDeviceId: 'share:alice-share' }, undefined);
     }
   });
 
@@ -157,7 +157,7 @@ describe('Orca same-Agent window preflight', () => {
   it('does not turn an unknown target window into acknowledgement', async () => {
     const h = setup({ target: Number.NaN });
     expect(await h.pick('codex', 'unknown', 'provider')).toBe(true);
-    expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', 'codex', 'unknown', 'provider', 'high', false);
+    expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', 'codex', 'unknown', 'provider', 'high', false, undefined, undefined);
   });
 
   it('rechecks a pending route when selected again, while axis-only edits skip the dialog', async () => {
@@ -169,7 +169,7 @@ describe('Orca same-Agent window preflight', () => {
     h.confirmDialog.mockResolvedValue(true);
     expect(await h.pick('claude-code', 'old-model', 'old-provider')).toBe(true);
     expect(h.switchSessionAgent).toHaveBeenLastCalledWith('s1', 'claude-code', 'old-model', 'old-provider', 'high', false,
-      { confirmedContextWindow: 200000 });
+      { confirmedContextWindow: 200000 }, undefined);
     h.confirmDialog.mockClear();
     expect(await h.pick('claude-code', 'old-model', 'old-provider', { effort: 'high', axesOnly: true })).toBe(true);
     expect(h.confirmDialog).not.toHaveBeenCalled();
