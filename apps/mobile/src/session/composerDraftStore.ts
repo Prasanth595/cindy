@@ -1,8 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { composerDocumentsEqual, parseStoredComposerDocument, composerDocumentProjectedText, type ComposerDocument } from '@/session/composerDocument';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
+import { mobileDraftScopeKey } from './draftOwnerScope';
+import { composerDocumentsEqual, parseStoredComposerDocument, composerDocumentProjectedText, prependComposerNodes, textComposerDocument, type ComposerDocument, type ComposerNode } from '@/session/composerDocument';
 
-const STORAGE_KEY_PREFIX = 'xdt.mobileComposerDraft.v1';
-const DOCUMENT_STORAGE_KEY_PREFIX = 'xdt.mobileComposerDocument.v1';
+// v1 keys have no owner evidence. Preserve them for rollback, but never assign
+// their contents to whichever account happens to sign in after upgrading.
+const STORAGE_KEY_PREFIX = 'xdt.mobileComposerDraft.v2';
+const DOCUMENT_STORAGE_KEY_PREFIX = 'xdt.mobileComposerDocument.v2';
 const PERSIST_DEBOUNCE_MS = 400;
 const drafts = new Map<string, string>();
 const clearedDrafts = new Set<string>();
@@ -11,9 +15,11 @@ const pendingPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingDocumentPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingStorageOperations = new Map<string, Promise<void>>();
 const documentDrafts = new Map<string, ComposerDocument>();
+const recoveryListeners = new Map<string, Set<(document: ComposerDocument) => void>>();
+let clearGeneration = 0;
 
-export function saveComposerDraft(sessionId: string, text: string | null | undefined): void {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export function saveComposerDraft(sessionId: string, text: string | null | undefined, owner = getMobileAuthOwner()): void {
+  const normalizedSessionId = mobileDraftScopeKey(sessionId, owner);
   if (!normalizedSessionId) return;
 
   const key = storageKeyForSession(normalizedSessionId);
@@ -31,8 +37,8 @@ export function saveComposerDraft(sessionId: string, text: string | null | undef
   schedulePersist(normalizedSessionId, key, value);
 }
 
-export function saveComposerDocumentDraft(sessionId: string, document: ComposerDocument): void {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export function saveComposerDocumentDraft(sessionId: string, document: ComposerDocument, owner = getMobileAuthOwner()): void {
+  const normalizedSessionId = mobileDraftScopeKey(sessionId, owner);
   if (!normalizedSessionId) return;
   const key = documentStorageKeyForSession(normalizedSessionId);
   if (document.nodes.length === 0) {
@@ -48,19 +54,21 @@ export function saveComposerDocumentDraft(sessionId: string, document: ComposerD
   scheduleDocumentPersist(normalizedSessionId, key, document, serialized);
 }
 
-export function readComposerDocumentDraftSync(sessionId: string): ComposerDocument | null {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export function readComposerDocumentDraftSync(sessionId: string, owner = getMobileAuthOwner()): ComposerDocument | null {
+  const normalizedSessionId = mobileDraftScopeKey(sessionId, owner);
   if (!normalizedSessionId || clearedDocumentDrafts.has(normalizedSessionId)) return null;
   return documentDrafts.get(normalizedSessionId) ?? null;
 }
 
-export async function readComposerDocumentDraft(sessionId: string): Promise<ComposerDocument | null> {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export async function readComposerDocumentDraft(sessionId: string, owner = getMobileAuthOwner()): Promise<ComposerDocument | null> {
+  const normalizedSessionId = mobileDraftScopeKey(sessionId, owner);
   if (!normalizedSessionId) return null;
   const memory = documentDrafts.get(normalizedSessionId);
   if (memory) return memory;
   if (clearedDocumentDrafts.has(normalizedSessionId)) return null;
+  const generation = clearGeneration;
   const stored = await AsyncStorage.getItem(documentStorageKeyForSession(normalizedSessionId)).catch(() => null);
+  if (generation !== clearGeneration || !isMobileAuthOwnerCurrent(owner)) return null;
   const freshMemory = documentDrafts.get(normalizedSessionId);
   if (freshMemory) return freshMemory;
   if (clearedDocumentDrafts.has(normalizedSessionId)) return null;
@@ -75,22 +83,24 @@ export async function readComposerDocumentDraft(sessionId: string): Promise<Comp
   }
 }
 
-export function readComposerDraftSync(sessionId: string): string | null {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export function readComposerDraftSync(sessionId: string, owner = getMobileAuthOwner()): string | null {
+  const normalizedSessionId = mobileDraftScopeKey(sessionId, owner);
   if (!normalizedSessionId) return null;
   if (clearedDrafts.has(normalizedSessionId)) return null;
   return drafts.get(normalizedSessionId) ?? null;
 }
 
-export async function readComposerDraft(sessionId: string): Promise<string | null> {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export async function readComposerDraft(sessionId: string, owner = getMobileAuthOwner()): Promise<string | null> {
+  const normalizedSessionId = mobileDraftScopeKey(sessionId, owner);
   if (!normalizedSessionId) return null;
 
   const memoryDraft = drafts.get(normalizedSessionId);
   if (memoryDraft !== undefined) return memoryDraft;
   if (clearedDrafts.has(normalizedSessionId)) return null;
 
+  const generation = clearGeneration;
   const storedDraft = await AsyncStorage.getItem(storageKeyForSession(normalizedSessionId)).catch(() => null);
+  if (generation !== clearGeneration || !isMobileAuthOwnerCurrent(owner)) return null;
   const freshMemoryDraft = drafts.get(normalizedSessionId);
   if (freshMemoryDraft !== undefined) return freshMemoryDraft;
   if (clearedDrafts.has(normalizedSessionId)) return null;
@@ -99,14 +109,14 @@ export async function readComposerDraft(sessionId: string): Promise<string | nul
   return storedDraft;
 }
 
-export async function consumeComposerDraft(sessionId: string): Promise<string | null> {
-  const value = await readComposerDraft(sessionId);
-  clearComposerDraft(sessionId);
+export async function consumeComposerDraft(sessionId: string, owner = getMobileAuthOwner()): Promise<string | null> {
+  const value = await readComposerDraft(sessionId, owner);
+  clearComposerDraft(sessionId, owner);
   return value;
 }
 
-export function clearComposerDraft(sessionId: string): void {
-  const normalizedSessionId = normalizeSessionId(sessionId);
+export function clearComposerDraft(sessionId: string, owner = getMobileAuthOwner()): void {
+  const normalizedSessionId = mobileDraftScopeKey(sessionId, owner);
   if (!normalizedSessionId) return;
   cancelPendingPersist(normalizedSessionId);
   cancelPendingDocumentPersist(normalizedSessionId);
@@ -121,6 +131,7 @@ export function clearComposerDraft(sessionId: string): void {
 }
 
 export async function clearComposerDrafts(): Promise<void> {
+  clearGeneration += 1;
   cancelAllPendingPersists();
   cancelAllPendingDocumentPersists();
   drafts.clear();
@@ -136,8 +147,11 @@ export async function clearComposerDrafts(): Promise<void> {
   await AsyncStorage.multiRemove(ownedKeys).catch(() => undefined);
 }
 
-export async function flushComposerDraftWrites(sessionId?: string): Promise<void> {
-  const normalizedSessionId = sessionId === undefined ? undefined : normalizeSessionId(sessionId);
+export async function flushComposerDraftWrites(sessionId?: string, owner = getMobileAuthOwner()): Promise<void> {
+  // Unmount may follow owner invalidation. Finish only edits already accepted
+  // into that owner's queue; never reinterpret its task ID under the next login.
+  const normalizedSessionId = sessionId === undefined ? undefined
+    : owner.accountKey && sessionId.trim() ? JSON.stringify([owner.accountKey, sessionId.trim()]) : '';
   if (sessionId !== undefined && !normalizedSessionId) return;
   const pending = normalizedSessionId
     ? pendingPersistTimers.has(normalizedSessionId)
@@ -179,6 +193,87 @@ export async function flushComposerDraftWrites(sessionId?: string): Promise<void
   await drainPendingStorageOperations(normalizedSessionId);
 }
 
+/** Only recovery broadcasts: ordinary edits keep their existing local source. */
+export function subscribeComposerDraftRecovery(
+  sessionId: string,
+  listener: (document: ComposerDocument) => void,
+  owner: MobileAuthOwnerGeneration = getMobileAuthOwner(),
+): () => void {
+  const id = mobileDraftScopeKey(sessionId, owner);
+  if (!id) return () => undefined;
+  const guarded = (document: ComposerDocument) => {
+    if (isMobileAuthOwnerCurrent(owner)) listener(document);
+  };
+  const bucket = recoveryListeners.get(id) ?? new Set<(document: ComposerDocument) => void>();
+  bucket.add(guarded);
+  recoveryListeners.set(id, bucket);
+  return () => {
+    bucket.delete(guarded);
+    if (bucket.size === 0) recoveryListeners.delete(id);
+  };
+}
+
+/** A legacy direct send may optimistically clear before preparation finishes.
+ * Capture while authorized; recovery can only return these exact bytes to this
+ * account/task. It cannot read another scope or accept a later editor value. */
+export function captureComposerDraftRecovery(
+  sessionId: string,
+  document: ComposerDocument,
+  owner: MobileAuthOwnerGeneration = getMobileAuthOwner(),
+): { restore(): Promise<void>; discard(): void } | null {
+  const id = mobileDraftScopeKey(sessionId, owner);
+  if (!id) return null;
+  let captured = parseStoredComposerDocument(JSON.parse(JSON.stringify(document)));
+  if (!captured) return null;
+  const generation = clearGeneration;
+  let restored = false;
+  let discarded = false;
+  let inFlight: Promise<void> | null = null;
+  return {
+    discard() { discarded = true; captured = null; },
+    restore() {
+      if (discarded || generation !== clearGeneration) return Promise.resolve();
+      if (inFlight) return inFlight;
+      if (!restored) {
+        const later = documentDrafts.get(id) ?? textComposerDocument(drafts.get(id) ?? '');
+        const prefix: ComposerNode[] = [...captured!.nodes];
+        if (prefix.length && later.nodes.length
+          && prefix.at(-1)?.type !== 'quote' && later.nodes[0].type !== 'quote') {
+          prefix.push({ type: 'text', text: '\n\n' });
+        }
+        const recovered = prependComposerNodes(later, prefix);
+        // Publish to the original namespace before queuing I/O. A write failure
+        // retains the only recovery material; later edits remain authoritative.
+        documentDrafts.set(id, recovered);
+        drafts.set(id, composerDocumentProjectedText(recovered));
+        clearedDocumentDrafts.delete(id);
+        clearedDrafts.delete(id);
+        restored = true;
+        for (const listener of [...(recoveryListeners.get(id) ?? [])]) listener(recovered);
+      }
+      cancelPendingPersist(id);
+      cancelPendingDocumentPersist(id);
+      const nextDocument = documentDrafts.get(id);
+      const nextText = drafts.get(id);
+      const pending = enqueueStorageOperation(id, async () => {
+        if (discarded || generation !== clearGeneration) return;
+        if (nextDocument) await AsyncStorage.setItem(documentStorageKeyForSession(id), JSON.stringify(nextDocument));
+        else await AsyncStorage.removeItem(documentStorageKeyForSession(id));
+        if (nextText) await AsyncStorage.setItem(storageKeyForSession(id), nextText);
+        else await AsyncStorage.removeItem(storageKeyForSession(id));
+      }, true);
+      inFlight = pending.then(() => {
+        discarded = true;
+        captured = null;
+      }, (error) => {
+        inFlight = null;
+        throw error;
+      });
+      return inFlight;
+    },
+  };
+}
+
 /** Finish a committed send's draft handoff in the existing per-session write chain.
  * Failures propagate so the outbox keeps its recovery proof. Later user edits win.
  */
@@ -186,17 +281,23 @@ export async function reconcileCommittedComposerDraft(
   sessionId: string,
   handoff: { before: ComposerDocument; after: ComposerDocument },
   guard: () => void,
+  owner: MobileAuthOwnerGeneration = getMobileAuthOwner(),
 ): Promise<void> {
-  const id = normalizeSessionId(sessionId);
+  const id = mobileDraftScopeKey(sessionId, owner);
   guard();
-  await flushComposerDraftWrites(id);
-  await enqueueStorageOperation(id, async () => {
+  if (!id) throw new Error('OUTBOX_OWNER_CHANGED');
+  const check = () => {
     guard();
+    if (!isMobileAuthOwnerCurrent(owner)) throw new Error('OUTBOX_OWNER_CHANGED');
+  };
+  await flushComposerDraftWrites(sessionId, owner);
+  await enqueueStorageOperation(id, async () => {
+    check();
     const documentKey = documentStorageKeyForSession(id);
     const textKey = storageKeyForSession(id);
     const raw = await AsyncStorage.getItem(documentKey);
     const text = await AsyncStorage.getItem(textKey);
-    guard();
+    check();
     const stored = raw ? parseStoredComposerDocument(JSON.parse(raw)) : null;
     if (raw && !stored) throw new Error('COMPOSER_DRAFT_INVALID');
     const memory = documentDrafts.get(id);
@@ -218,17 +319,13 @@ export async function reconcileCommittedComposerDraft(
     }
     if (replaceDocument) {
       await AsyncStorage.setItem(documentKey, JSON.stringify(next));
-      guard();
+      check();
     }
     if (text === beforeText) {
       await AsyncStorage.setItem(textKey, replacementText);
-      guard();
+      check();
     }
   }, true);
-}
-
-function normalizeSessionId(sessionId: string): string {
-  return sessionId.trim();
 }
 
 function storageKeyForSession(normalizedSessionId: string): string {
@@ -332,8 +429,8 @@ async function drainPendingStorageOperations(normalizedSessionId?: string): Prom
 }
 
 export const __testing = {
-  documentStorageKeyForSession,
+  documentStorageKeyForSession: (sessionId: string) => documentStorageKeyForSession(mobileDraftScopeKey(sessionId)),
   persistDebounceMs: PERSIST_DEBOUNCE_MS,
-  storageKeyForSession,
+  storageKeyForSession: (sessionId: string) => storageKeyForSession(mobileDraftScopeKey(sessionId)),
   storageKeyPrefix: STORAGE_KEY_PREFIX,
 };

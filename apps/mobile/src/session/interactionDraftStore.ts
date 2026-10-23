@@ -1,4 +1,6 @@
 import type { AskQuestion } from '@cindy/maker-shared/interaction';
+import { getMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { mobileDraftScopeKey } from './draftOwnerScope';
 
 export interface AskUserDraft {
   answers: Record<string, string>;
@@ -19,8 +21,8 @@ export interface PlanReviewDraft {
 const askUserDrafts = new Map<string, AskUserDraft>();
 const planReviewDrafts = new Map<string, PlanReviewDraft>();
 
-export function readAskUserDraft(requestId: string): AskUserDraft | null {
-  const draft = askUserDrafts.get(requestId);
+export function readAskUserDraft(requestId: string, owner = getMobileAuthOwner()): AskUserDraft | null {
+  const draft = askUserDrafts.get(mobileDraftScopeKey(requestId, owner));
   return draft ? cloneDraft(draft) : null;
 }
 
@@ -35,32 +37,34 @@ export function askQuestionsIdentity(questions: AskQuestion[]): string {
 }
 
 /** 只返回与当前问题内容一致的草稿:同一 requestId 的问题变了,旧草稿视为不存在。 */
-export function readAskUserDraftFor(requestId: string, questionsIdentity: string): AskUserDraft | null {
-  const draft = readAskUserDraft(requestId);
+export function readAskUserDraftFor(requestId: string, questionsIdentity: string, owner = getMobileAuthOwner()): AskUserDraft | null {
+  const draft = readAskUserDraft(requestId, owner);
   return draft?.questionsIdentity === questionsIdentity ? draft : null;
 }
 
-export function saveAskUserDraft(requestId: string, draft: AskUserDraft): void {
-  if (!requestId) return;
-  askUserDrafts.set(requestId, cloneDraft(draft));
+export function saveAskUserDraft(requestId: string, draft: AskUserDraft, owner = getMobileAuthOwner()): void {
+  const key = mobileDraftScopeKey(requestId, owner);
+  if (!key) return;
+  askUserDrafts.set(key, cloneDraft(draft));
 }
 
-export function clearAskUserDraft(requestId: string): void {
-  askUserDrafts.delete(requestId);
+export function clearAskUserDraft(requestId: string, owner = getMobileAuthOwner()): void {
+  askUserDrafts.delete(mobileDraftScopeKey(requestId, owner));
 }
 
-export function readPlanReviewDraft(requestId: string): PlanReviewDraft | null {
-  const draft = planReviewDrafts.get(requestId);
+export function readPlanReviewDraft(requestId: string, owner = getMobileAuthOwner()): PlanReviewDraft | null {
+  const draft = planReviewDrafts.get(mobileDraftScopeKey(requestId, owner));
   return draft ? clonePlanReviewDraft(draft) : null;
 }
 
-export function savePlanReviewDraft(requestId: string, draft: PlanReviewDraft): void {
-  if (!requestId) return;
-  planReviewDrafts.set(requestId, clonePlanReviewDraft(draft));
+export function savePlanReviewDraft(requestId: string, draft: PlanReviewDraft, owner = getMobileAuthOwner()): void {
+  const key = mobileDraftScopeKey(requestId, owner);
+  if (!key) return;
+  planReviewDrafts.set(key, clonePlanReviewDraft(draft));
 }
 
-export function clearPlanReviewDraft(requestId: string): void {
-  planReviewDrafts.delete(requestId);
+export function clearPlanReviewDraft(requestId: string, owner = getMobileAuthOwner()): void {
+  planReviewDrafts.delete(mobileDraftScopeKey(requestId, owner));
 }
 
 export function clearAllInteractionDrafts(): void {

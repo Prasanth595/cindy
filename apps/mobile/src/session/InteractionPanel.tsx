@@ -5,7 +5,8 @@ import { InputHandoffCard } from '@/inputHandoff/InputHandoffCard';
 import { parseInputHandoffSnapshotLike } from '@/inputHandoff/inputHandoffNative';
 import { mobilePluginSetupActions } from '@/plugins/pluginSetupActions';
 import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { useTranslation } from 'react-i18next';
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { isSharedTaskPeer } from '@cindy/device-link';
@@ -212,6 +213,7 @@ function InteractionPanelContent({
   onPlanViewerStateChange?(state: MobilePlanViewerState): void;
   onError(message: string | null): void;
 }) {
+  const draftOwner = useSyncExternalStore(subscribeMobileAuthOwner, getMobileAuthOwner, getMobileAuthOwner);
   const styles = useInteractionStyles();
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -374,7 +376,7 @@ function InteractionPanelContent({
         />
       )}
       <InteractionItem
-        key={readRequestId(activeInteraction) ?? `${interactionKind(activeInteraction)}-${JSON.stringify(activeInteraction.request)}`}
+        key={JSON.stringify([draftOwner.accountKey, draftOwner.generation, readRequestId(activeInteraction) ?? activeInteraction.request])}
         deviceId={deviceId}
         sessionId={sessionId}
         item={activeInteraction}
@@ -541,6 +543,9 @@ function InteractionItem({
 }) {
   const { t } = useTranslation();
   const maker = useMobileMakerTransport(deviceId);
+  // This item is keyed by owner generation. All in-flight replies retain this
+  // identity, including replies settling after the form was dismissed.
+  const [draftOwner] = useState(getMobileAuthOwner);
   const inputProjection = useSessionInputProjection(sessionId);
   const runStatus = useSessionRunStatus(sessionId);
   const [busy, setBusy] = useState(false);
@@ -552,6 +557,7 @@ function InteractionItem({
     decision: Record<string, unknown>,
     options: { optimisticDismiss?: boolean; resolvedRevision?: number } = {},
   ) => {
+    if (!draftOwner.accountKey || !isMobileAuthOwnerCurrent(draftOwner)) return;
     if (!canStartInteractionResolve({ requestId, submittingRequestId: submittingRequestIdRef.current })) return;
     const currentRequestId = requestId;
     if (!currentRequestId) return;
@@ -571,10 +577,10 @@ function InteractionItem({
     // The retained object is scoped to this controller/account/task. Clearing or
     // replacing it invalidates in-flight work without tying a reply to a view's
     // mount lifetime (the user may switch tasks while it is being delivered).
-    const current = () => !item.retainedDraft || (
+    const current = () => isMobileAuthOwnerCurrent(draftOwner) && (!item.retainedDraft || (
       remoteSessionStore.getVisiblePendingInteractions(sessionId).includes(item) &&
       (inputProjection.queuePaused || !remoteSessionStore.getInputProjection(sessionId).queuePaused)
-    );
+    ));
     if (optimisticDismiss) remoteSessionStore.beginOptimisticInteractionDismiss(sessionId, currentRequestId);
     try {
       if (item.retainedDraft) {
@@ -612,12 +618,13 @@ function InteractionItem({
       } else {
         await resolveInteractionResilient(maker, sessionId, currentRequestId, decision);
       }
+      if (!isMobileAuthOwnerCurrent(draftOwner)) return;
       if (item.retainedDraft) {
         remoteSessionStore.confirmProtectedQuestion(sessionId, currentRequestId);
       }
       remoteSessionStore.releaseProtectedQuestion(sessionId, currentRequestId);
-      if (kind === 'ask_user_question') clearAskUserDraft(currentRequestId);
-      if (kind === 'plan_review') clearPlanReviewDraft(currentRequestId);
+      if (kind === 'ask_user_question') clearAskUserDraft(currentRequestId, draftOwner);
+      if (kind === 'plan_review') clearPlanReviewDraft(currentRequestId, draftOwner);
       if (optimisticDismiss) {
         remoteSessionStore.settleOptimisticInteractionDismiss(sessionId, currentRequestId, { kind: 'confirmed' });
       } else if (options.resolvedRevision !== undefined) {
@@ -632,7 +639,7 @@ function InteractionItem({
         );
       }
     } catch (err) {
-      if (item.retainedDraft && !current()) return;
+      if (!current()) return;
       // resolveInteractionResilient 已带弱网重试 + pending 列表权威分辨,走到
       // 这里就是决定确未生效:复原卡片 + 报错。
       if (optimisticDismiss) {
@@ -1032,9 +1039,10 @@ function AskUserQuestionForm({
   const companion = useContext(CompanionInteractionContext);
   const requestId = readRequestId(item) ?? '';
   const draftCompletedRef = useRef(false);
+  const [draftOwner] = useState(getMobileAuthOwner);
   // 表单按 requestId + 问题内容挂载,草稿在首帧同步恢复,
   // 避免先渲染空状态再被同步 effect 覆盖。
-  const [initialDraft] = useState(() => readAskUserDraftFor(requestId, questionsIdentity));
+  const [initialDraft] = useState(() => readAskUserDraftFor(requestId, questionsIdentity, draftOwner));
   const [currentIndex, setCurrentIndex] = useState(() =>
     Math.min(initialDraft?.currentIndex ?? 0, Math.max(0, questions.length - 1)));
   const [answers, setAnswers] = useState<Record<string, string>>(() => initialDraft?.answers ?? {});
@@ -1096,7 +1104,7 @@ function AskUserQuestionForm({
       questionsIdentity,
       selectedLabels: [...selectedLabels],
       showCustomInput,
-    });
+    }, draftOwner);
   }, [answers, currentIndex, customInput, requestId, selectedLabels, showCustomInput]);
 
   if (questions.length === 0) {
@@ -1158,7 +1166,7 @@ function AskUserQuestionForm({
         questionsIdentity,
         selectedLabels: [...finalSelection.selectedLabels],
         showCustomInput: finalSelection.showCustomInput,
-      });
+      }, draftOwner);
       onDecision(buildAskUserQuestionDecision(nextAnswers));
     } else {
       setCurrentIndex((idx) => Math.min(idx + 1, questions.length - 1));
@@ -1439,13 +1447,14 @@ function PlanReviewCard({
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
   const requestId = readRequestId(item) ?? '';
+  const [draftOwner] = useState(getMobileAuthOwner);
   const [planText, setPlanText] = useState(() =>
-    readPlanReviewDraft(requestId)?.planText ?? planReviewPlan(item.request)
+    readPlanReviewDraft(requestId, draftOwner)?.planText ?? planReviewPlan(item.request)
   );
   const [localViewerState, setLocalViewerState] = useState<MobilePlanViewerState>('half');
   const [lastExpandedState, setLastExpandedState] = useState<RestorablePlanViewerState>('half');
-  const [feedback, setFeedback] = useState(() => readPlanReviewDraft(requestId)?.feedback ?? '');
-  const [feedbackOpen, setFeedbackOpen] = useState(() => readPlanReviewDraft(requestId)?.feedbackOpen ?? false);
+  const [feedback, setFeedback] = useState(() => readPlanReviewDraft(requestId, draftOwner)?.feedback ?? '');
+  const [feedbackOpen, setFeedbackOpen] = useState(() => readPlanReviewDraft(requestId, draftOwner)?.feedbackOpen ?? false);
   const [activeOutlineId, setActiveOutlineId] = useState<string | null>(null);
   const previewScrollRef = useRef<ScrollView | null>(null);
   const skipNextPlanDraftSaveRef = useRef(false);
@@ -1470,7 +1479,7 @@ function PlanReviewCard({
 
   useEffect(() => {
     skipNextPlanDraftSaveRef.current = true;
-    const draft = readPlanReviewDraft(requestId);
+    const draft = readPlanReviewDraft(requestId, draftOwner);
     setPlanText(draft?.planText ?? planReviewPlan(item.request));
     setFeedback(draft?.feedback ?? '');
     setFeedbackOpen(draft?.feedbackOpen ?? false);
@@ -1485,7 +1494,7 @@ function PlanReviewCard({
       skipNextPlanDraftSaveRef.current = false;
       return;
     }
-    savePlanReviewDraft(requestId, { feedback, feedbackOpen, planText });
+    savePlanReviewDraft(requestId, { feedback, feedbackOpen, planText }, draftOwner);
   }, [feedback, feedbackOpen, planText, requestId]);
 
   const updateViewerState = (next: MobilePlanViewerState) => {

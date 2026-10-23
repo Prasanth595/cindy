@@ -20,7 +20,7 @@ export const mobileDurableOutbox = createDurableOutbox(outboxStorage, async (rec
       throw new Error('OUTBOX_OWNER_CHANGED');
     }
   };
-  await reconcileCommittedComposerDraft(record.item.sessionId, record.draftHandoff, check);
+  await reconcileCommittedComposerDraft(record.item.sessionId, record.draftHandoff, check, owner);
 });
 
 /** Persist before destructive cleanup: an account switch may discard its reply. */

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getMobileAuthOwner, invalidateMobileAuthOwnerForSwitch, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import * as quotes from '@/session/chatQuoteStore';
 
 const store = vi.hoisted(() => new Map<string, string>());
 
@@ -22,6 +24,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 
 describe('chatQuoteStore', () => {
   beforeEach(async () => {
+    setMobileAuthOwner('quote-owner', 'global');
     vi.useRealTimers();
     vi.clearAllMocks();
     const { __testing } = await import('@/session/chatQuoteStore');
@@ -34,6 +37,47 @@ describe('chatQuoteStore', () => {
     const { __testing } = await import('@/session/chatQuoteStore');
     __testing.reset();
     store.clear();
+    setMobileAuthOwner(null);
+  });
+
+  // Unit privacy regression: the same shared task ID exists for two owners.
+  // Prior tests exercised only one owner and did not cover retired callbacks.
+  it.each(['account', 'realm'] as const)('keeps quotes private across %s changes and rejects old edits', (scope) => {
+    const owner = getMobileAuthOwner();
+    quotes.appendQuote('shared', { text: 'A quote' });
+    invalidateMobileAuthOwnerForSwitch();
+    setMobileAuthOwner(scope === 'account' ? 'other-owner' : 'quote-owner', scope === 'realm' ? 'cn' : 'global');
+    expect(quotes.getQuotes('shared')).toEqual([]);
+    quotes.appendQuote('shared', { text: 'B quote' });
+    quotes.appendQuote('shared', { text: 'late A quote' }, owner);
+    quotes.clearQuotes('shared', owner);
+    expect(quotes.getQuotes('shared')).toEqual([{ text: 'B quote' }]);
+    setMobileAuthOwner('quote-owner', 'global');
+    expect(quotes.getQuotes('shared')).toEqual([{ text: 'A quote' }]);
+  });
+
+  it('ignores a retired hydrate while allowing a new generation of the same owner to hydrate', async () => {
+    const storage = (await import('@react-native-async-storage/async-storage')).default;
+    let finish!: (value: string | null) => void;
+    vi.mocked(storage.getItem).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = quotes.hydrateQuotes('shared');
+    setMobileAuthOwner('other-owner', 'global');
+    setMobileAuthOwner('quote-owner', 'global');
+    store.set(quotes.__testing.storageKeyForSession('shared'), JSON.stringify([{ text: 'current disk quote' }]));
+    await quotes.hydrateQuotes('shared');
+    finish(JSON.stringify([{ text: 'retired read' }]));
+    await first;
+    expect(quotes.getQuotes('shared')).toEqual([{ text: 'current disk quote' }]);
+  });
+
+  it('does not claim legacy quote storage or accept signed-out edits', async () => {
+    store.set('xdt.chatQuotes.v1.shared', JSON.stringify([{ text: 'unowned quote' }]));
+    await quotes.hydrateQuotes('shared');
+    expect(quotes.getQuotes('shared')).toEqual([]);
+    setMobileAuthOwner(null);
+    quotes.appendQuote('shared', { text: 'signed-out quote' });
+    expect(quotes.getQuotes('shared')).toEqual([]);
+    expect(store.has('xdt.chatQuotes.v1.shared')).toBe(true);
   });
 
   it('appends quotes, notifies subscribers, and clears all at once', async () => {

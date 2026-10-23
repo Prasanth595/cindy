@@ -48,6 +48,7 @@ import {
 } from '@/session/interactionModel';
 import { askQuestionsIdentity, clearAskUserDraft, saveAskUserDraft } from '@/session/interactionDraftStore';
 import type { PendingInteraction } from '@/session/types';
+import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 
 /** prune 的权威性开关:全量快照到手 = 权威;离线清空投影 = 非权威。 */
 const AUTHORITATIVE = { authoritative: true } as const;
@@ -56,6 +57,7 @@ const NOT_AUTHORITATIVE = { authoritative: false } as const;
 // buildMobilePermissionCardState 已 i18n 化;固定 zh-CN 让字面量断言与语言环境解耦
 // (全局 mock 默认 en-US)。共享层(@cindy/maker-shared/interaction)的中文直出不受影响。
 beforeAll(async () => {
+  setMobileAuthOwner('interaction-owner', 'global');
   await i18n.changeLanguage('zh-CN');
 });
 

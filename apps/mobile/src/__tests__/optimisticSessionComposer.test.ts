@@ -286,10 +286,17 @@ describe('mobile optimistic composer while session is not ready', () => {
   it('fences every pre-outbox await against an in-place session switch', () => {
     const source = readSource(SCREEN);
 
-    expect(source).toContain('const recoverCapturedDraftForScopeExit = () => {');
-    expect(source).toContain('restoreRecoverableItemsToDraft(sessionId, [capturedDraftRecoveryItem()]);');
+    expect(source).toContain('const recoverCapturedDraftForScopeExit = async () => {');
+    // Account/consumption wiring contract: store recovery alone cannot protect
+    // /learn unless the screen captures its consumed nodes before yielding.
+    expect(source).toContain("if (!independent && outboxEligible && (legacyPlanRequiresLiveDispatch || earlyDesktopCommand?.name === 'learn')) {");
+    expect(source).toContain("nodes: documentBeforeSend.nodes.filter((node) => node.type !== 'quote'),");
+    const learnDispatchStart = source.indexOf("if (desktopCommand?.name === 'learn') {");
+    const learnDispatch = source.slice(learnDispatchStart, source.indexOf('if (localSystemCommand) {', learnDispatchStart));
+    expect(learnDispatch).toContain('directDraftRecovery?.discard();\n          const { runId } = await maker.learnStart(');
+    expect(source).toContain('restoreRecoverableItemsToDraft(sessionId, [capturedDraftRecoveryItem()], outboxOwner);');
     expect(source).toContain('const hydratedDocumentAtSend = await hydrateComposerMessageReferenceBodies(');
-    expect(source).toContain('if (!sendScopeStillAlive()) {\n      recoverCapturedDraftForScopeExit();');
+    expect(source).toContain('if (!sendScopeStillAlive()) {\n      await recoverCapturedDraftForScopeExit();');
     expect(source).toContain('await waitForPastePlaceholdersSettled();\n          if (!sendScopeStillAlive()) {');
     expect(source).toContain('const { failedCount } = independent ? { failedCount: 0 } : await waitForPendingUploads();\n      if (!sendScopeStillAlive()) {');
     expect(source).toContain('if (!sendScopeStillAlive() || !isMobileAuthOwnerCurrent(ownerAtSend)) return;');

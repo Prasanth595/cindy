@@ -1048,6 +1048,12 @@ export function createMobileMakerTransport({
       return Promise.reject(new Error("remote device id is required"));
     return invoke<T>(deviceId, channel, args);
   };
+  const callInteraction = async <T>(channel: string, args: unknown[]): Promise<T> => {
+    if (!isCurrent()) throw new Error('Interaction request superseded');
+    const result = await call<T>(channel, args);
+    if (!isCurrent()) throw new Error('Interaction request superseded');
+    return result;
+  };
   const listComposerPlugins = async (workingDir?: string): Promise<ComposerPlugin[]> => {
     if (!isCurrent()) throw new Error('Plugin catalog read superseded');
     const result = await call('ghosts:composer-list', workingDir ? [workingDir] : []);
@@ -1453,9 +1459,9 @@ export function createMobileMakerTransport({
     getVoiceDictionary: () =>
       call(DEVICE_LINK_VOICE_DICTIONARY_GET_CHANNEL, []),
     getPendingInteractions: (sessionId) =>
-      call("maker:get-pending-interactions", [sessionId]),
+      callInteraction("maker:get-pending-interactions", [sessionId]),
     resolveInteraction: (requestId, decision) =>
-      call("maker:resolve-interaction", [requestId, decision]),
+      callInteraction("maker:resolve-interaction", [requestId, decision]),
     getContextUsage: (sessionId, createOpts) =>
       call("maker:get-context-usage", [sessionId, createOpts]),
     fork: (sourceSessionId, messageClientId) =>

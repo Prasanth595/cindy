@@ -6,6 +6,8 @@
  */
 import type { AnnotationStroke } from '@/session/imageAnnotationModel';
 import type { RemoteSerializedAttachment } from '@/session/types';
+import { getMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { mobileDraftScopeKey } from './draftOwnerScope';
 
 const inbox = new Map<string, RemoteSerializedAttachment[]>();
 
@@ -35,8 +37,9 @@ const annotationInbox = new Map<string, ComposerAnnotationSubmission[]>();
 export function queueComposerAnnotationSubmission(
   sessionId: string,
   submission: ComposerAnnotationSubmission,
+  owner = getMobileAuthOwner(),
 ): void {
-  const key = sessionId.trim();
+  const key = mobileDraftScopeKey(sessionId, owner);
   if (!key) return;
   const list = annotationInbox.get(key) ?? [];
   list.push(submission);
@@ -46,15 +49,16 @@ export function queueComposerAnnotationSubmission(
 /** 领取并清空该会话的待烧录标注提交(幂等:无货返回空数组)。 */
 export function drainComposerAnnotationSubmissions(
   sessionId: string,
+  owner = getMobileAuthOwner(),
 ): ComposerAnnotationSubmission[] {
-  const key = sessionId.trim();
+  const key = mobileDraftScopeKey(sessionId, owner);
   const list = annotationInbox.get(key) ?? [];
   annotationInbox.delete(key);
   return list;
 }
 
-export function queueComposerAttachment(sessionId: string, attachment: RemoteSerializedAttachment): void {
-  const key = sessionId.trim();
+export function queueComposerAttachment(sessionId: string, attachment: RemoteSerializedAttachment, owner = getMobileAuthOwner()): void {
+  const key = mobileDraftScopeKey(sessionId, owner);
   if (!key) return;
   const list = inbox.get(key) ?? [];
   if (list.some((item) => item.id === attachment.id)) return;
@@ -63,8 +67,8 @@ export function queueComposerAttachment(sessionId: string, attachment: RemoteSer
 }
 
 /** 领取并清空该会话的待注入附件(幂等:无货返回空数组)。 */
-export function drainComposerAttachments(sessionId: string): RemoteSerializedAttachment[] {
-  const key = sessionId.trim();
+export function drainComposerAttachments(sessionId: string, owner = getMobileAuthOwner()): RemoteSerializedAttachment[] {
+  const key = mobileDraftScopeKey(sessionId, owner);
   const list = inbox.get(key) ?? [];
   inbox.delete(key);
   return list;

@@ -13,6 +13,7 @@ import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/ch
 import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
 import { i18n } from '@/i18n';
+import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 
 const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
 // As in LegendList, setters are inert outside a list item. The composer card
@@ -94,6 +95,7 @@ function CollapsibleHarness() {
     collapse={{ requestIds, onToggle: (id) => setRequestIds((ids) => ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id]) }} />;
 }
 beforeEach(() => {
+  setMobileAuthOwner('interaction-owner', 'global');
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.resetAllMocks();
   _clearRemotePathVerdictCache();
@@ -119,6 +121,29 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+// Unit privacy regression: an account change can reuse the same shared request.
+// Mount the production card, type, switch owner, and settle its previous receipt;
+// the second form must start empty and keep its own answer after that receipt.
+it('remounts a shared question for its new owner and ignores the old receipt', async () => {
+  const item = { request: { kind: 'ask_user_question', requestId, questions: [{ question: 'Answer?' }] } };
+  remoteSessionStore.setPendingInteractions('s1', [item]);
+  await act(async () => root.render(<Harness />));
+  await type('interaction.ask.textInput', 'owner A');
+  let finish!: (value: { accepted: boolean }) => void;
+  resolveInteraction.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await click('interaction.ask.submitButton');
+  await act(async () => {
+    setMobileAuthOwner('other-owner', 'global');
+    remoteSessionStore.clear();
+    remoteSessionStore.setPendingInteractions('s1', [item]);
+  });
+  expect(host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.textInput"]')?.value).toBe('');
+  await type('interaction.ask.textInput', 'owner B');
+  await act(async () => finish({ accepted: true }));
+  expect(host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.textInput"]')?.value).toBe('owner B');
+  expect(readAskUserDraft(requestId)?.customInput).toBe('owner B');
+});
 
 // Unit regression for PR #6306 review: a signed-out microphone tap used to
 // render hardcoded Chinese. Existing receipt tests never tapped this entry.

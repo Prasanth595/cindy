@@ -15,6 +15,7 @@ import {
 } from '@/session/composerDocument';
 import { serializeAtResource } from '@/session/composerPalette';
 import { imageMimeFromUrl } from '@/session/remoteMediaDiskCache';
+import { getMobileAuthOwner } from '@/auth/authOwnerGeneration';
 
 /** 文件浏览导出分享的 mime 推断:图片沿用既有映射,常见文档/音视频补一层。 */
 const SHARE_MIME_BY_EXT: Record<string, string> = {
@@ -58,11 +59,12 @@ export function mergePathIntoComposerDraft(
   sessionId: string,
   relPath: string,
   kind: 'file' | 'dir' = 'file',
+  owner = getMobileAuthOwner(),
 ): string {
-  const existing = readComposerDraftSync(sessionId) ?? '';
+  const existing = readComposerDraftSync(sessionId, owner) ?? '';
   const token = serializeAtResource({ type: kind, relPath });
   if (existing.includes(token)) return existing;
-  const currentDocument = readComposerDocumentDraftSync(sessionId) ?? textComposerDocument(existing);
+  const currentDocument = readComposerDocumentDraftSync(sessionId, owner) ?? textComposerDocument(existing);
   const separated = existing.length > 0 && !existing.endsWith(' ') && !existing.endsWith('\n')
     ? appendComposerNode(currentDocument, { type: 'text', text: ' ' })
     : currentDocument;
@@ -72,8 +74,8 @@ export function mergePathIntoComposerDraft(
   );
   const mergedDocument = appendComposerNode(withMention, { type: 'text', text: ' ' });
   const merged = composerDocumentProjectedText(mergedDocument);
-  saveComposerDocumentDraft(sessionId, mergedDocument);
-  saveComposerDraft(sessionId, merged);
+  saveComposerDocumentDraft(sessionId, mergedDocument, owner);
+  saveComposerDraft(sessionId, merged, owner);
   return merged;
 }
 
