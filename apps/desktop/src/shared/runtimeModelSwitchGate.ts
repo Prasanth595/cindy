@@ -3,7 +3,7 @@
  *
  * 统一选择器把 Harness 与模型叠在一次点选上之后,同引擎切模会打到这条路。
  * 预检是护栏不是闸门:缺核实窗口或占用未知时放行热切,禁止拿「不确定」挡住用户。
- * 只有「核实过的缩窗 + 必须交接」才走重建;跑着无法重建时延期到回合结束,不丢选择。
+ * Codex 保留历史并交原生压缩。其它引擎只有「核实缩窗 + 必须交接」才走重建。
  */
 
 import { composeAtomicModelSelection } from '@cindy/model-providers';
@@ -44,6 +44,7 @@ function isPositiveWindow(value: number | null | undefined): value is number {
  * 矩阵(与单测逐行对应):
  *   - 路由没变 → 热切、不换窗
  *   - 远端 + 回合中 → 延期(不能 live 改远端 turn)
+ *   - Codex → 跳过交接,由原生处理缩窗(执行句柄仍可按需重载)
  *   - Pi + 回合中 + 路由变了 → 延期(Pi 要在空闲时核实窗口)
  *   - 目标/当前窗口未核实或占用未知 → 热切、不换窗(fail-open)
  *   - 核实缩窗且 danger/overflow:
@@ -58,6 +59,9 @@ export function assessRuntimeModelSwitchGate(
   if (input.isRemote && input.inTurn) {
     return { skipRebuild: true, defer: true };
   }
+  // Codex owns downshift compaction, including using the previous model. Preserve
+  // its rollout; a host/catalog reload is independent of destructive handoff.
+  if (input.agentKind === 'codex') return { skipRebuild: true, defer: false };
   if (input.agentKind === 'pi' && input.inTurn && input.runtimeRouteChanged) {
     return { skipRebuild: true, defer: true };
   }

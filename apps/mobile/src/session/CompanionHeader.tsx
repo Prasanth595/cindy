@@ -35,13 +35,17 @@ export function CompanionHeader(props: {
   sessionId: string;
   /** Put a todo into this chat's composer as a reference; the owner then tells the teammate what to do. */
   onQuoteTodo(todo: TeammateTodo): void;
+  /** Say something to the teammate as the owner: sent right away when the composer is empty, otherwise put into it. */
+  onAskCompanion(text: string): void;
+  /** The composer can take that line now (writable and its draft restored); otherwise 「帮我查查」 is disabled. */
+  askCompanionReady?: boolean;
   onSearch(): void; onBack(): void;
 }) {
   const { accountGeneration } = useAuth();
   return <CompanionHeaderContent key={accountGeneration} {...props} />;
 }
 
-function CompanionHeaderContent({ resource, deviceId, deviceName, online, controlsReady = true, working = false, sessionId, onQuoteTodo, onSearch, onBack, settingsRequest }: Parameters<typeof CompanionHeader>[0]) {
+function CompanionHeaderContent({ resource, deviceId, deviceName, online, controlsReady = true, working = false, sessionId, onQuoteTodo, onAskCompanion, askCompanionReady = true, onSearch, onBack, settingsRequest }: Parameters<typeof CompanionHeader>[0]) {
   const { t, i18n } = useTranslation();
   const styles = useThemedStyles(makeStyles);
   const navigation = useTeammateNavigation();
@@ -87,6 +91,7 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
     <CompanionGlanceSheet visible={glance} onClose={() => setGlance(false)} name={name} avatar={resource.display.avatar} botId={resource.ref.id}
       deviceId={deviceId} deviceName={deviceName} sessionId={sessionId} online={online} cloudHome={homed} todos={todos}
       onQuoteTodo={onQuoteTodo}
+      onCheckTodos={askCompanionReady ? () => onAskCompanion(t('devices.glance.checkPrompt')) : undefined}
       onOpenTask={taskId => router.push({ pathname: '/sessions/[sessionId]', params: { sessionId: taskId, deviceId } })}
       onOpenCindy={hosted => void navigation.openTeammate(hosted, { replace: true })}
       onSwitchHome={() => setHomeSheet(true)} />

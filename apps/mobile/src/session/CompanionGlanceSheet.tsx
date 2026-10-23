@@ -2,11 +2,12 @@
  * 伙伴近况（手机）：点伙伴聊天顶栏的头像打开，与桌面 BotGlancePopover 同三块——电脑 / 待办 / 输出内容；
  * 没内容的块整块不出现。规则见 docs/product-rules/cindy-bots-runtime.md「伙伴近况」，版式按原型
  * Designs/cindy/teammate-glance（手机 r1.1）：系统 sheet 外壳，内容是 inset grouped 卡片。
- * 待办行没有按钮：点一条交给对话（作为待办引用放进输入框），长按系统菜单只有「删除」，可撤销。
+ * 待办块第一行「帮我查查」让伙伴现在去已连接的来源里找新待办（作为主人的一句话发进对话），下面的开关让它
+ * 每个工作日早上自己查一次。待办行没有按钮：点一条交给对话（作为待办引用放进输入框），长按系统菜单只有「删除」，可撤销。
  */
 import { useMemo, useRef, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { Check, ChevronDown, ChevronUp, Monitor } from 'lucide-react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { Check, ChevronDown, ChevronUp, Monitor, ScanSearch } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import type { BotDelegationListResult } from '@cindy/maker-shared/botDelegation';
 import { todoDateLabel, todoDue, type TeammateTodo } from '@cindy/maker-shared/teammate-todo';
@@ -51,7 +52,7 @@ function dayLabel(at: number, language: string): string {
 
 export function CompanionGlanceSheet({
   visible, onClose, name, avatar, botId, deviceId, deviceName, sessionId, online, cloudHome, todos,
-  onQuoteTodo, onOpenTask, onOpenCindy, onSwitchHome,
+  onQuoteTodo, onCheckTodos, onOpenTask, onOpenCindy, onSwitchHome,
 }: {
   visible: boolean;
   onClose(): void;
@@ -67,6 +68,8 @@ export function CompanionGlanceSheet({
   cloudHome: boolean;
   todos: GlanceTodoState;
   onQuoteTodo(todo: TeammateTodo): void;
+  /** 「帮我查查」: ask the teammate, as the owner, to look for new todos now; absent while this chat cannot send. */
+  onCheckTodos?(): void;
   onOpenTask(sessionId: string): void;
   onOpenCindy(hosted: HostedRemoteCollectionItem): void;
   onSwitchHome(): void;
@@ -84,7 +87,7 @@ export function CompanionGlanceSheet({
       </View>
       <Computers botId={botId} deviceId={deviceId} deviceName={deviceName} online={online} cloudHome={cloudHome}
         onOpenCindy={hosted => afterClose(() => onOpenCindy(hosted))} onSwitchHome={() => afterClose(onSwitchHome)} />
-      <Todos todos={todos} online={online} onQuote={todo => afterClose(() => onQuoteTodo(todo))} />
+      <Todos todos={todos} online={online} onQuote={todo => afterClose(() => onQuoteTodo(todo))} onCheck={onCheckTodos ? () => afterClose(onCheckTodos) : undefined} />
       <Outputs botId={botId} deviceId={deviceId} sessionId={sessionId} online={online}
         onOpenTask={taskId => afterClose(() => onOpenTask(taskId))} />
     </ScrollView>
@@ -188,23 +191,42 @@ function sourceText(todo: TeammateTodo, t: (key: string) => string): string {
   return label && !kind.toLowerCase().includes(label.toLowerCase()) ? `${kind} · ${label}` : kind;
 }
 
-function Todos({ todos, online, onQuote }: { todos: GlanceTodoState; online: boolean; onQuote(todo: TeammateTodo): void }) {
+function Todos({ todos, online, onQuote, onCheck }: {
+  todos: GlanceTodoState; online: boolean; onQuote(todo: TeammateTodo): void; onCheck?(): void;
+}) {
   const { t, i18n } = useTranslation();
+  const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const [dailyBusy, setDailyBusy] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [showDone, setShowDone] = useState(false);
   const [deleted, setDeleted] = useState<TeammateTodo | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { open, done, doneTotal, openTotal } = todos.todos;
+  const { open, done, doneTotal, openTotal, dailyCheck } = todos.todos;
+  // Not offered by this desktop, or not read yet while offline: no section at all.
+  if (!todos.loaded) return null;
+  const checkRow = <Row key="check" icon={<ScanSearch size={ICON_GLYPH} strokeWidth={iconStroke.regular} color={colors.textSecondary} />}
+    title={t('devices.glance.check')} meta={t('devices.glance.checkMeta')} muted={!online || !onCheck} onPress={online ? onCheck : undefined} testID="companion.glance.todo.check" />;
+  const changeDaily = async (next: boolean) => {
+    setError(null);
+    setDailyBusy(true);
+    try { await todos.setDailyCheck(next); } catch { setError(t('devices.glance.dailyCheckFailed')); } finally { setDailyBusy(false); }
+  };
+  // Older desktops do not report the switch; then only 「帮我查查」 shows.
+  const dailyRow = dailyCheck === null ? null : <Row key="daily" icon={<View />} title={t('devices.glance.dailyCheck')} meta={t('devices.glance.dailyCheckMeta')}
+    trailing={<Switch accessibilityLabel={t('devices.glance.dailyCheck')} value={dailyCheck} disabled={!online || dailyBusy}
+      onValueChange={value => void changeDaily(value)} testID="companion.glance.todo.daily" />} />;
+  const head = [checkRow, ...(dailyRow ? [dailyRow] : [])];
   // A failed first read is not "no todos": keep the section with a retry instead of hiding it.
   if (todos.failed && open.length === 0 && doneTotal === 0) return <Section label={t('devices.glance.todos')}>
+    {joinRows(head, true, styles)}
+    <View style={styles.divider} />
     <Pressable accessibilityRole="button" onPress={() => void todos.refresh()} disabled={!online}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} testID="companion.glance.todo.retry">
       <Text numberOfLines={1} style={styles.undoNote}>{t('devices.glance.loadFailed')}</Text>
       <Text style={styles.undoAction}>{t('devices.resources.retry')}</Text>
     </Pressable>
   </Section>;
-  if (open.length === 0 && doneTotal === 0 && !deleted) return null;
 
   const remove = async (todo: TeammateTodo) => {
     setError(null);
@@ -256,7 +278,10 @@ function Todos({ todos, online, onQuote }: { todos: GlanceTodoState; online: boo
     open={showDone} onPress={() => setShowDone(value => !value)} testID="companion.glance.todo.doneToggle" />);
   if (showDone) rows.push(...done.map(todo => row(todo, true)));
   return <View>
-    <Section label={t('devices.glance.todos')}>{joinRows(rows, false, styles)}</Section>
+    <Section label={t('devices.glance.todos')}>
+      {joinRows(head, true, styles)}
+      {rows.length > 0 ? <><View style={styles.divider} />{joinRows(rows, false, styles)}</> : null}
+    </Section>
     {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
   </View>;
 }

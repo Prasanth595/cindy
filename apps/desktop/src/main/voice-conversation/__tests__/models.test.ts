@@ -41,6 +41,31 @@ function custom(
   );
 }
 
+// PR #6768 unit regression: speechModels must honor the wizard's saved deselection
+// and later Settings switches. Existing route tests only covered the disable gate.
+// Minimal input: two discovered TTS models, one unchecked, on two separate connections.
+it('lists only selected speech models and applies connection-scoped display overrides', () => {
+  const models: ProviderRuntimeModelConfig[] = [
+    { id: 'eleven_flash_v2_5', name: 'Flash', discoveredMetadata: { mode: 'audio_speech' } },
+    { id: 'eleven_v3', name: 'V3', discoveredMetadata: { mode: 'audio_speech' }, defaultEnabled: false },
+  ];
+  const d = deps([
+    custom('a', 'https://api.elevenlabs.io/v1', models),
+    custom('b', 'https://api.elevenlabs.io/v1', models),
+  ]);
+  const choices = () => speechModels(d).filter((item) => item.pickerVisible !== false).map((item) => [item.providerId, item.id]);
+  expect(choices()).toEqual([['a', 'eleven_flash_v2_5'], ['b', 'eleven_flash_v2_5']]);
+  d.visibilityOverride = (agent, provider, id) => agent === 'codex' && provider === 'a'
+    ? id === 'eleven_v3' : undefined;
+  expect(choices()).toEqual([['a', 'eleven_v3'], ['b', 'eleven_flash_v2_5']]);
+  d.disabled = (provider, id) => provider === 'a' && id === 'eleven_v3';
+  expect(choices()).toEqual([['b', 'eleven_flash_v2_5']]);
+  // Hiding remains a display preference, not a replacement for route admission.
+  expect(resolveSpeechConnection(d, { providerId: 'a', agent: 'codex', modelId: 'eleven_flash_v2_5' }).protocol).toBe('elevenlabs');
+  d.visibilityOverride = () => undefined;
+  expect(choices()).toEqual([['a', 'eleven_flash_v2_5'], ['b', 'eleven_flash_v2_5']]);
+});
+
 // Protocol authority comes from the real endpoint, not the UI's override.
 it('rejects unsupported speed on an official binding before opening a call', () => {
   const d = deps([

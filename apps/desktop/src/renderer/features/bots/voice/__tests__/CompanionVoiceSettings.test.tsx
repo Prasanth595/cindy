@@ -78,6 +78,7 @@ vi.mock('../PcmSpeechPlayer', () => ({
 }));
 
 import { CompanionVoiceSettings } from '../CompanionVoiceSettings';
+import { resolveVoiceConfiguration } from '../voiceConfiguration';
 const sessionState = vi.hoisted(() => ({ value: {} }));
 vi.mock('@/lib/makerChatStore', () => ({
   makerChatStore: { subscribeLight: () => () => {}, getLightSnapshot: () => sessionState.value },
@@ -1364,6 +1365,35 @@ it('blocks preview while the companion is waiting for confirmation', async () =>
     screen.getByRole('button', { name: 'bots.voiceMode.preview' }).hasAttribute('disabled'),
   ).toBe(true);
   expect(start).not.toHaveBeenCalled();
+});
+
+// Review regression: visibility is picker policy, not saved-route eligibility.
+// Existing UI tests had only visible or missing routes (Renderer unit, mock bridge).
+it('does not default to or offer unchecked speech models, while restoring a saved hidden selection', async () => {
+  models = [
+    { id: 'hidden', name: 'Saved hidden speech', pickerVisible: false, defaultVoice: 'alloy' },
+    { id: 'unchecked', name: 'Unchecked speech', pickerVisible: false, defaultVoice: 'alloy' },
+    { id: 'visible', name: 'Visible speech', defaultVoice: 'alloy' },
+  ];
+  expect(resolveVoiceConfiguration(models, null).selection?.modelId).toBe('visible');
+  const saved = { modelId: 'hidden', voice: 'nova' };
+  expect(resolveVoiceConfiguration(models, saved).selection).toEqual(saved);
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({ selection: saved, customized: true });
+  renderSettings();
+  const field = await screen.findByRole('combobox', { name: 'bots.voiceMode.model' });
+  await waitFor(() => expect((field as HTMLSelectElement).value).toBe(voiceModelKey(saved)));
+  // The saved value remains displayed; other unchecked models are not offered.
+  expect(within(field).queryByRole('option', { name: 'Unchecked speech' })).toBeNull();
+  expect(screen.queryByText('bots.voiceMode.modelUnavailable')).toBeNull();
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+});
+
+it('shows setup guidance when all speech models are hidden and there is no saved choice', async () => {
+  models = [{ id: 'unchecked', name: 'Unchecked speech', pickerVisible: false, defaultVoice: 'alloy' }];
+  expect(resolveVoiceConfiguration(models, null).selection).toBeNull();
+  renderSettings();
+  await screen.findByText('bots.voiceMode.noModels');
+  expect(screen.queryByRole('combobox', { name: 'bots.voiceMode.model' })).toBeNull();
 });
 
 // Unit tier, actual settings/preview entry with the host boundary mocked: switching

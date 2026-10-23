@@ -1144,6 +1144,16 @@ Applies to submit-on-Enter fields: the chat composer, goal input, ask input, etc
 
 > Expanded 2026-07. Cindy's motion character extends the paper-like restraint of §1 / §7: **ordinary UI fades, nudges, and resizes smoothly; overshoot is limited to the explicitly registered Done, Usage History chart and mobile new-task morph responses below**. Functional state transitions are allowed; decorative motion is forbidden. This section pins "functional" into executable tiers and prototypes so components stop inventing their own durations and curves.
 
+**Desktop companion composer action (owner-approved prototype, 2026-10-22).** An idle
+one-to-one companion composer shows dictation and a call action. A sendable draft
+(including attachments or a visible prompt recommendation) replaces the call with Send
+in the same 30px circular target. Crossfade the icon layers and scale 55% ↔ 100% on
+`--motion-enter` (250ms) / `--motion-ease-move`; keep the shell, hit target and dictation
+position fixed, with no bounce. CSS transitions retarget from their current values.
+Respect reduced motion, retain keyboard focus, and reject a press whose action changes
+before activation. Recording/refinement, Stop, Queue and queue editing retain their
+existing actions. Other composers keep their existing behavior.
+
 #### Motion tokens (the only tier source)
 
 Global tokens live in `:root` of `apps/desktop/src/renderer/styles/globals.css`; mobile (`apps/mobile`) mirrors same-name same-value constants in `src/theme/tokens.ts` (dual-platform isomorphism, same policy as color tokens, landing with the mobile motion overhaul). **New transitions/animations must reference tokens — no hardcoded durations or cubic-beziers**; 5 interaction-duration tiers + 3 curves, the same philosophy as the §5 radius scale. Values outside the tiers require design review first. Narrow semantic exceptions are recorded directly below.

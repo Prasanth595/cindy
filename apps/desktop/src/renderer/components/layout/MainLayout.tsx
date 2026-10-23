@@ -503,7 +503,9 @@ export function MainLayout() {
   // 会话切换上报(订阅槽① did-session-switched 数据源):路由变化即报当前
   // 台前会话,平台无关、无 agent-island 门控(它是 mac-only + 焦点门,借用会
   // 让 Windows / 后台窗口漏报)。去重与投递资格全在 main,这里只做纯上报。
+  // 伙伴会话路由由校验过归属的伙伴页面自己上报(useBotPluginFocusedSession)。
   useEffect(() => {
+    if (isAgentIslandVisibleSessionOwnedByBotRoute(location.pathname)) return;
     window.electronAPI?.ghosts?.noteSessionFocused?.(
       resolveAgentIslandVisibleSessionIdFromPath(location.pathname),
     );

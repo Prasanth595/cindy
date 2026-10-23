@@ -624,6 +624,7 @@ import {
 import { deferScheduleIndexHydration } from '@/session/scheduleIndexDefer';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
 import { confirmArchiveWithSchedules, loadActiveBoundScheduleNames } from '@/session/archiveScheduleConfirm';
+import { useSessionListActions } from '@/session/useSessionListActions';
 import { markSessionScheduleRunsRead, unreadRunIdFromProjection } from '@/session/scheduleRunRead';
 import { useRemoteScheduleEventSnapshot } from '@/scheduler/remoteScheduleEvents';
 import { buildSessionNativeShellLayout } from '@/session/mobileNativeShellLayout';
@@ -2740,7 +2741,7 @@ function SessionScreenContent() {
       && !isSharedTaskPeer(deviceId)
       && collab.workerForm.agentLocationSelectable
       && collab.workerForm.modelPicker.open,
-    controlledDeviceId: deviceId,
+    controlledDeviceId: collabWorkerDeviceId,
     keepDeviceIds: workerAgentKeepDeviceIds,
   });
   // Agent 在另一台电脑时,模型 / 来源都属于那台的目录:展示与校验按那份,读不到时按加载中处理。
@@ -9253,20 +9254,33 @@ function SessionScreenContent() {
   //(sessionMetaWriteGuard / sessionMetaWriteQueue / sessionPendingWrites),
   // 首页与本页是同组元数据写的两个入口,写序必须跨页面共享(review P1:首页
   // 置顶在退避中,本页取消置顶——实例级守卫感知不到对方,退避恢复后旧写覆盖
-  // 新写)。点击当帧 applySessionPatch 即时生效,归档 / 删除立即退回首页,RPC
+  // 新写)。归档经列表事务先预览、确认后退出；删除立即退回首页。RPC
   // 经共享队列串行出网;成功仅在本笔仍是最新写时用回包对账,失败时最新写整体
   // 还原会话对象(归档 / 删除把行移出了列表,反向 patch 复活不了)、非最新写
   // requestReseed 收敛,并 Alert 提示(人可能已回到首页,会话页 error 条看不见)。
+  const { patchSession: patchSessionFromList } = useSessionListActions({ preferredRpcDeviceId: deviceId });
   const patchSessionMeta = useCallback((
     patch: Parameters<typeof maker.patchSessionMeta>[1],
+    prepare?: (isCurrent: () => boolean) => Promise<boolean>,
   ) => {
     const session = currentSession;
     if (!deviceId || !session) return;
+    if (patch.status === 'archived') {
+      // 列表与详情共用预览、确认、写序与失败回滚；只在实际提交时退出详情。
+      const isCurrent = () => sessionSubscriptionIdentityRef.current === sessionSubscriptionIdentity;
+      if (!isCurrent()) return;
+      return patchSessionFromList(session, patch, async (isLatest) => {
+        const canConfirm = () => isCurrent() && isLatest();
+        return canConfirm() && (await (prepare?.(canConfirm) ?? true)) && canConfirm();
+      }, goBackToHome).catch((err: unknown) => {
+        Alert.alert(t('session.screen.operationFailed'), humanizeRemoteError(err));
+      });
+    }
     // 出网沿用本页路由设备;乐观 patch / 回滚 / reseed 落行真实所在的物理 shard(与首页
     // 同一解析):re-link 后两者可能不同,按路由 id 落 shard 会让归档移行落空、回滚插错 shard。
     const { rpcDeviceId, shardId } = resolveSessionWriteDevices(sessionId, session, deviceId)
       ?? { rpcDeviceId: deviceId, shardId: deviceId };
-    const leavesDetailScreen = patch.status === 'archived' || patch.status === 'deleted';
+    const leavesDetailScreen = patch.status === 'deleted';
     if (leavesDetailScreen) {
       goBackToHome();
     }
@@ -9350,7 +9364,7 @@ function SessionScreenContent() {
         releasePending();
       }
     })();
-  }, [currentSession, deviceId, goBackToHome, invoke, maker, sessionId]);
+  }, [currentSession, deviceId, goBackToHome, invoke, maker, patchSessionFromList, sessionId, sessionSubscriptionIdentity, t]);
 
   const previewRewindAtMessage = useCallback(async (clientId: string, draft: MobileMessageDraft) => {
     if (messageActionBusy) return;
@@ -9653,6 +9667,23 @@ function SessionScreenContent() {
     requestAnimationFrame(() => composerInputRef.current?.focus());
   }, [applyComposerDocument, canUseComposer, companionResource]);
 
+  // 伙伴近况里的「帮我查查」：输入框空着就作为主人的一句话直接发出（与手动发送同一条路径，带来源设备）；
+  // 已有草稿或附件时不替主人连同草稿一起发，只把这句话放进输入框。
+  const askCompanionInComposer = useCallback((text: string) => {
+    if (!canUseComposer || !composerDraftHydrated) return;
+    const idle = !composerDocumentHasContent(composerDocumentRef.current)
+      && attachments.length === 0 && pendingUploads.length === 0 && !queueEditingRef.current;
+    if (idle && sendLatestRef.current) {
+      void sendLatestRef.current({ documentOverride: textComposerDocument(text) });
+      return;
+    }
+    const node = { type: 'text' as const, text: composerDocumentHasContent(composerDocumentRef.current) ? `\n${text}` : text };
+    const editor = composerInputRef.current;
+    if (editor) editor.insertNode(node);
+    else applyComposerDocument(appendComposerNode(composerDocumentRef.current, node));
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [applyComposerDocument, attachments.length, canUseComposer, composerDraftHydrated, pendingUploads.length]);
+
   const deleteMessage = useCallback((clientId: string) => {
     if (!deviceId || messageActionBusy) return;
     // 运行中能否删由被控端判定:点停止后本地运行态可能晚于被控端收敛,
@@ -9756,6 +9787,8 @@ function SessionScreenContent() {
         working={!!companionWorkingLabel}
         sessionId={sessionId ?? ''}
         onQuoteTodo={quoteTodoInComposer}
+        onAskCompanion={askCompanionInComposer}
+        askCompanionReady={canUseComposer && composerDraftHydrated}
         onSearch={() => setSearchOpen(true)}
         onBack={goBackToHome} />
     </> : <SessionHeaderBar
@@ -9920,10 +9953,13 @@ function SessionScreenContent() {
             extraDirBrowser={extraDirBrowser}
             initialView={menuInitialView}
             keyboardAvoidingBehavior={nativeShellLayout.keyboardAvoidingBehavior}
-            onArchive={() => patchSessionMeta({ status: 'archived' })}
-            confirmArchive={async () => confirmArchiveWithSchedules(t, deviceId
-              ? await loadActiveBoundScheduleNames({ deviceId, invoke, sessionId, source: sessionSourceForSchedule })
-              : [])}
+            onArchive={(prepare) => { void patchSessionMeta({ status: 'archived' }, prepare); }}
+            confirmArchive={async (isCurrent) => {
+              const names = deviceId
+                ? await loadActiveBoundScheduleNames({ deviceId, invoke, sessionId, source: sessionSourceForSchedule })
+                : [];
+              return isCurrent() && confirmArchiveWithSchedules(t, names);
+            }}
             onClose={() => setSettingsOpen(false)}
             onClosed={handleSessionMenuClosed}
             onDelete={() => patchSessionMeta({ status: 'deleted' })}

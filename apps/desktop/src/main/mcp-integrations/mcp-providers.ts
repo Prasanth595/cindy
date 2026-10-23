@@ -489,6 +489,10 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // (hook-script-generator)。lazy import:该链上有 electron app 依赖,且 maker
       // 仅 description 生成模式需要,tool-call 时才解引用。
       hookScript: {
+        isSessionAgentOnOtherDevice: async (sessionId) => {
+          const row = await getSessionRowSnapshot(sessionId);
+          return !!row?.agentDeviceId && !row.remoteHostId;
+        },
         // 绑定会话(heartbeat)任务安装 hook 时解析会话真实工作目录 —— schedule
         // 行上的 workingDir 为空/过期,落盘与自测必须用会话 meta.workDir。
         resolveSessionWorkDir: async (sessionId) => {
@@ -528,6 +532,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           );
         },
       },
+      // 运行位置与模型:与协同 Worker 的 list_available_models 同一份 host 实现。
+      listModels: wrap((s, params) => s.listAvailableModels(params)),
       logger: createLogger('mcp/cindy_scheduler'),
     },
     // cindy_ssh: agent 直接在已配置 SSH 主机上执行命令(远端零安装)。

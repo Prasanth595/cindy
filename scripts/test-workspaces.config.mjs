@@ -149,6 +149,8 @@ const mobileGuardInclude = [
 // in the explicit guard tier. Keeping an exact allowlist makes it impossible
 // for a new source scan to silently become part of the ordinary unit gate.
 const desktopGuardInclude = [
+  // Cross-hook voice stop/refine ownership and composer hydration race wiring.
+  'src/renderer/__tests__/voiceInputEnterToSend.test.ts',
   'src/renderer/__tests__/sessionAgentSwitchRemoteRouting.contract.test.ts',
   'src/main/__tests__/deviceLinkVoiceCredentialBootstrap.test.ts',
   'src/main/__tests__/discordExternalization.test.ts',
@@ -360,6 +362,14 @@ export default {
             ...desktopGuardInclude,
             '**/*.bench.ts',
           ],
+        },
+        integration: {
+          status: 'manual',
+          reason: 'Local application Agent protocol tests open real loopback sockets and temporary authorization stores.',
+          execution: 'exclusive',
+          coverage: 'allowlist',
+          command: vitestBin('run', '--maxWorkers=2'),
+          include: ['src/main/local-agent/__tests__/*.integration.test.ts'],
         },
         'git-integration': {
           status: 'manual',

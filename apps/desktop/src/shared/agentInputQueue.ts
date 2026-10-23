@@ -498,6 +498,8 @@ export function normalizeAgentInputClearBoundaryMs(value: unknown): number | nul
 
 export interface AgentInputProjection {
   sessionId: string;
+  /** Host still owns a turn/dispatch/interaction boundary. Older hosts may omit it. */
+  turnInProgress?: boolean;
   pendingQueue: AgentInputQueuedMessage[];
   /**
    * 被控端最近一次 `/clear` 的权威毫秒 token。只在会话至少 clear 过一次时出现；

@@ -18,6 +18,7 @@ import {
   getCodexAuthInvalidationMarkerPath,
   writeInvalidatedSystemCodexAuthMarker,
 } from '../codex-auth-invalidation.js';
+import { getPreferredSharedCodexAuthPath } from '../codex-shared-auth.js';
 
 const dirs: string[] = [];
 const h = vi.hoisted(() => ({
@@ -295,6 +296,95 @@ describe('dev 沙箱凭证隔离(XDT_ISOLATED_AUTH)', () => {
     expect(fs.statSync(releaseAuth).ino).toBe(releaseStat.ino);
     expect(fs.readFileSync(releaseBinding)).toEqual(releaseBindingBytes);
     expect(fs.existsSync(getCodexAuthInvalidationMarkerPath(codexHome))).toBe(true);
+  });
+
+  // 测试价值（unit）：2026-10-23 实例反复复制已过期的 Release 授权，重新检测持续 401。
+  // 现有覆盖只区分文件缺失、owner 和失效标记，没有过期 Release + 有效本机授权的输入。
+  // 通过真实 getState/getAccessToken 验证选中的授权及落盘结果；下方矩阵保护共享目录与账号边界。
+  // 整文件实测：6.65s（Windows，含既有 adapter 依赖图加载）；未新增模块重置或真实等待。
+  it('普通 Dev 在 Release 授权过期后使用同账号的有效本机授权', async () => {
+    const { localAuth, releaseAuth, systemAuth } = fixture();
+    const now = Math.floor(Date.now() / 1000);
+    const token = (exp: number) =>
+      `header.${Buffer.from(JSON.stringify({ exp })).toString('base64url')}.signature`;
+    const releaseToken = token(now - 3600);
+    const systemToken = token(now + 3600);
+    fs.mkdirSync(path.dirname(releaseAuth), { recursive: true });
+    fs.writeFileSync(
+      releaseAuth,
+      JSON.stringify({ tokens: { access_token: releaseToken, account_id: 'acct-1' } }),
+    );
+    fs.writeFileSync(
+      systemAuth,
+      JSON.stringify({ tokens: { access_token: systemToken, account_id: 'acct-1' } }),
+    );
+    bindReleaseOpenAi(releaseAuth);
+    const releaseBytes = fs.readFileSync(releaseAuth);
+    const systemBytes = fs.readFileSync(systemAuth);
+    h.dataOwnerId = 'owner-a';
+    const { DesktopCodexAuthAdapter } = await import('../auth-adapters.js');
+    const adapter = new DesktopCodexAuthAdapter();
+
+    await expect(adapter.getState({ credentialMode: 'oauth-bearer' })).resolves.toMatchObject({
+      authenticated: true,
+      credentialScope: 'system-shared',
+      oauthWritesBlocked: true,
+    });
+    await expect(adapter.getAccessToken()).resolves.toBe(systemToken);
+    expect(fs.readFileSync(localAuth)).toEqual(systemBytes);
+    expect(fs.readFileSync(releaseAuth)).toEqual(releaseBytes);
+    expect(fs.readFileSync(systemAuth)).toEqual(systemBytes);
+  });
+
+  it.each([
+    { label: 'Release 授权仍有效', releaseOffset: 3600, cliOffset: 7200, cliAccount: 'acct-1', shared: false },
+    { label: '本机授权也已过期', releaseOffset: -3600, cliOffset: -1800, cliAccount: 'acct-1', shared: false },
+    { label: '本机授权有效期未知', releaseOffset: -3600, cliOffset: null, cliAccount: 'acct-1', shared: false },
+    { label: '本机授权属于其他账号', releaseOffset: -3600, cliOffset: 3600, cliAccount: 'acct-other', shared: false },
+    { label: 'Dev 与 Release 共用目录', releaseOffset: -3600, cliOffset: 3600, cliAccount: 'acct-1', shared: true },
+  ])('$label 时保持 Release 授权来源', ({ releaseOffset, cliOffset, cliAccount, shared }) => {
+    const { releaseAuth, systemAuth } = fixture();
+    const now = Math.floor(Date.now() / 1000);
+    const token = (offset: number | null) => offset === null
+      ? 'opaque-token'
+      : `header.${Buffer.from(JSON.stringify({ exp: now + offset })).toString('base64url')}.signature`;
+    fs.mkdirSync(path.dirname(releaseAuth), { recursive: true });
+    fs.writeFileSync(
+      releaseAuth,
+      JSON.stringify({ tokens: { access_token: token(releaseOffset), account_id: 'acct-1' } }),
+    );
+    fs.writeFileSync(
+      systemAuth,
+      JSON.stringify({ tokens: { access_token: token(cliOffset), account_id: cliAccount } }),
+    );
+    bindReleaseOpenAi(releaseAuth);
+    if (shared) h.userDataDir = path.dirname(path.dirname(releaseAuth));
+
+    expect(getPreferredSharedCodexAuthPath('owner-a')).toBe(releaseAuth);
+  });
+
+  // 同一恢复入口也支持旧 auth.json 的 id_token workspace；sub 不能证明 workspace 一致。
+  it.each([
+    { label: '缺少 account_id 时使用嵌套 workspace', accountId: undefined, claims: { 'https://api.openai.com/auth': { chatgpt_account_id: 'acct-1' } }, useCli: true },
+    { label: '空 account_id 时使用顶层 workspace', accountId: '', claims: { chatgpt_account_id: 'acct-1' }, useCli: true },
+    { label: '只有 sub 时不能确认 workspace', accountId: undefined, claims: { sub: 'acct-1' }, useCli: false },
+    { label: '不同 workspace 时不切换', accountId: undefined, claims: { chatgpt_account_id: 'acct-other', sub: 'acct-1' }, useCli: false },
+    { label: '非空 account_id 优先于 id_token workspace', accountId: 'acct-other', claims: { chatgpt_account_id: 'acct-1' }, useCli: false },
+  ])('$label', ({ accountId, claims, useCli }) => {
+    const { releaseAuth, systemAuth } = fixture();
+    const now = Math.floor(Date.now() / 1000);
+    const token = (payload: unknown) =>
+      `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
+    fs.mkdirSync(path.dirname(releaseAuth), { recursive: true });
+    fs.writeFileSync(releaseAuth, JSON.stringify({ tokens: {
+      access_token: token({ exp: now - 3600 }), account_id: accountId, id_token: token(claims),
+    } }));
+    fs.writeFileSync(systemAuth, JSON.stringify({ tokens: {
+      access_token: token({ exp: now + 3600 }), account_id: useCli ? accountId : 'acct-1', id_token: token(claims),
+    } }));
+    bindReleaseOpenAi(releaseAuth);
+
+    expect(getPreferredSharedCodexAuthPath('owner-a')).toBe(useCli ? systemAuth : releaseAuth);
   });
 
   it('共享 Dev 直接使用 Release 登录态，不重链接或改 binding', async () => {

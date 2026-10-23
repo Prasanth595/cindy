@@ -1,4 +1,5 @@
 {
+  "localAgent": {"title":"Local App Connections","empty":"No connected apps","description":"Authorized local apps can use Cindy models and agent capabilities. Cindy keeps supplier credentials.","revoke":"Revoke Connection","failed":"Could not read app connections.","connectTitle":"Connect a Local App","connectMessage":"Allow “{{app}}” to use Cindy?","connectDetail":"This app can list models and providers, create its own executions, and supply tools. Native execution can read and write files and run commands with your system user permissions; the working directory does not restrict access. Provider credentials stay in Cindy. Revoke individual connections in Settings → Remote Connections → Local App Connections.","cancel":"Cancel","allow":"Allow Connection","revokeMessage":"Revoke all local app connections?","revokeDetail":"All local app connections will stop working and their running tasks will stop. Apps can request a new connection when needed.","clientIdentity":"App-reported ID: {{id}}\nVersion: {{version}}\nThe requesting app supplies its name and ID; Cindy has not verified its publisher.","revokeOneMessage":"Revoke this connection for “{{app}}”?","revokeOneDetail":"Tasks running through this connection will stop. Other app connections will keep working. The app can request a new connection when needed.","revokeConnection":"Revoke connection for “{{app}}”","clientId":"App ID: {{id}}","operationFailed":"Could not confirm the local app operation. Check its current state before continuing.","invalidConnection":"The app connection ID is invalid.","revokeFailed":"Could not confirm the revocation. Check the current connection state.","loading":"Loading app connections…","revoking":"Revoking connection…","authorizationRequired":"This operation requires valid local app authorization.","pairExpired":"The connection request expired or was cancelled. Request a new connection from the app.","busy":"A local app execution is still running or the execution limit is reached. End unused executions first.","limitReached":"The local app connection limit is reached. Revoke unused connections in Settings.","invalidWorkspace":"The app must specify an existing absolute working directory on this computer.","sessionExists":"This execution ID is already in use by this app connection.","executionUnavailable":"The requested execution or tool call is unavailable. Messages and tool operations were not replayed.","selectionUnavailable":"The selected model, provider, or reasoning effort is unavailable. Select an available option in the app.","requestNotReplayed":"This request was not repeated. Check the original operation result in the app.","storageUnavailable":"Could not read or save local app connection data. Existing authorization records were retained.","stopUnconfirmed":"Further messages to this execution are blocked, but the process has not been confirmed stopped.","interactionUnavailable":"The engine requires an interaction that this app cannot receive.","interrupted":"This send was interrupted.","toolTimeout":"The app tool timed out. It was not automatically retried.","connectResult":"Return to the requesting app for the connection result. Authorization is decided in the Cindy confirmation window.","invalidRequest":"The app request is invalid or the operation is unsupported.","hostInUse":"Another Cindy instance manages local app connections for this profile. View the connections in that instance.","developerConnection":"Development Connection","copyCode":"Copy Connection Code","codeCopied":"Connection code copied","codeCopyFailed":"Could not copy the connection code","developerState":{"ready":"For temporary connections from apps on this computer. Approval in this Cindy is still required. Copy a new code after restarting.","starting":"Preparing connection…","owner-unavailable":"Sign in or enter local mode first","host-in-use":"Another Cindy manages connections for this data folder","failed":"The local connection could not start","stopped":"The local connection has stopped"}},
   "mailReader": {
     "markReadFailed": "Could not sync read status. Check mailbox authorization and reopen this email.",
     "title": "Mail",
@@ -3382,7 +3383,7 @@
         "paymentRequired": "Paid",
         "paymentUnlock": "Pay to unlock",
         "enableModel": "Enable This Model",
-        "capabilityGroupHint": "Not shown in the chat model picker. The switch controls image and video features.",
+        "capabilityGroupHint": "Not shown in the chat model picker. The switch controls visibility in the relevant feature.",
         "accessWriteFailed": "Couldn't save the change. Please try again.",
         "visibilityWriteFailed": "Couldn't save the model visibility setting. Try again, or restart Cindy if the problem continues.",
         "disabledGroup": "Disabled",
@@ -3878,7 +3879,26 @@
         "pending": "Preparing credentials",
         "unavailable": "Temporarily unavailable"
       },
-      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect."
+      "claudeAccountRetired": "Cindy no longer supports signing in to your subscription through this legacy Claude connection. Your Claude account and subscription are unaffected. Use “Sign in with Claude Code” to connect.",
+      "speechSetup": {
+        "title": "Speech",
+        "add": "Add speech models",
+        "referenceHint": "Reference models come from the public catalog, not your account entitlements. Availability depends on an actual request.",
+        "discoveryHint": "These models were returned by the provider catalog. Speech execution has not been tested.",
+        "saved": "Added",
+        "reference": "Reference",
+        "discovered": "Discovered",
+        "more": "More speech models ({{count}})",
+        "manual": "Enter a speech model ID",
+        "modelId": "Speech model ID",
+        "modelsHint": "Saving speech models does not start speech synthesis. Choose voices and sentence playback in companion voice settings.",
+        "otherModels": "Chat and other models",
+        "separateKey": "Speech requires an API key. This creates a separate connection and keeps your subscription or device-code connection.",
+        "fetchFailed": "The model catalog is unavailable. You can still add reference models.",
+        "saveFailed": "Could not add models. Reopen this page and try again.",
+        "manualSource": "Manual",
+        "manualHint": "Enter the speech model ID provided by your supplier."
+      }
     },
     "experimental": {
       "title": "Experimental",
@@ -6752,6 +6772,8 @@
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
         "mainView": "Can add a “{{title}}” entry to Cindy's left navigation",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
+        "taskView": "Task page “{{title}}” · opens in the task's sidebar",
+        "taskViewDetail": "The tab follows the task and opens in the plugin sandbox; it does not grant file, network, or credential access.",
         "code": "Executable code",
         "codeDetail": "Runs in an isolated sandbox with no access to your files or network.",
         "resident": "Always-on (starts when enabled, keeps a background process even when idle)",
@@ -6909,6 +6931,7 @@
       },
       "contents": {
         "mainView": "Main view",
+        "taskView": "Task page",
         "panel": "Panel",
         "settingsUi": "Custom settings UI",
         "code": "Executable code",
@@ -8243,7 +8266,8 @@
         "collaboration": "Team",
         "unknown": "Unknown tab",
         "ghostPanel": "Plugin panel",
-        "pluginView": "Plugin view"
+        "pluginView": "Plugin view",
+        "pluginTask": "Plugin task page"
       },
       "controls": {
         "showAria": "Show sidebar",
@@ -9043,6 +9067,13 @@
       "undo": "Undo",
       "undoFailed": "Couldn't undo. Try again.",
       "deleteFailed": "Couldn't delete. Try again.",
+      "check": "Check for me",
+      "checkMeta": "Look for new todos in connected mail and chats",
+      "checkPrompt": "Check my connected sources, like mail and messages, for anything new I need to handle, and add it to my todos.",
+      "checkFailed": "Couldn't send. Try again.",
+      "dailyCheck": "Check every day",
+      "dailyCheckMeta": "Weekdays at 9:00, quiet when nothing is new",
+      "dailyCheckFailed": "Couldn't save. Try again.",
       "outputs": "Outputs",
       "outputMeta": "{{time}} · {{task}}",
       "openFailed": "Couldn't open the file",
@@ -13875,7 +13906,8 @@
         "modelListAria": "Model list",
         "modelSelectorAria": "Model selector",
         "categoryListAria": "{{category}} models",
-        "effortListAria": "Reasoning effort"
+        "effortListAria": "Reasoning effort",
+        "boundLocationLocked": "Bound tasks keep running where they are. Choose a model from that computer."
       }
     },
     "toast": {
@@ -16072,6 +16104,10 @@
     "builtinFollowUp": {
       "name": "Follow-up (built-in)",
       "hint": "Wakes it when a session is stuck, waiting for you, errors out, hits the usage limit, or finishes. Built in, so it can only be paused or resumed."
+    },
+    "builtinTodoCheck": {
+      "name": "Daily todo check (built-in)",
+      "hint": "Looks for new todos in connected sources on weekdays at 9:00 and stays quiet when there is nothing new. Turned on or off from the glance; it can only be paused or resumed."
     }
   },
   "cindyMakeDoctor": {

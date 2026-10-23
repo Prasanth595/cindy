@@ -2,12 +2,13 @@
  * 伙伴「近况」浮层（伙伴聊天头部的网格按钮）。只有三块，没有内容的块整块不出现：
  * - 电脑：伙伴在哪台上运行，点另一台在线的电脑就换过去；离线的收进「离线 N 台」。
  *   云端伙伴换主力电脑沿用原来的确认流程；Cindy 的多台副本直接打开那台上的她。
- * - 待办：主人要做的事。没有按钮：点一条就作为引用放进输入框，由主人一句话交代；右键只能删除（可撤销）。
- *   到期的那条在期限前带红点，入口在主人还没看过时也亮同样的红点。
+ * - 待办：主人要做的事。第一行「帮我查查」让伙伴现在去已连接的来源里找新待办（作为主人的一句话发进对话），
+ *   下面一行开关让伙伴每个工作日早上自己查一次。待办本身没有按钮：点一条就作为引用放进输入框，
+ *   由主人一句话交代；右键只能删除（可撤销）。到期的那条在期限前带红点，入口在主人还没看过时也亮同样的红点。
  * - 输出内容：伙伴开的任务做完时留下的成品文件，点开即打开；别的电脑上的打开来源任务。
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
-import { Check, ChevronDown, LayoutGrid, Monitor } from 'lucide-react';
+import { Check, ChevronDown, LayoutGrid, Monitor, ScanSearch } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -23,6 +24,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Switch } from '@/components/ui/switch';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import type { Session } from '@/lib/ccAgent.types';
+import { makerChatStore } from '@/lib/makerChatStore';
+import * as sessionService from '@/lib/sessionService';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { insertTodoReferenceIntoComposer } from '@/lib/composerActionsBus';
@@ -40,7 +46,15 @@ import { useBotProfiles, useBotUnreadCounts } from './botStore';
 import { cloudRemoteBots, withoutCloudCompanions, withoutShadowedBots } from './companionCloudPresentation';
 import { useCompanionCloud } from './companionCloudStore';
 import { cindyDeviceKey, cindyDeviceOptions, isCindyDeviceBot } from './cindyDeviceRoster';
-import { dueTodos, hasUnseenDue, markDueSeen, patchGlanceTodo, useGlanceTodos, type GlanceTodoHost } from './botGlanceTodos';
+import {
+  dueTodos,
+  hasUnseenDue,
+  markDueSeen,
+  patchGlanceTodo,
+  setGlanceDailyCheck,
+  useGlanceTodos,
+  type GlanceTodoHost,
+} from './botGlanceTodos';
 import { useRemoteBots } from './useRemoteBots';
 
 /** 每块先列几条，其余收进「显示更多」。 */
@@ -354,6 +368,50 @@ function TodoRow({
   );
 }
 
+/**
+ * 「帮我查查」：以主人的一句话发进伙伴对话，和主人自己打字发送走同一条路径（远程伙伴同样带来源设备标记）。
+ * 用的是伙伴对话当前的模型、思考档位与权限。
+ */
+async function sendToTeammate(sessionId: string, deviceId: string | undefined, text: string): Promise<boolean> {
+  const owner = getDataOwnerGeneration();
+  const row = deviceId
+    ? (remoteProjectsStore.getDeviceSessions(deviceId).find((session) => session.id === sessionId) ??
+      ((await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:sessions:get', [sessionId])) as Session | null))
+    : await sessionService.get(sessionId);
+  if (!isDataOwnerGenerationCurrent(owner) || !row?.workingDir) return false;
+  return makerChatStore.sendMessage(sessionId, text, row.model, row.effort, row.permissionMode, row.workingDir);
+}
+
+function DailyCheckSwitch({ host, todos }: { host: GlanceTodoHost; todos: ReturnType<typeof useGlanceTodos> }) {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const checked = todos.todos.dailyCheck;
+  if (checked === null) return null;
+  const change = async (next: boolean) => {
+    setBusy(true);
+    try {
+      todos.setDailyCheck(await setGlanceDailyCheck(host, next));
+    } catch {
+      toast.error(t('bots.glance.dailyCheckFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <label
+      data-testid="bot-glance-daily-check"
+      className="flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-[var(--surface-hover)]"
+    >
+      <span className="w-5 shrink-0" aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-13 text-[var(--text-primary)]">{t('bots.glance.dailyCheck')}</span>
+        <span className="block truncate text-12 text-[var(--text-tertiary)]">{t('bots.glance.dailyCheckMeta')}</span>
+      </span>
+      <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void change(next)} />
+    </label>
+  );
+}
+
 function Todos({
   host,
   sessionId,
@@ -371,7 +429,15 @@ function Todos({
   const [menu, setMenu] = useState<{ todo: TeammateTodo; x: number; y: number } | null>(null);
   const menuOrigin = useRef<HTMLButtonElement | null>(null);
   const { open, done, doneTotal, openTotal } = todos.todos;
-  if (open.length === 0 && doneTotal === 0) return null;
+
+  const check = () => {
+    onClose();
+    void sendToTeammate(sessionId, host.deviceId, t('bots.glance.checkPrompt'))
+      .then((sent) => {
+        if (!sent) toast.error(t('bots.glance.checkFailed'));
+      })
+      .catch(() => toast.error(t('bots.glance.checkFailed')));
+  };
 
   const quote = (todo: TeammateTodo) => {
     onClose();
@@ -412,6 +478,14 @@ function Todos({
   const hiddenCount = Math.max(0, openTotal - TODO_PREVIEW);
   return (
     <Section label={t('bots.glance.todos')}>
+      <Row
+        testId="bot-glance-check"
+        icon={<ScanSearch size={16} />}
+        title={t('bots.glance.check')}
+        meta={t('bots.glance.checkMeta')}
+        onClick={check}
+      />
+      <DailyCheckSwitch host={host} todos={todos} />
       {visible.map((todo) => (
         <TodoRow
           key={todo.id}

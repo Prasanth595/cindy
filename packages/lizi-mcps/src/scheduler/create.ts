@@ -20,6 +20,7 @@ import { assertCronAndTimezoneValid, withScheduler } from './_shared.js';
 import type { LiziMcpSessionContext, SchedulerMcpDeps } from '../types.js';
 import type { SchedulerToolRegistry } from '../cindy_schedulerToolRegistry.js';
 import type { CreateScheduleInput } from '@cindy/maker-scheduler';
+import { LOCAL_SCHEDULE_AGENT_DEVICE } from './listModels.js';
 import { stabilizePreRunHookForCreate } from '@cindy/maker-scheduler';
 
 export function registerScheduleCreateTool(
@@ -106,6 +107,14 @@ export function registerScheduleCreateTool(
             '省略 → 走该 agent 原生默认来源（与不带本字段的旧行为字节级一致）。' +
             '只有要把任务钉在某个非原生来源（如 Anthropic 订阅档）时才传；heartbeat 模式留空则沿用绑定会话的来源。',
         ),
+      agentDeviceId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          '可选：每次新建任务时 Agent 在哪里运行——同账号另一台电脑或分享来的供应商。取 schedule_list_models 返回的 locations[].agentDeviceId；省略或 "local" = 本机。' +
+            '设了必须同时传 schedule_list_models 在该位置列出的 model（建议连同 providerId）。绑定已有任务（targetSessionId / bindToCurrentSession 且非 persistentSession）时运行位置跟随该任务，不能设。',
+        ),
       effort: z
         .enum(EFFORT)
         .optional()
@@ -167,6 +176,13 @@ export function registerScheduleCreateTool(
           bindToCurrentSession?: boolean;
         };
         let input = rest as CreateScheduleInput;
+        if (input.agentDeviceId === LOCAL_SCHEDULE_AGENT_DEVICE) {
+          const { agentDeviceId: _local, ...localInput } = input;
+          input = localInput;
+        }
+        if (input.agentDeviceId && (bindToCurrentSession || input.targetSessionId) && !input.persistentSession) {
+          throw new Error('invalid request: 绑定已有任务时运行位置跟随该任务，不能设 agentDeviceId');
+        }
         // script 模式工具层前置校验(引擎也校验,这里保证报错落 INVALID_PARAMS 且
         // 消息可直接指导模型自纠;agent 模式则补回 prompt 非空校验——schema 里
         // prompt 已放宽为 optional 以兼容 script 模式)。

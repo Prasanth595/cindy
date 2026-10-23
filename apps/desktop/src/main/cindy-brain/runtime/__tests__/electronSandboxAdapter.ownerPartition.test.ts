@@ -612,6 +612,86 @@ describe('electronSandboxAdapter owner partition', () => {
     }
   });
 
+  it('回环嵌入插件:面板子帧及其同端口请求放行,面板自身与其它端口仍拒绝', async () => {
+    const embed = ghost('loopback-embed');
+    embed.manifest.preview = { hosts: ['127.0.0.1'] };
+    embed.manifest.node = { entry: 'node/worker.cjs', protocol: 'json-rpc-stdio' };
+    ensureGhostProtocolRegistered(embed);
+    const registered = harness.sessions.get(
+      approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:loopback-embed'),
+    );
+    const handler = registered?.beforeRequest.mock.calls[0]?.[0] as
+      | ((details: Record<string, unknown>, callback: (result: { cancel: boolean }) => void) => void)
+      | undefined;
+    expect(handler).toBeTypeOf('function');
+    const cancelled = (details: Record<string, unknown>): boolean => {
+      const callback = vi.fn();
+      handler?.(details, callback);
+      return callback.mock.calls[0]?.[0].cancel as boolean;
+    };
+    const panelUrl = 'cindy-ghost://loopback-embed/panel.html';
+    const page = 'http://127.0.0.1:50365/control?udid=x';
+    // 面板把本机页面装进 <iframe>
+    expect(cancelled({ url: page, resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: panelUrl } } })).toBe(false);
+    expect(cancelled({ url: page, resourceType: 'subFrame', referrer: panelUrl })).toBe(false);
+    // 本机页面自己的更深一层子帧(控制页把设备画面再套一层 iframe):同端口才放行
+    expect(cancelled({ url: 'http://127.0.0.1:50365/simulators/x?handheld=1', resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: page } } })).toBe(false);
+    expect(cancelled({ url: 'http://127.0.0.1:50365/simulators/x?handheld=1', resourceType: 'subFrame', referrer: page })).toBe(false);
+    // 子帧内回到同一主机:端口的资源与 WebSocket
+    for (const [url, resourceType] of [
+      ['http://127.0.0.1:50365/control.js', 'script'],
+      ['http://127.0.0.1:50365/control.css', 'stylesheet'],
+      ['http://127.0.0.1:50365/control-api', 'xhr'],
+      ['ws://127.0.0.1:50365/simulators/x/stream', 'webSocket'],
+      ['http://127.0.0.1:50365/shot.jpg', 'image'],
+    ] as const) {
+      expect(cancelled({ url, resourceType, frame: { url: page } }), `${resourceType} ${url}`).toBe(false);
+    }
+    // 拒绝:顶层导航、面板页自己直连回环、换端口、换主机、非回环父帧、HTTPS 伪装
+    for (const details of [
+      { url: page, resourceType: 'mainFrame', frame: { url: panelUrl } },
+      { url: 'http://127.0.0.1:50365/control-api', resourceType: 'xhr', frame: { url: panelUrl } },
+      { url: 'http://127.0.0.1:50365/control-api', resourceType: 'xhr', referrer: panelUrl },
+      { url: 'http://127.0.0.1:1/other', resourceType: 'xhr', frame: { url: page } },
+      { url: 'ws://127.0.0.1:1/socket', resourceType: 'webSocket', frame: { url: page } },
+      { url: 'http://10.0.0.5:50365/x', resourceType: 'xhr', frame: { url: page } },
+      { url: page, resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: 'cindy-ghost://other-ghost/panel.html' } } },
+      { url: page, resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: 'https://evil.example/' } } },
+      // 更深的子帧跨到另一个回环端口/主机:拒绝
+      { url: 'http://127.0.0.1:1/control?udid=x', resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: page } } },
+      { url: 'http://10.0.0.5:50365/control?udid=x', resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: page } } },
+      { url: page, resourceType: 'subFrame' },
+      { url: 'http://user:pw@127.0.0.1:50365/x', resourceType: 'xhr', frame: { url: page } },
+      { url: 'https://127.0.0.1:50365/x', resourceType: 'xhr', frame: { url: page } },
+    ]) {
+      expect(cancelled(details), JSON.stringify(details)).toBe(true);
+    }
+    const response = await registered?.protocolHandler?.(new Request('cindy-ghost://loopback-embed/panel.html'));
+    expect(response?.headers.get('content-security-policy')).toContain("frame-src 'self' http://127.0.0.1:* http://localhost:*");
+  });
+
+  it('未同时声明 panel、node 与回环 preview 的插件不放行任何回环请求,CSP 不含 frame-src', async () => {
+    const cases: Array<[string, (m: Record<string, unknown>) => void]> = [
+      ['loopback-no-node', (m) => { m.preview = { hosts: ['127.0.0.1'] }; }],
+      ['loopback-no-preview', (m) => { m.node = { entry: 'node/worker.cjs', protocol: 'json-rpc-stdio' }; }],
+      ['loopback-remote-preview', (m) => { m.preview = { hosts: ['demo.example.dev'] }; m.node = { entry: 'node/worker.cjs', protocol: 'json-rpc-stdio' }; }],
+    ];
+    for (const [id, mutate] of cases) {
+      const installed = ghost(id);
+      mutate(installed.manifest as unknown as Record<string, unknown>);
+      ensureGhostProtocolRegistered(installed);
+      const registered = harness.sessions.get(approvedPartition(`cindy-ghost-owner:cloud:opaque-owner-a:${id}`));
+      const handler = registered?.beforeRequest.mock.calls[0]?.[0] as
+        | ((details: Record<string, unknown>, callback: (result: { cancel: boolean }) => void) => void)
+        | undefined;
+      const callback = vi.fn();
+      handler?.({ url: 'http://127.0.0.1:50365/control', resourceType: 'subFrame', frame: { url: 'about:blank', parent: { url: `cindy-ghost://${id}/panel.html` } } }, callback);
+      expect(callback.mock.calls[0]?.[0].cancel, id).toBe(true);
+      const response = await registered?.protocolHandler?.(new Request(`cindy-ghost://${id}/panel.html`));
+      expect(response?.headers.get('content-security-policy'), id).not.toContain('frame-src');
+    }
+  });
+
   it('重复确保同一分区不会累积网络或协议 listener', () => {
     const installed = ghost('https-image-listener-once');
     ensureGhostProtocolRegistered(installed);

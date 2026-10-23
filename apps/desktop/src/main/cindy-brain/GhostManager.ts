@@ -3533,6 +3533,14 @@ export class GhostManager {
         },
       };
     }
+    if (v.manifest.taskView && !zip.file(`${prefix}${v.manifest.taskView.html}`)) {
+      return {
+        rejection: {
+          code: 'file-invalid',
+          reason: `清单声明了 taskView.html,但压缩包内缺少 ${v.manifest.taskView.html}`,
+        },
+      };
+    }
     let localizedManifest = withGhostResolvedLocale(v.manifest, locale);
     const localeResources: Record<string, GhostManifestLocaleResource> = {};
     if (v.manifest.locales !== undefined) {

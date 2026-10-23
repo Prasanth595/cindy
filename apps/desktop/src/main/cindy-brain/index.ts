@@ -405,6 +405,7 @@ import {
 import { GhostPickSlot } from './pickSlot.js';
 import { recordGhostPickedDir, relocateGhostPickedDirs } from './pickGrantsStore.js';
 import { GhostPreviewSlot } from './previewSlot.js';
+import { broadcastTaskViewOpen, GhostTaskViewSlot } from './taskViewSlot.js';
 import { GhostScheduleSlot, isMainShellWindowUrl } from './scheduleSlot.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
@@ -3921,6 +3922,27 @@ export function getGhostPreviewSlot(): GhostPreviewSlot {
     });
   }
   return previewSlotSingleton;
+}
+
+let taskViewSlotSingleton: GhostTaskViewSlot | null = null;
+
+/** 插件任务页开页通道(main → 主窗口 renderer;在指定任务的右侧栏开 / 聚焦任务页页签)。 */
+export const GHOST_TASK_VIEW_OPEN_CHANNEL = 'ghosts:task-view-open';
+
+/** 任务页开页槽单例(taskView):资格审与落点解析在 GhostTaskViewSlot,这里只组装广播。 */
+export function getGhostTaskViewSlot(): GhostTaskViewSlot {
+  if (!taskViewSlotSingleton) {
+    taskViewSlotSingleton = new GhostTaskViewSlot({
+      getGhost: findGhostForInstanceId,
+      focusedSessionId: () => ghostSessionFocusTracker.current(),
+      broadcast: (payload) => broadcastTaskViewOpen(
+        BrowserWindow.getAllWindows(), payload,
+        (window, push) => sendGhostWindowPush(window, GHOST_TASK_VIEW_OPEN_CHANNEL, push),
+      ),
+      log,
+    });
+  }
+  return taskViewSlotSingleton;
 }
 
 let scheduleSlotSingleton: GhostScheduleSlot | null = null;
@@ -8751,6 +8773,11 @@ export function registerGhostIpc(): void {
     // preview.hosts 白名单;守门/限速在 previewSlot,落地在 renderer。
     if (type === 'preview-request') {
       return getGhostPreviewSlot().handleRequest(id, payload);
+    }
+    // task-view-request = 在任务右侧栏打开 / 聚焦插件自己的任务页(taskView 槽):
+    // 只承载包内页面,不收网址;落点解析在 taskViewSlot,落地在 renderer。
+    if (type === 'task-view-request') {
+      return getGhostTaskViewSlot().handleRequest(id, payload);
     }
     // schedule-request = 打开自动化创建面板并预填(agent 槽的 schedule 加档):
     // 只开面板,任务由用户选模型后亲手保存才落库——本槽全程不碰 schedule storage。

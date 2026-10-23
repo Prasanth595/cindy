@@ -185,6 +185,7 @@ app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 // Windows 上 codex app-server 子进程不会随父死 → 残留孤儿, 持有 binary 文件锁,
 // 用户下次启动时撞 EBUSY / 端口占用 (anthropic-compat-proxy 等)。
 async function shutdownMaker(): Promise<{ piSessionFailures: number }> {
+  await disposeLocalAgentHost();
   stopWorktreeRecycleMaintenance();
   // Do not terminate Main while one workspace patch command is settling.
   await waitForTurnChangeSetActions();
@@ -416,6 +417,8 @@ import {
   isCindyPersonalRuntime,
 } from './cindy-make/versionRuntimeIdentity.js';
 import { createStorageIpcHandlers } from './cindy-media/storageIpc';
+import { registerLocalAgentConfirmationIpc, cancelLocalAgentConfirmations } from './local-agent/confirmation.js';
+import { disposeLocalAgentHost, localAgentConnections, localAgentDeveloperConnection, revokeLocalAgentConnections } from './local-agent/service.js';
 import { clearLocalEntries } from './device-link/remoteMediaCacheStore';
 import {
   collectDatabaseSizeWarningStatus,
@@ -2028,6 +2031,7 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
         // Marked before the await: `shutdownStarted` is set on entry, so the
         // singleton is poisoned even if this rejects.
         if (maker) shutdownRan = true;
+        await disposeLocalAgentHost();
         const shutdownReport = maker
           ? await maker.shutdown({ reason: 'account-boundary' })
           : undefined;
@@ -2533,6 +2537,7 @@ registerGhostIpc();
 registerPluginMarketIpc();
 registerPluginPublisherIpc();
 setAppSessionCommitBoundaryHook(() => {
+  cancelLocalAgentConfirmations();
   // 进行中的 Claude Code 登录属于旧 owner:结束 CLI 子进程,不让它在新 owner 下完成。
   cancelClaudeCliLogin();
   clearAllSessionAttention();
@@ -8550,6 +8555,19 @@ const registerIpcHandlers = () => {
         !getActiveAppSession().dataOwnerId || isAppSessionBoundaryPending()
           ? Promise.resolve({ bytes: 0, fileCount: 0 })
           : withActiveChatAttachmentRoot((rootDir) => getFixedDirectoryStats(rootDir)),
+    });
+    registerLocalAgentConfirmationIpc(() => mainWindowRef);
+    ipcMain.handle('local-agent:connections', (event) => {
+      assertTrustedAppRendererEvent(event);
+      return localAgentConnections(() => assertTrustedAppRendererEvent(event));
+    });
+    ipcMain.handle('local-agent:developer-connection', (event) => {
+      assertTrustedAppRendererEvent(event);
+      return localAgentDeveloperConnection(() => assertTrustedAppRendererEvent(event));
+    });
+    ipcMain.handle('local-agent:revoke', (event, connectionId?: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      return revokeLocalAgentConnections(connectionId, () => assertTrustedAppRendererEvent(event));
     });
     ipcMain.handle('cindy-media:storage-stats', (event) => {
       assertTrustedAppRendererEvent(event);

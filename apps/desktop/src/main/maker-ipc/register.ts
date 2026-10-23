@@ -48,6 +48,7 @@ import { configureBotAutonomyHost, getBotAutonomyGlance, noteBotAutonomyInputPro
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
+import { cancelPendingRemoteStart } from '../remote-agent/controller/startRemote.js';
 import { forgetCredentialGrants } from '../remote-agent/executor/credentialGrants.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
 import {
@@ -965,7 +966,7 @@ import {
   createOrcaUiAssignmentDispatchClaims,
   createOrcaUiAssignmentHistoryGate,
 } from './orcaUiAssignmentHistoryGate.js';
-import { throwOrcaServiceFailure } from './orcaServiceFailure.js';
+import { orcaModelDiscoveryFailure, throwOrcaServiceFailure } from './orcaServiceFailure.js';
 import {
   createOrcaTeamService,
   findFocusTargetWorker,
@@ -1463,7 +1464,7 @@ import {
   resolveGhostUserHookModel,
   withGhostUserHookModel,
 } from '../cindy-brain/subscriptionGateway.js';
-import { createSessionExecutionResolver } from './sessionExecutionSelection.js';
+import { createSessionExecutionResolver, resolveSessionExecutionSelection } from './sessionExecutionSelection.js';
 import { createGhostErrandRunner } from './ghostErrandRunner.js';
 import {
   createPluginTaskSession,
@@ -2886,6 +2887,8 @@ interface OrcaCollabService {
   listAvailableModels: (params: {
     agent?: AgentKind;
     callerSessionId?: string;
+    /** Worker task/model discovery is owned by this execution computer. */
+    executionDeviceId?: string;
     /** 列哪里的模型：缺省 = Lead 所在位置；null = 任务所在电脑；string = 那台电脑或分享。 */
     agentDeviceId?: string | null;
   }) => Promise<
@@ -6476,6 +6479,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     });
   });
   setSessionRuntimeCleanup((sessionId) => {
+    // 任务在另一台电脑上还没启动完：让那台停下，不再迟到地启动、跑完这一轮。
+    cancelPendingRemoteStart(sessionId);
     workingDirectoryRecovery.discard(sessionId);
     clearSessionRuntimeControlState(sessionId);
     clearSessionProvider(sessionId);
@@ -9629,6 +9634,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return (await activeCompanionCloud()?.transfer(botId, targetDeviceId, companionSwitchOptions(options))) ?? { ok: false, code: 'NOT_ENABLED' };
   });
   registerOrcaRemoteWorkerHandlers(makerSessionRegistry, createOrcaRemoteWorkerHost({
+    readModels: async (request) => {
+      const owner = getCurrentDbClientSnapshot();
+      const result = await orcaCollabServiceHolder?.listAvailableModels({ ...request, agentDeviceId: request.agentDeviceId ?? null });
+      if (getCurrentDbClientSnapshot() !== owner) throwIpcError('PRECONDITION_FAILED', 'Worker account changed');
+      if (!result?.ok) throw new Error(`[${result?.errorCode ?? 'HOST_NOT_READY'}] ${result?.message ?? 'Worker model service is not ready'}`);
+      return result;
+    },
     getCaller: () => {
       const context = getDeviceLinkInvokeContext();
       return context
@@ -9643,6 +9655,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient()
         .drizzle.select({
           orcaRemoteLead: sessions.orcaRemoteLead,
+          agentDeviceId: sessions.agentDeviceId,
+          providerId: sessions.providerId,
           status: sessions.status,
           workingDir: sessions.workingDir,
           model: sessions.model,
@@ -9662,10 +9676,40 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         agentKind: row.agentKind === 'cc' ? 'claude-code' : (row.agentKind as 'codex' | 'pi'),
         effort: row.effort,
         fastMode: row.fastMode,
+        agentDeviceId: row.agentDeviceId,
+        providerId: row.providerId,
       };
     },
     openSession: createOrcaRemoteWorkerSessionOpener({
       openSession,
+      isSelfDeviceId: deviceId => deviceId === getSelfDeviceId(),
+      captureOwner: () => {
+        const owner = getCurrentDbClientSnapshot();
+        return () => { if (getCurrentDbClientSnapshot() !== owner) throwIpcError('PRECONDITION_FAILED', 'Worker account changed'); };
+      },
+      resolveAgentSelection: async request => {
+        const views = await readDeviceProviderViews(remoteBackgroundInvoke, request.agentDeviceId!);
+        const routing = deviceWorkerRoutingContext(views, request.agentKind);
+        const models = routing.remoteCodexModels ?? [];
+        const providers = routing.availability[request.agentKind];
+        const model = request.model ?? (request.providerId
+          ? providers.find(provider => provider.id === request.providerId)?.models[0]
+          : models[0]?.id);
+        try {
+          const selected = resolveSessionExecutionSelection({
+            selection: { agentKind: request.agentKind, model, providerId: request.providerId,
+              effort: request.effort, fastMode: request.fastMode },
+            availableAgents: [request.agentKind], availableModels: models, providerRouting: routing,
+            // The connected remote provider owns its credential; it validates the
+            // credential again when starting. Never require/copy this host's key.
+            hasCindyAiApiKey: true,
+          });
+          return { ...request, model: selected.model, providerId: selected.providerId ?? undefined,
+            effort: selected.effort, fastMode: selected.fastMode };
+        } catch (error) {
+          throwIpcError('INVALID_PARAMS', error instanceof Error ? error.message : 'Worker model is unavailable');
+        }
+      },
       insertSession: async (row) => {
         await getDbClient().drizzle.insert(sessions).values(row).run();
       },
@@ -9681,6 +9725,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           workingDir: opened.workingDir ?? '',
           model: opened.model,
           providerId: opened.providerId,
+          agentDeviceId: opened.agentDeviceId ?? undefined,
           effort: (opened.effort || undefined) as CreateOpts['effort'],
           fastMode: opened.fastMode,
           permissionMode: opened.permissionMode as CreateOpts['permissionMode'],
@@ -10935,6 +10980,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     isBusy: () => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning(),
     resolveSelection: async (route) => {
+      // Agent 在另一台电脑运行的任务:自动化的选择按那台的已授权目录解析,本机停用轴不适用。
+      const row = await agentSwitchDeps.getSessionRow(sessionId);
+      if (row?.agentDeviceId && !row.remoteHostId) {
+        return resolveScheduledModelSelectionLive(route, { agentDeviceId: row.agentDeviceId });
+      }
       const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
       return resolveScheduledModelSelectionLive({ ...route,
         providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
@@ -16945,8 +16995,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         };
       }
     },
-    listAvailableModels: async ({ agent, callerSessionId, agentDeviceId: requestedAgentDeviceId }) => {
+    listAvailableModels: async ({ agent, callerSessionId, executionDeviceId, agentDeviceId: requestedAgentDeviceId }) => {
       try {
+        if (executionDeviceId) {
+          if (!orcaRemoteWorkersForHost) throw new Error('[HOST_NOT_READY] Worker service is not ready');
+          const result = await orcaRemoteWorkersForHost.readModels(executionDeviceId, {
+            ...(agent ? { agent } : {}), agentDeviceId: requestedAgentDeviceId ?? null,
+          });
+          return { ok: true, ...result };
+        }
         const agents: AgentKind[] = agent ? [agent] : ['codex', 'claude-code', 'pi'];
         // SSH Lead 的 Worker 在 SSH 主机上运行 Agent，不能放到别的电脑：不列可选位置。
         const sshLead = callerSessionId ? Boolean(await readSessionRemoteHostIdCached(callerSessionId)) : false;
@@ -17007,11 +17064,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }
         return { ok: true, agentDeviceId: null, ...(locations ? { locations } : {}), ...result };
       } catch (err) {
-        return {
-          ok: false,
-          errorCode: 'INTERNAL',
-          message: err instanceof Error ? err.message : String(err),
-        };
+        return orcaModelDiscoveryFailure(err, Boolean(executionDeviceId));
       }
     },
   };

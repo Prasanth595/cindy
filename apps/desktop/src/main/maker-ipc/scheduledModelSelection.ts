@@ -114,8 +114,10 @@ export async function applyScheduledModelSelection(
 ): Promise<ScheduledModelSelection> {
   const target = await deps.getTarget();
   // The runner owns missing/archived target recovery, including persistent-task rebinding.
+  // Its replacement resolves at the schedule's saved location. Do not query the old
+  // target's catalog: that device may be offline or its provider share revoked.
   if (!target || target.status === 'archived' || target.status === 'deleted') {
-    return deps.resolveSelection(selection);
+    return selection;
   }
   if (deps.isBusy()) throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the current turn');
   assertScheduledHarnessSupported(target, selection.agentKind);

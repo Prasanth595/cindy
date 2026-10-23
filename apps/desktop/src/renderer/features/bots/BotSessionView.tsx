@@ -16,6 +16,7 @@ import type { BotChatIdentity } from './BotSessionContentHeader';
 import type { BotChatBinding } from './botChatPresentation';
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
 import { BotDmThreadHost } from './BotDmThreadHost';
+import { useBotPluginFocusedSession } from './useBotPluginFocusedSession';
 
 type BotSessionGate =
   | { kind: 'loading' }
@@ -87,7 +88,9 @@ function BotSessionGateView() {
   const [gate, setGate] = useState<BotSessionGate>({ kind: 'loading' });
   // The companion now runs on its main computer: this copy's main task is read only.
   const shadowed = useCompanionCloud().demotedBotIds.includes(botId ?? '');
-  useBotIslandVisibleSession(gate.kind === 'ready' ? sessionId ?? null : null);
+  const ownedSessionId = gate.kind === 'ready' ? sessionId ?? null : null;
+  useBotIslandVisibleSession(ownedSessionId);
+  useBotPluginFocusedSession(ownedSessionId);
   // The gate proves ownership once; name and avatar edited in settings must
   // still reach the open chat's header and composer.
   const liveProfile = useBotProfiles().find((profile) => profile.id === botId);

@@ -1240,6 +1240,8 @@ export const Method = {
   ConfigRead: 'config/read',
   /** EXPERIMENTAL. Register a remote exec-server as a named environment. */
   EnvironmentAdd: 'environment/add',
+  /** EXPERIMENTAL. Read a named environment's status without starting or recovering it. */
+  EnvironmentStatus: 'environment/status',
   ExperimentalFeatureList: 'experimentalFeature/list',
   ExperimentalFeatureEnablementSet: 'experimentalFeature/enablement/set',
   MemoryReset: 'memory/reset',

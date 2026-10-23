@@ -749,6 +749,7 @@ const fanOutGhostInstallConsentRequest = createIpcFanOut('ghosts:install-consent
 const fanOutGhostInstallConsentDismissed = createIpcFanOut('ghosts:install-consent:dismissed');
 // 插件预览开页(preview 槽:renderer 在右侧栏开 web-browser 标签)。
 const fanOutGhostPreviewOpen = createIpcFanOut('ghosts:preview-open');
+const fanOutGhostTaskViewOpen = createIpcFanOut('ghosts:task-view-open');
 // 插件自动化草稿(agent 槽 schedule 加档:renderer 开自动化创建面板并预填)。
 const fanOutGhostScheduleDraft = createIpcFanOut('ghosts:schedule-draft');
 const fanOutVoiceInputModifierShortcutKeys = createIpcFanOut('voice-input:modifier-shortcut-keys');
@@ -1076,6 +1077,28 @@ const appearanceSettingsInfo = ipcRenderer.sendSync(
 ) as AppearanceSettings | null;
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  localAgent: {
+    onConfirmation: (listener: (request: import('../shared/localAgent').LocalAgentConfirmation) => void): (() => void) => {
+      const receive = (_event: Electron.IpcRendererEvent, request: import('../shared/localAgent').LocalAgentConfirmation) => listener(request);
+      ipcRenderer.on('local-agent:confirmation', receive);
+      return () => ipcRenderer.removeListener('local-agent:confirmation', receive);
+    },
+    onConfirmationDismissed: (listener: (requestId: string) => void): (() => void) => {
+      const receive = (_event: Electron.IpcRendererEvent, requestId: string) => listener(requestId);
+      ipcRenderer.on('local-agent:confirmation:dismissed', receive);
+      return () => ipcRenderer.removeListener('local-agent:confirmation:dismissed', receive);
+    },
+    answerConfirmation: (requestId: string, confirmed: boolean): Promise<boolean> =>
+      ipcRenderer.invoke('local-agent:confirmation:answer', requestId, confirmed),
+    developerConnection: (): Promise<import('../shared/localAgent').LocalAgentDeveloperConnection | null> => ipcRenderer.invoke('local-agent:developer-connection'),
+    connections: (): Promise<import('../shared/localAgent').LocalAgentConnection[]> => ipcRenderer.invoke('local-agent:connections'),
+    revoke: (connectionId?: string): Promise<boolean> => ipcRenderer.invoke('local-agent:revoke', connectionId),
+    onConnectionsChanged: (listener: () => void) => {
+      const receive = () => listener();
+      ipcRenderer.on('local-agent:connections-changed', receive);
+      return () => ipcRenderer.removeListener('local-agent:connections-changed', receive);
+    },
+  },
   modelFavoritesHost: {
     ready: () => ipcRenderer.send(FAVORITE_HOST_READY),
     changed: (stamp) => ipcRenderer.send(FAVORITE_HOST_CHANGED, stamp),
@@ -1463,6 +1486,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resolveInstallConsent: (requestId: string, confirmed: boolean): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('ghosts:install-consent:resolve', { requestId, confirmed }),
     onPreviewOpen: fanOutGhostPreviewOpen,
+    onTaskViewOpen: fanOutGhostTaskViewOpen,
     onScheduleDraft: fanOutGhostScheduleDraft,
     getCard: (
       callId: string,
@@ -2044,8 +2068,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** 把页签弹出到独立窗口;已弹出则聚焦。 */
     open: (request: SidebarTabWindowOpenRequest): Promise<void> =>
       ipcRenderer.invoke('maker:sidebar-tab-window:open', request),
-    focus: (tabId: string): Promise<void> =>
-      ipcRenderer.invoke('maker:sidebar-tab-window:focus', tabId),
+    focus: (tabId: string, options?: { userInitiated?: boolean }): Promise<void> =>
+      ipcRenderer.invoke('maker:sidebar-tab-window:focus', tabId, options),
     /** 页签已在侧边栏关闭:销毁其弹出窗口,不交回。 */
     closeForTab: (tabId: string): Promise<void> =>
       ipcRenderer.invoke('maker:sidebar-tab-window:close-for-tab', tabId),
@@ -5757,6 +5781,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         list: (botId: string) => ipcRenderer.invoke('local-db:bots:todos:list', botId),
         update: (botId: string, patch: import('@cindy/maker-shared/teammate-todo').TodoPatch) => ipcRenderer.invoke('local-db:bots:todos:update', botId, patch),
         act: (botId: string, input: {id:string;revision:number;requestId:string;locale?:string}) => ipcRenderer.invoke('local-db:bots:todos:act', botId, input),
+        dailyCheck: (botId: string, enabled?: boolean) => ipcRenderer.invoke('local-db:bots:todos:daily-check', botId, enabled),
       },
       projects: {
         list: (botId: string): Promise<import('../shared/botWorkbench').BotProjectOption[]> =>
