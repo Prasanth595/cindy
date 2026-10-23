@@ -100,11 +100,12 @@ export function buildAuxiliaryModelOptions(args: {
     args.overrides,
     args.providerOrder,
     args.hasCredential,
+    'auxiliary',
   );
   const availableIds = new Set(available.map((option) => option.id));
   const result = available.map((option) => toWireOption(option, true));
 
-  const allRoutable = buildTextOneshotPinOptions(args.catalog, args.overrides, args.providerOrder);
+  const allRoutable = buildTextOneshotPinOptions(args.catalog, args.overrides, args.providerOrder, undefined, 'auxiliary');
   const allById = new Map(allRoutable.map((option) => [option.id, option]));
   for (const pin of args.settings.models) {
     if (availableIds.has(pin)) continue;
@@ -204,6 +205,8 @@ export function registerAuxiliaryModelSettingsIpc(): void {
           getActiveCatalog(),
           readModelDisableOverrides(),
           readProviderOrder(),
+          undefined,
+          'auxiliary',
         ).map((option) => option.id),
       );
       const patch = parseAuxiliaryModelSettingsPatch(

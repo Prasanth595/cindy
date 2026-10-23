@@ -170,7 +170,7 @@ import { findRemoteHistoryView, useRemoteHistoryView } from '@/session/remoteHis
 import { HistoryViewHandoff, historyAfter, isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
 import { SideChatsSheet } from '@/session/SideChatsSheet';
 import { useSideChatCount } from '@/session/useSideChatCount';
-import { SideChatTaskBoundary } from '@/session/SideChatTaskBoundary';
+import { SessionTaskLayout, type SessionTaskChrome } from '@/session/SessionTaskLayout';
 import { buildMobileSessionRenderWindow } from '@/session/mobileHistoryRender';
 import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { startFocusedTopicSubscription } from '@/device-link/focusedTopicSubscription';
@@ -684,7 +684,6 @@ import {
   useSessionRunning,
   useSessionTaskUpdates,
 } from '@/session/remoteSessionStore';
-import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
 import { useFailedCreationReturnToEdit } from '@/session/useFailedCreationReturnToEdit';
 import type {
   MobileGoalLimitsInput,
@@ -1020,22 +1019,10 @@ function composerDraftScopeKey(sessionId: string, routeDraft: string | null): st
 }
 
 export default function SessionScreen() {
-  const params = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
-  const sessionId = readRouteParam(params.sessionId) ?? '';
-  const deviceId = readRouteParam(params.deviceId)
-    ?? remoteSessionStore.getSessionDeviceId(sessionId) ?? '';
-  const session = useRemoteSessionDetail(deviceId, sessionId);
-  return (
-    <SideChatTaskBoundary key={`${deviceId}:${sessionId}`} deviceId={deviceId}
-      sessionId={sessionId} enabled={session?.source === 'side-chat'}>
-      <CindyMakeSessionGate sessionId={sessionId} deviceId={deviceId || undefined} ownsSessionSubscription>
-        <SessionScreenContent />
-      </CindyMakeSessionGate>
-    </SideChatTaskBoundary>
-  );
+  return <SessionTaskLayout>{chrome => <SessionScreenContent {...chrome} />}</SessionTaskLayout>;
 }
 
-function SessionScreenContent() {
+function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: SessionTaskChrome) {
   const styles = useThemedStyles(makeStyles);
   const composerPullThrough = useComposerPullThroughBridge();
   const renderMessageScroll = useCallback(
@@ -1536,6 +1523,16 @@ function SessionScreenContent() {
     discardAllPendingUploadsForScopeChange();
     discardSessionComposerAttachmentStateRef.current();
   }, [discardAllPendingUploadsForScopeChange, sessionId]);
+  useLayoutEffect(() => {
+    const discard = () => {
+      discardAllPendingUploadsForScopeChange();
+      discardSessionComposerAttachmentStateRef.current();
+    };
+    beforeSessionSwitchRef.current = discard;
+    return () => {
+      if (beforeSessionSwitchRef.current === discard) beforeSessionSwitchRef.current = null;
+    };
+  }, [beforeSessionSwitchRef, discardAllPendingUploadsForScopeChange]);
   const queueEditLockOwnerRef = useRef<QueueEditLockOwner | null>(null);
   const queueEditSaveOwnerRef = useRef<QueueEditLockOwner | null>(null);
   // 「已出队、消息尚未回流」的落定中条目:桌面端 drain 会先从 pendingQueue 摘除、
@@ -3157,7 +3154,7 @@ function SessionScreenContent() {
   // 前进导航防连点:快速双击「新建」会把 /sessions/new 压栈两层(返回要退两次),
   // 与首页各入口同一把 guardedPush 锁。
   const guardedPush = useGuardedPush();
-  const homeNewSessionActionRef = useRef<(() => void) | null>(null);
+  const homeNewSessionActionRef = newSessionActionRef;
   const handleDrawerNewSession = useCallback(() => {
     if (homeNewSessionActionRef.current) { homeNewSessionActionRef.current(); return; }
     queueDrawerNavigation(() => {
@@ -11100,9 +11097,10 @@ function SessionScreenContent() {
           top={topChromeHeight + spacing.sm}
         />
       </MessageHistoryOverlay>
-      <MessageHistoryOverlay enabled={!paneLayout.persistent || sessionListDrawerOverlayMounted}>
-        {/* The persistent panel stays below the shared resident list. Only modal
-            drawers cover resident histories, including their closing animation. */}
+      <MessageHistoryOverlay>
+        {/* The persistent panel belongs to SessionTaskLayout, outside this keyed
+            task. Modal drawers keep their exit/navigation lifecycle here. */}
+        {!paneLayout.persistent || sessionListDrawerOverlayMounted ? (
         <SessionListDrawer
           newSessionActionRef={homeNewSessionActionRef}
           newSessionInSystemBar={paneLayout.persistent && Platform.OS === 'ios' && adaptiveWindow.barEdge !== 'none'}
@@ -11111,10 +11109,10 @@ function SessionScreenContent() {
           onClosed={handleSessionListDrawerClosed}
           runNavigation={queueDrawerNavigation}
           onSelectSession={handleDrawerSelectSession}
-          persistent={paneLayout.persistent && !sessionListDrawerOverlayMounted}
-          open={(paneLayout.persistent && !sessionListDrawerOverlayMounted) || sessionListDrawerOpen}
-          width={paneLayout.persistent && !sessionListDrawerOverlayMounted ? paneLayout.sidebarWidth : sessionListDrawerWidthRef.current}
+          open={sessionListDrawerOpen}
+          width={sessionListDrawerWidthRef.current}
         />
+        ) : null}
       </MessageHistoryOverlay>
     </View>
   );

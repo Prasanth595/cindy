@@ -4,6 +4,9 @@
 API 接入、Cindy AI 与本地模型服务。本文定义统一合同；当前实现与验证边界见末节。
 视觉正本见 [DESIGN §4 Provider detail header](../design-rules/DESIGN.md#provider-detail-header)。
 
+新增连接根据 URL 识别并进入已有配置步骤的规则见
+[根据地址识别供应商](./provider-auto-detection.md)。
+
 ## 1. 一个连接，一套顶部
 
 供应商品牌与连接实例分开：同品牌的多个账号使用同一品牌图标，允许不同显示名。

@@ -110,7 +110,7 @@ import {
   mergeBotGroupPlans,
   openBotGroupPlan,
 } from './botGroupPresentation';
-import { botGroupApi, editBotGroupPlanStep, runBotGroupPlanAction, useBotGroupSummary } from './botGroupStore';
+import { botGroupApi, editBotGroupPlanStep, runBotGroupPlanAction, setBotGroupAutoContinue, useBotGroupSummary } from './botGroupStore';
 import { botGroupReadKey, markBotRead } from './botReadState';
 import {
   beginBotGroupTimelineRead, discardBotGroupOutbox, getBotGroupOutboxClaims,
@@ -913,14 +913,26 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     }
   };
 
+  const setAutoContinue = async (on: boolean) => {
+    try {
+      const result = await setBotGroupAutoContinue(groupId, on);
+      if (!result) return;
+      if (!result.ok) toast.error(t(botGroupErrorKey(result.errorCode, 'bots.groupChat.settings.autoContinueSaveFailed')));
+      loadRef.current();
+    } catch {
+      toast.error(t('bots.groupChat.settings.autoContinueSaveFailed'));
+    }
+  };
+
   // Stable handlers for the memoized rows; each reads the latest page state through refs.
-  const actionsRef = useRef({ locateQuoted, continueRound, runPlanAction, editPlanStep });
-  actionsRef.current = { locateQuoted, continueRound, runPlanAction, editPlanStep };
+  const actionsRef = useRef({ locateQuoted, continueRound, runPlanAction, editPlanStep, setAutoContinue });
+  actionsRef.current = { locateQuoted, continueRound, runPlanAction, editPlanStep, setAutoContinue };
   const onLocateQuote = useCallback((quote: BotGroupQuoteView) => void actionsRef.current.locateQuoted(quote), []);
   const onContinue = useCallback(() => void actionsRef.current.continueRound(), []);
   const onPlanAction = useCallback((action: 'start' | 'dismiss', planId: string) => void actionsRef.current.runPlanAction(action, planId), []);
   const onEditStep = useCallback((planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) =>
     void actionsRef.current.editPlanStep(planId, step, action, botId), []);
+  const onPlanAutoContinue = useCallback((_planId: string, on: boolean) => void actionsRef.current.setAutoContinue(on), []);
   const onChanged = useCallback((messageId: string) => loadRef.current([], [messageId]), []);
   const onQuote = useCallback((messageId: string) => {
     const message = messageByIdRef.current.get(messageId);
@@ -1175,6 +1187,9 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   planDoneAt={message.planId ? planDoneAt.get(message.planId)?.value : undefined}
                   onPlanAction={onPlanAction}
                   onEditStep={onEditStep}
+                  // The choice is the group's on this computer; the open 分工 you started shows it.
+                  onPlanAutoContinue={isOpenPlanCard && plan?.autoContinue !== undefined && !group.archived && !group.dissolvedAt
+                    ? onPlanAutoContinue : undefined}
                 />
               </Fragment>
             );
@@ -1239,7 +1254,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         members={group.members}
         running={running}
         planState={botGroupComposerPlanState(openPlan, group.replyMode)}
-        divisionAvailable={!group.singleSpeaker}
+        divisionSteps={!!group.singleSpeaker}
         attachments={attachmentState}
         attachmentScope={attachmentScope}
         dragOver={dragOver}

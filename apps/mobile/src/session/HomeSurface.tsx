@@ -530,6 +530,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     getPresenceAvailability,
     invoke,
     lastPresenceSnapshot,
+    presenceVersion,
     recoveringDeviceIds,
     readDeviceList,
     status,
@@ -2046,8 +2047,12 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     [deviceModels, scheduleIndex, selectedDeviceId, homeSessions, t],
   );
   const projectMachineIdentities = useMemo(
-    () => buildHomeProjectMachineIdentities(home, deviceConnectionStates),
-    [home, deviceConnectionStates],
+    () => buildHomeProjectMachineIdentities(home, {
+      status, getPresenceAvailability, unresponsiveDevices, revokedDevices,
+    }),
+    // Presence is read through a stable getter; its version/connection epoch must
+    // refresh icons even when the page-local device list has not changed.
+    [home, status, getPresenceAvailability, presenceVersion, connectionEpoch, unresponsiveDevices, revokedDevices],
   );
   const runningSessionIds = useMemo(() => {
     const ids = new Set<string>();

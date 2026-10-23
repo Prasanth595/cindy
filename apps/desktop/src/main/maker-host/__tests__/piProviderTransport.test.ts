@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as openaiCompletions from '@earendil-works/pi-ai/api/openai-completions';
 import { PROVIDER_MODEL_CATALOG, BUNDLED_CATALOG, buildUserProvider, parseModelsListResponse, mergeDiscoveredRuntimeModels } from '@cindy/model-providers';
-import { createPiProviderFetch, hostCredentialEndpointAllowed, invocationModelRecord, nativeBridgeApiKey, NATIVE_ADAPTER_ERROR_BODY_LIMIT, NATIVE_BRIDGE_SESSION_HEADER, readBoundedResponseText } from '../pi-provider-transport.js';
+import { probePiProvider, createPiProviderFetch, hostCredentialEndpointAllowed, invocationModelRecord, nativeBridgeApiKey, NATIVE_ADAPTER_ERROR_BODY_LIMIT, NATIVE_BRIDGE_SESSION_HEADER, readBoundedResponseText } from '../pi-provider-transport.js';
 
 vi.mock('@earendil-works/pi-ai/api/openai-completions', async (importOriginal) => ({
   ...await importOriginal<typeof import('@earendil-works/pi-ai/api/openai-completions')>(),
@@ -559,4 +559,23 @@ describe('OpenCode Go session header on the native transport (#5325)', () => {
     expect(seen[1]!.get('x-opencode-session')).toMatch(/^[0-9a-f-]{36}$/);
     expect(seen[2]!.get('x-opencode-session')).not.toBe(seen[1]!.get('x-opencode-session'));
   });
+});
+
+// The new protocol probe may opt into a larger reasoning budget; old callers must not change.
+it.each([undefined, 256])('keeps legacy probe options isolated from automatic probes: %s', async budget => {
+  const upstream = 'https://fixture.example/v1';
+  const provider = buildUserProvider({ id: 'probe-scope', name: 'Probe scope', runtimes: {
+    pi: { baseUrl: upstream, wireProtocol: 'openai-chat', models: [{ id: 'scope-model', name: 'Scope', reasoning: true, reasoningEfforts: ['low', 'high'] }] },
+  } });
+  const row = invocationModelRecord(provider.models.pi![0], upstream, 'openai-completions')!;
+  const stream = vi.spyOn(openaiCompletions, 'streamSimple');
+  try {
+    await probePiProvider({ row, providerId: provider.id, upstream, apiKey: 'fixture-key',
+      fetchImpl: async () => new Response(reply, { headers: { 'content-type': 'text/event-stream' } }),
+    }, new AbortController().signal, budget);
+    const options = stream.mock.calls.at(-1)![2];
+    expect(options?.maxTokens).toBe(budget ?? 16);
+    if (budget === undefined) expect(options).not.toHaveProperty('reasoning');
+    else expect(options).toHaveProperty('reasoning');
+  } finally { stream.mockRestore(); }
 });

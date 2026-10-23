@@ -169,7 +169,7 @@ export function BotGroupComposer({
   running,
   disabled = false,
   planState = null,
-  divisionAvailable = true,
+  divisionSteps = false,
   attachments: attachmentState = NO_ATTACHMENTS,
   attachmentScope = '',
   dragOver = false,
@@ -193,8 +193,8 @@ export function BotGroupComposer({
   disabled?: boolean;
   /** The group's open plan, for placeholders and the 「安排分工」 gate. */
   planState?: BotGroupComposerPlanState | null;
-  /** False when the server arranges turns itself: the lead splits work when asked (§7). */
-  divisionAvailable?: boolean;
+  /** Server groups: a 分工 that writes out who does what starts as written; otherwise the organizer arranges it (§7.0). */
+  divisionSteps?: boolean;
   attachments?: BotGroupComposerAttachments;
   /** Scope for writing annotated images before send (see botGroupAttachmentScope). */
   attachmentScope?: string;
@@ -503,7 +503,7 @@ export function BotGroupComposer({
     : !hasMembers
     ? t('bots.groupChat.composer.noMembers')
     : division
-      ? t('bots.groupChat.composer.placeholderDivision')
+      ? t(divisionSteps ? 'bots.groupChat.composer.placeholderDivisionSteps' : 'bots.groupChat.composer.placeholderDivision')
       : planState?.kind === 'proposed'
         ? t('bots.groupChat.composer.placeholderPlanProposed')
         : planState?.kind === 'running' && planState.botName
@@ -667,7 +667,7 @@ export function BotGroupComposer({
                       {t('extraDirs.addFiles')}
                     </span>
                   </DropdownMenuItem>
-                  {divisionAvailable ? <DropdownMenuItem
+                  <DropdownMenuItem
                     disabled={divisionBlocked}
                     className={cn(MENU_ITEM_CLASS, 'h-auto items-start gap-2.5 py-2')}
                     onSelect={() => {
@@ -684,11 +684,11 @@ export function BotGroupComposer({
                         {t(
                           divisionBlocked
                             ? 'bots.groupChat.composer.divisionBusy'
-                            : 'bots.groupChat.composer.divisionDescription',
+                            : divisionSteps ? 'bots.groupChat.composer.divisionDescriptionSteps' : 'bots.groupChat.composer.divisionDescription',
                         )}
                       </span>
                     </span>
-                  </DropdownMenuItem> : null}
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
               </>)}

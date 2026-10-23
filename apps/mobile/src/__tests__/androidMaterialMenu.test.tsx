@@ -296,3 +296,33 @@ it.each(["light", "dark"])(
     ).toBe(mode);
   },
 );
+// Companion bubbles: the caller opens the menu on its own long press, so the content
+// (quote, links, tables) must keep its taps instead of sitting under pointer-events none.
+it("keeps the content interactive when the caller controls opening", () => {
+  const choose = vi.fn();
+  const openChange = vi.fn();
+  const contentPress = vi.fn();
+  const render = (open: boolean) =>
+    act(() =>
+      root.render(
+        <AnchoredPullDownMenu
+          actions={[{ id: "reply", title: "Reply" }]}
+          onAction={choose}
+          onOpenChange={openChange}
+          open={open}
+        >
+          <button onClick={contentPress}>Quote</button>
+        </AnchoredPullDownMenu>,
+      ),
+    );
+  render(false);
+  const content = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Quote");
+  expect(content?.closest('[data-pointer-events="none"]')).toBeNull();
+  click("Quote");
+  expect(contentPress).toHaveBeenCalledTimes(1);
+  expect(container.querySelector("section")).toBeNull();
+  render(true);
+  click("Reply");
+  expect(choose).toHaveBeenCalledWith("reply");
+  expect(openChange).toHaveBeenLastCalledWith(false);
+});

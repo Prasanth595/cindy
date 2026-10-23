@@ -12,6 +12,8 @@ vi.mock('@/platform/gestureHandler', () => {
 });
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 
+// Screen reader toggle and the system action menu availability, for the companion menu case.
+const a11y = vi.hoisted(() => ({ screenReader: null as null | ((enabled: boolean) => void), systemMenu: false }));
 const viewportHarness = vi.hoisted(() => ({
   list: null as any,
   finishReveal: null as any,
@@ -73,7 +75,13 @@ vi.mock("react-native", async () => {
       hairlineWidth: 1,
     },
     Easing: { linear: (n: number) => n, bezier: () => (n: number) => n },
-    AccessibilityInfo: {},
+    AccessibilityInfo: {
+      isScreenReaderEnabled: () => Promise.resolve(false),
+      addEventListener: (_event: string, listener: (enabled: boolean) => void) => {
+        a11y.screenReader = listener;
+        return { remove() {} };
+      },
+    },
     Alert: {},
     Linking: {},
     StatusBar: {},
@@ -210,7 +218,7 @@ vi.mock("@/platform/chrome", () => ({
   NativePullDownMenu: ({ children }: any) => children,
   showActionMenu: vi.fn(),
   usesNativePullDownMenu: () => false,
-  usesSystemActionMenu: () => false,
+  usesSystemActionMenu: () => a11y.systemMenu,
 }));
 vi.mock("@/session/MobileComposerInputRow", () => ({
   MobileComposerInputRow: () => null,
@@ -238,7 +246,11 @@ vi.mock("@/session/AuthorizationMessageCard", () => ({
   AuthorizationMessageCard: () => null,
 }));
 vi.mock("@/session/CompanionMessageActions", () => ({
-  CompanionMessageActions: () => null,
+  CompanionMessageActions: ({ actions, onAction }: any) =>
+    createElement("div", { "data-testid": "companion.messageActions" },
+      actions.some((action: any) => action.id === "add-to-chat")
+        ? createElement("button", { "data-testid": "companion.messageReply", onClick: () => onAction("add-to-chat") })
+        : null),
 }));
 vi.mock("@/session/CompanionMessageCard", () => ({
   CompanionMessageCard: () => null,
@@ -584,5 +596,50 @@ describe('private group reply source', () => {
     expect(html).toContain('群聊 ID：g-1');
     expect(html).toContain('message.groupSource');
     expect(render([{ ...msg('ordinary', 'Private', null), role: 'assistant' }])).not.toContain('message.groupSource');
+  });
+});
+
+// VoiceOver / TalkBack cannot perform the bubble's long-press gesture, so the companion menu
+// falls back to the action row, whose Reply quotes the message like the menu does.
+describe("companion menu with a screen reader", () => {
+  it("keeps the action row and quotes on Reply while a screen reader is on", () => {
+    a11y.systemMenu = true;
+    const onQuote = vi.fn();
+    const props = {
+      companion: true,
+      companionQuote: { names: { owner: "你", companion: "Vela" }, showReplyTargets: false, onQuote, onLocate: vi.fn(), onSelectText: vi.fn() },
+      onAddMessageToComposer: vi.fn(),
+    };
+    const h = mount([{ ...msg("r1", "Done", { turnCompleted: true }), role: "assistant" }], props);
+    try {
+      expect(h.host.querySelector('[data-testid="companion.messageMenu"]')).not.toBeNull();
+      expect(h.host.querySelector('[data-testid="companion.messageActions"]')).toBeNull();
+      act(() => a11y.screenReader?.(true));
+      expect(h.host.querySelector('[data-testid="companion.messageMenu"]')).toBeNull();
+      const reply = h.host.querySelector('[data-testid="companion.messageReply"]')!;
+      act(() => reply.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith({ clientId: "r1", role: "assistant", excerpt: "Done" });
+      expect(props.onAddMessageToComposer).not.toHaveBeenCalled();
+    } finally {
+      act(() => a11y.screenReader?.(false));
+      a11y.systemMenu = false;
+      h.unmount();
+    }
+  });
+
+  it("keeps inserting the link from rows that cannot be quoted", () => {
+    const onQuote = vi.fn();
+    const onAddMessageToComposer = vi.fn();
+    const h = mount([{ ...msg("e1", "Boom", { turnCompleted: true }), role: "error" }], {
+      companion: true,
+      companionQuote: { names: { owner: "你", companion: "Vela" }, showReplyTargets: false, onQuote, onLocate: vi.fn(), onSelectText: vi.fn() },
+      onAddMessageToComposer,
+    });
+    try {
+      const reply = h.host.querySelector('[data-testid="companion.messageReply"]')!;
+      act(() => reply.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onQuote).not.toHaveBeenCalled();
+      expect(onAddMessageToComposer).toHaveBeenCalledExactlyOnceWith("e1");
+    } finally { h.unmount(); }
   });
 });

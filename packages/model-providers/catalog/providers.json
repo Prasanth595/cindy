@@ -1738,6 +1738,47 @@
       }
     },
     {
+      "id": "volcengine-api",
+      "name": "火山方舟 API",
+      "nameEn": "Volcengine Ark API",
+      "docsUrl": "https://www.volcengine.com/docs/82379/1330310",
+      "regionHint": "cn",
+      "models": [],
+      "runtimes": {
+        "claude-code": { "baseUrl": "https://ark.cn-beijing.volces.com/api/v3", "wireProtocol": "openai-chat" },
+        "codex": { "baseUrl": "https://ark.cn-beijing.volces.com/api/v3", "wireProtocol": "openai-chat" },
+        "pi": { "baseUrl": "https://ark.cn-beijing.volces.com/api/v3", "wireProtocol": "openai-chat" }
+      }
+    },
+    {
+      "id": "siliconflow-cn",
+      "name": "硅基流动（中国大陆）",
+      "nameEn": "SiliconFlow (China Mainland)",
+      "nameZhTW": "矽基流動（中國大陸）",
+      "docsUrl": "https://docs.siliconflow.cn/cn/userguide/quickstart",
+      "regionHint": "cn",
+      "models": [],
+      "runtimes": {
+        "claude-code": { "baseUrl": "https://api.siliconflow.cn/v1", "wireProtocol": "openai-chat", "modelsUrl": "https://api.siliconflow.cn/v1/models" },
+        "codex": { "baseUrl": "https://api.siliconflow.cn/v1", "wireProtocol": "openai-chat", "modelsUrl": "https://api.siliconflow.cn/v1/models" },
+        "pi": { "baseUrl": "https://api.siliconflow.cn/v1", "wireProtocol": "openai-chat", "modelsUrl": "https://api.siliconflow.cn/v1/models" }
+      }
+    },
+    {
+      "id": "siliconflow-global",
+      "name": "硅基流动",
+      "nameEn": "SiliconFlow",
+      "nameZhTW": "矽基流動",
+      "docsUrl": "https://docs.siliconflow.com/en/userguide/quickstart",
+      "regionHint": "global",
+      "models": [],
+      "runtimes": {
+        "claude-code": { "baseUrl": "https://api.siliconflow.com/v1", "wireProtocol": "openai-chat", "modelsUrl": "https://api.siliconflow.com/v1/models" },
+        "codex": { "baseUrl": "https://api.siliconflow.com/v1", "wireProtocol": "openai-chat", "modelsUrl": "https://api.siliconflow.com/v1/models" },
+        "pi": { "baseUrl": "https://api.siliconflow.com/v1", "wireProtocol": "openai-chat", "modelsUrl": "https://api.siliconflow.com/v1/models" }
+      }
+    },
+    {
       "id": "volcengine-agent-plan",
       "name": "火山方舟 Agent Plan",
       "nameEn": "Volcengine Ark Agent Plan",

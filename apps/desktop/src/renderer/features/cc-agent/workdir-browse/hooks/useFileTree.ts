@@ -100,6 +100,14 @@ export interface UseFileTreeReturn {
   /** root 加载失败标记(device-too-old = 对方设备版本过旧);见 store 注释。 */
   loadError: 'device-too-old' | 'load-failed' | null;
 
+  /** 当前 store 的稳定标识(workdir + 显示模式 + host/device)。刷新 / snapshot 更新
+   *  会变 —— 需要区分"换 store"与"同一 store 刷新"的地方用它,而不是靠对象引用。 */
+  storeKey: string;
+
+  /** 树身份(workdir + 远端/设备,不含显示模式段)。切项目 / 换远端才变 —— 滚动
+   *  锚点继承靠它区分「同树换视口」(可继承位置)与「换树」(位置不得跨树泄漏)。 */
+  treeIdentityKey: string;
+
   toggleFolder: (relPath: string) => void;
   /** Collapse every folder back to root. Also clears persisted state. */
   collapseAll: () => void;
@@ -204,6 +212,19 @@ function storeKey(opts: Required<UseFileTreeOptions>): string {
   const remote = opts.remoteHostId ? `::remote=${opts.remoteHostId}` : '';
   const device = opts.deviceId ? `::device=${opts.deviceId}` : '';
   return `${opts.workdir}::doc=${opts.docMode}::hideMeta=${opts.hideMetaFiles}${remote}${device}`;
+}
+
+/** 树身份:工作目录 + 远端/设备,不含显示模式段(doc / hideMeta)。同一棵树内
+ *  切换显示模式不变;切项目 / 换远端才变。滚动位置恢复用它区分「同树换视口」
+ * (可继承滚动锚点)与「换树」(丢弃锚点、回到顶部)。 */
+function treeIdentityKey(
+  workdir: string,
+  remoteHostId: string | null,
+  deviceId: string | null,
+): string {
+  const remote = remoteHostId ? `::remote=${remoteHostId}` : '';
+  const device = deviceId ? `::device=${deviceId}` : '';
+  return `${workdir}${remote}${device}`;
 }
 
 function emit(store: FileTreeStore): void {
@@ -551,11 +572,13 @@ export function useFileTree({
       loadingPaths: snapshot.loadingPaths,
       initialLoading: snapshot.initialLoading,
       loadError: snapshot.loadError,
+      storeKey: store.key,
+      treeIdentityKey: treeIdentityKey(store.workdir, store.remoteHostId, store.deviceId),
       toggleFolder: toggleFolderCb,
       collapseAll: collapseAllCb,
       refresh: refreshCb,
       expandToPath: expandToPathCb,
     }),
-    [snapshot, toggleFolderCb, collapseAllCb, refreshCb, expandToPathCb],
+    [snapshot, store, toggleFolderCb, collapseAllCb, refreshCb, expandToPathCb],
   );
 }

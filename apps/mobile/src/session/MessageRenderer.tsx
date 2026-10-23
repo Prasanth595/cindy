@@ -19,7 +19,9 @@ import { BotGroupQuote } from './BotGroupQuote';
 import { companionReplyQuoteDisplay, companionReplyQuoteFor } from './companionReplyQuote';
 import type { ChatReplyQuote } from '@cindy/maker-shared/chat-reply-quote';
 import type { NativePullDownAction } from '@/platform/chrome/NativePullDownMenu';
+import { AnchoredPullDownMenu } from '@/platform/chrome/AnchoredPullDownMenu';
 import { Gesture, GestureDetector } from '@/platform/gestureHandler';
+import { useScreenReaderEnabled } from '@/hooks/useScreenReaderEnabled';
 import { useMessageHistoryActive, useMessageHistoryPositioning } from './messageHistoryActivity';
 import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import { messageReadingPosition } from './messageReadingPosition';
@@ -679,6 +681,8 @@ interface MessageActions {
   onRetryImageDelivery?: (imageId: string) => Promise<void>;
   companion?: boolean;
   companionQuoteActions?: CompanionQuoteActions;
+  /** VoiceOver / TalkBack on: the long-press menu has no screen-reader entry, keep the action row. */
+  screenReaderEnabled?: boolean;
   onCompanionReadThrough?: (at: number) => void;
   onOpenCompanionSettings?: (page: 'memory' | 'capabilities') => void;
   companionWorkingLabel?: string | null;
@@ -1824,9 +1828,11 @@ export function MessageRenderer({
     isLastReplyFor: (assistantClientId) => lastReplies.has(assistantClientId),
     };
   }, [companion, companionQuote, lastCompanionReplyKey]);
+  const screenReaderEnabled = useScreenReaderEnabled();
   const actions: MessageActions & { firstUserMessageClientId?: string } = useMemo(() => ({
     companion,
     companionQuoteActions,
+    screenReaderEnabled,
     companionWorkingLabel,
   onOpenCompanionSettings,
     companionAvatar,
@@ -1870,6 +1876,7 @@ export function MessageRenderer({
   }), [
     companion,
     companionQuoteActions,
+    screenReaderEnabled,
     companionWorkingLabel,
   onOpenCompanionSettings,
     companionAvatar,
@@ -3694,9 +3701,11 @@ function MessageBubble({
   const disabled = !!actions.busyClientId;
   // 伙伴私聊：长按消息弹出系统菜单（对应桌面悬停时的「回复」等按钮），消息下方不再常驻图标。
   // iOS 用系统操作表（MenuView 的长按预览在新架构下抬不起气泡，不改原生代码时不用它）；
-  // Android 用平台下拉菜单。都不可用时退回原来的操作行。长按交给菜单后正文不再就地选字，改由「选择文字」打开。
+  // Android 由同一个长按手势打开贴着气泡的下拉菜单（菜单不包住气泡，气泡里的点按照常可用）。
+  // 都不可用、或开着读屏（长按手势没有读屏入口）时退回原来的操作行，其中「回复」同样放引用。
+  // 长按交给菜单后正文不再就地选字，改由「选择文字」打开。
   const companionQuote = actions.companionQuoteActions;
-  const companionMenuEnabled = !!(actions.companion && hasActions
+  const companionMenuEnabled = !!(actions.companion && hasActions && !actions.screenReaderEnabled
     && (Platform.OS === 'ios' ? usesSystemActionMenu() : usesNativePullDownMenu()));
   const bubbleTextSelectable = canSelectVisibleText && !companionMenuEnabled;
   const replyQuote = companionQuote && item.message.kind === 'user' ? item.message.replyQuote : undefined;
@@ -3809,9 +3818,14 @@ function MessageBubble({
       userInterfaceStyle: mode,
     }).then(result => { if (result.kind === 'action') selectCompanionMenuAction(result.key); });
   }, [absoluteTime, companionMenuActions, mode, selectCompanionMenuAction, t]);
+  // Android's anchored menu opens here rather than wrapping the bubble, which would swallow its taps.
+  const [companionMenuOpen, setCompanionMenuOpen] = useRecyclingState(false);
   // Long press fails as soon as the finger moves, so tables and code blocks keep scrolling sideways.
   const companionMenuGesture = useMemo(() => Gesture.LongPress().minDuration(450).runOnJS(true)
-    .onStart(() => openCompanionActionSheet()), [openCompanionActionSheet]);
+    .onStart(() => {
+      if (Platform.OS === 'ios') openCompanionActionSheet();
+      else setCompanionMenuOpen(true);
+    }), [openCompanionActionSheet, setCompanionMenuOpen]);
   const openMessageActionMenu = useCallback(() => {
     if (usesSystemActionMenu()) {
       const disabled = actionBusy
@@ -4138,19 +4152,18 @@ function MessageBubble({
           {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
         </ErrorNotice>
       ) : bubbleShown ? (
-        companionMenuEnabled ? (Platform.OS === 'ios' ? (
+        companionMenuEnabled ? (
           <GestureDetector gesture={companionMenuGesture}>
             <View style={isUser ? styles.companionMenuUser : styles.companionMenuAgent} testID="companion.messageMenu">
-              {bubble}
+              {Platform.OS === 'ios' ? bubble : (
+                <AnchoredPullDownMenu actions={companionMenuActions} onAction={selectCompanionMenuAction}
+                  open={companionMenuOpen} onOpenChange={setCompanionMenuOpen}>
+                  {bubble}
+                </AnchoredPullDownMenu>
+              )}
             </View>
           </GestureDetector>
-        ) : (
-          <NativePullDownMenu longPress actions={companionMenuActions}
-            onAction={selectCompanionMenuAction} style={isUser ? styles.companionMenuUser : styles.companionMenuAgent}
-            testID="companion.messageMenu">
-            {bubble}
-          </NativePullDownMenu>
-        )) : bubble
+        ) : bubble
       ) : null}
       {actions.companion && item.message.kind === 'assistant' && item.message.body.trim() ? (
         <CompanionLearningFooter receipts={item.message.source.agentMeta?.botLearning}
@@ -4185,7 +4198,10 @@ function MessageBubble({
           ...(absoluteTime ? [{ id: 'time', title: t('message.renderer.sentTime', { time: absoluteTime }), disabled: true }] : []),
         ]}
         onAction={id => {
-          if (id === 'copy') selectControlAction(id);
+          // Reply quotes what can be quoted; other rows (errors, system cards) keep inserting their link.
+          const quote = id === 'add-to-chat' && companionQuote ? companionReplyQuoteFor(item.message) : null;
+          if (quote) companionQuote?.onQuote(quote);
+          else if (id === 'copy') selectControlAction(id);
           else if (id === 'share') actions.onEnterShareSelection?.(clientId);
           else if (messageMenu.some(item => item.id === id)) selectMenuAction(id as MobileMessageMenuActionId);
         }} /> : hasActions ? (

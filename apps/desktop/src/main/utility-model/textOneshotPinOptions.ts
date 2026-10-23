@@ -28,16 +28,13 @@ import {
 } from '@cindy/model-providers';
 
 import { applyProviderOrder } from '../../shared/providerOrder.js';
+import { resolveDirectTextRoute, usesDirectTextRoute } from './directTextRoute.js';
 import {
   decodeCatalogModelPin,
   encodeCatalogModelPin,
 } from '../../shared/catalogModelPin.js';
 
-/**
- * oneshot 可路由的 agent。pi 档的含义是「借用 pi runtime 的路由声明(baseUrl/
- * wireProtocol/key)由宿主直连」,不 spawn pi 会话;未声明 wireProtocol 的自定义
- * 供应商与 codex 同待遇(走 responses wire),claude-code 仍恒 anthropic-messages。
- */
+/** Preserve plugin routing support; auxiliary HTTP admission is resolved separately. */
 const ONESHOT_ROUTE_AGENTS = ['codex', 'claude-code', 'pi'] as const;
 
 /**
@@ -116,7 +113,7 @@ function isChatModel(model: CatalogModel, provider: Provider): boolean {
   return isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' });
 }
 
-const AGENT_LABEL: Record<(typeof ONESHOT_ROUTE_AGENTS)[number], string> = {
+const AGENT_LABEL: Record<AgentKind, string> = {
   codex: 'Codex',
   'claude-code': 'Claude Code',
   pi: 'Pi',
@@ -160,7 +157,7 @@ export interface TextOneshotPinOption {
   subscription: boolean;
   /** 供应商路由描述(渲染层厂牌图标判定用,ProviderLogoMark)。 */
   routing?: Provider['routing'];
-  /** 该精确路由使用的 Agent('Codex' / 'Claude Code' / 'Pi')。 */
+  /** Configuration source of the exact route; direct auxiliary requests launch no Agent. */
   agentSuffix: string;
 }
 
@@ -206,23 +203,27 @@ export function buildTextOneshotPinOptions(
   overrides: ModelDisableOverrides | undefined,
   providerOrder?: readonly string[],
   hasCredential?: OneshotCredentialProbe,
+  purpose: 'plugin' | 'auxiliary' = 'plugin',
 ): TextOneshotPinOption[] {
-  const entries: { provider: Provider; agentKind: (typeof ONESHOT_ROUTE_AGENTS)[number]; model: CatalogModel }[] = [];
+  const entries: { provider: Provider; agentKind: AgentKind; model: CatalogModel; direct: boolean }[] = [];
   const seenRoutes = new Set<string>();
   for (const provider of orderedProviders(catalog, providerOrder)) {
     if (isProviderDisabled(overrides, provider.id)) continue;
-    // Agent 决定模型可见性和实际 wire。即使内置供应商的两条路由最终共享
-    // 凭证或上游，也分别展示并保存，让用户选择一组确定的 Agent + Model。
-    for (const agentKind of ONESHOT_ROUTE_AGENTS) {
-      if (!isRoutableForOneshot(provider, agentKind)) continue;
+    // Keep the configuration source in each pin: runtimes can have different
+    // credentials or endpoints even when the provider and model ids match.
+    const direct = purpose === 'auxiliary' && usesDirectTextRoute(provider);
+    const agents: readonly AgentKind[] = direct ? ['codex', 'claude-code', 'pi'] : ONESHOT_ROUTE_AGENTS;
+    for (const agentKind of agents) {
+      if (!direct && !isRoutableForOneshot(provider, agentKind)) continue;
       if (hasCredential && !hasCredential(provider, agentKind)) continue;
       for (const model of displayOrderedModels(provider.models[agentKind] ?? [])) {
+        if (direct && !resolveDirectTextRoute(provider, agentKind, model)) continue;
         if (!isChatModel(model, provider)) continue;
         if (isModelDisabled(overrides, provider.id, model.id)) continue;
         const routeKey = `${provider.id}\n${agentKind}\n${model.id}`;
         if (seenRoutes.has(routeKey)) continue;
         seenRoutes.add(routeKey);
-        entries.push({ provider, agentKind, model });
+        entries.push({ provider, agentKind, model, direct });
       }
     }
   }
@@ -230,14 +231,16 @@ export function buildTextOneshotPinOptions(
     const providerName = displayProviderName(e.provider);
     const base = `${e.model.name} · ${providerName}`;
     return {
-      id: encodeCatalogPin(e.provider.id, e.agentKind, e.model.id),
+      id: encodeCatalogModelPin({ providerId: e.provider.id, agentKind: e.agentKind, model: e.model.id }),
       label: `${AGENT_LABEL[e.agentKind]} · ${base}`,
       group: providerName,
       providerId: e.provider.id,
       agentKind: e.agentKind,
       modelId: e.model.id,
       modelName: e.model.name,
-      ...(e.model.defaultEnabled !== undefined ? { defaultEnabled: e.model.defaultEnabled } : {}),
+      ...(e.direct
+        ? { defaultEnabled: e.model.userModelConfig?.defaultEnabled ?? true }
+        : e.model.defaultEnabled !== undefined ? { defaultEnabled: e.model.defaultEnabled } : {}),
       ...(e.model.icon !== undefined ? { icon: e.model.icon } : {}),
       budget: classifyModel(e.model) === 'gpt-budget',
       subscription: e.provider.access?.kind === 'subscription',

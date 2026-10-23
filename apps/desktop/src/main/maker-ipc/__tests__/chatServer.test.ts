@@ -14,7 +14,13 @@ vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: asyn
   if (!taskPosts.has(key)) taskPosts.set(key, JSON.parse(JSON.stringify(await prepare())));
   return JSON.parse(JSON.stringify(taskPosts.get(key)));
 } }));
-vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
+// This computer's group settings; each test starts with none.
+const workspaceSettings = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({
+  read: (room: string) => workspaceSettings.get(room) ?? null,
+  save: (room: string, value: unknown) => { workspaceSettings.set(room, value); },
+}) }));
+beforeEach(() => workspaceSettings.clear());
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
 vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' },
@@ -162,6 +168,94 @@ describe('Chat Server result delivery and refresh', () => {
     service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
   });
   afterEach(() => { service.dispose(); vi.useRealTimers(); vi.unstubAllEnvs(); fixture.config = ''; vi.clearAllMocks(); });
+  describe('分工 auto-continue on this computer (bot-group-chat.md §7.4)', () => {
+    const planId = '80000000-0000-4000-8000-000000000009';
+    const otherHuman = '30000000-0000-4000-8000-000000000002';
+    const division = (over: Record<string, unknown> = {}, first = 'done') => ({ id: planId, revision: 3, kind: 'work',
+      source_message_id: execution.source_message_id, request_text: 'build it', organizer_id: botId, creator_id: selfId,
+      status: 'waiting', current_step: 0, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+      steps: [{ position: 0, botId, botName: 'Bot', task: 'draft', status: first }, { position: 1, botId, botName: 'Bot', task: 'polish', status: 'pending' }],
+      ...over });
+    const continues = () => fixture.handle.mock.calls.filter(([route, method, body]) =>
+      route === `/conversations/${roomId}/plans/${planId}` && method === 'POST' && (body as { action?: string })?.action === 'continue');
+    const stepEnded = async (cursor: string) => {
+      fixture.sockets[0]!.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor,
+        changes: [{ type: 'execution.updated', entityId: execution.id }] }));
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    async function serve(plan: Record<string, unknown>, settings: { autoContinue?: boolean; startedHere?: string[] } | null,
+      onContinue?: () => { status: number; body: unknown }, onRead?: () => void) {
+      if (settings) workspaceSettings.set(roomId, { projectDir: null, plans: {}, startedHere: [planId], ...settings });
+      // Only a server that tells a 分工 from a queue (groupSingleSpeaker) offers the switch.
+      fixture.handle.mockImplementation((route, method) => route === `/conversations/${roomId}/plans/${planId}` && method === 'POST'
+        ? onContinue?.() ?? { body: {} } : route.startsWith(`/conversations/${roomId}/plans`) ? (onRead?.(), { body: [plan] })
+        : route === '/me' ? { body: { actor: { id: selfId }, capabilities: { groupSingleSpeaker: 1 } } } : response(route));
+      await service.getGroup(roomId);
+      await vi.advanceTimersByTimeAsync(2000);
+    }
+    it('goes on to the next step of a 分工 started here once a step is done', async () => {
+      await serve(division(), { autoContinue: true });
+      await stepEnded('2');
+      expect(continues()).toHaveLength(1);
+      expect(continues()[0]![2]).toMatchObject({ expectedRevision: 3 });
+    });
+    it('goes on with a step that ended before the room was first read (a cold start)', async () => {
+      await serve(division(), { autoContinue: true });
+      expect(continues()).toHaveLength(1);
+      // The same finished step is not continued twice when later changes arrive.
+      await stepEnded('3');
+      expect(continues()).toHaveLength(1);
+    });
+    it.each([
+      ['the switch is off', division(), { autoContinue: false }],
+      ['nothing was chosen on this computer', division(), null],
+      ['the step failed and waits for 重试', division({}, 'failed'), { autoContinue: true }],
+      ['someone else started the 分工', division({ creator_id: otherHuman }), { autoContinue: true }],
+      // The account is the creator on each of its computers: another one of them asked for this 分工.
+      ['it was asked for on another computer', division(), { autoContinue: true, startedHere: [] }],
+      ['it is a discussion queue, not a 分工', division({ kind: 'talk' }), { autoContinue: true }],
+      ['the 分工 was stopped', division({ status: 'stopped' }), { autoContinue: true }],
+      ['the last step is done', division({ current_step: 1, status: 'waiting', steps: [
+        { position: 0, botId, botName: 'Bot', task: 'draft', status: 'done' }, { position: 1, botId, botName: 'Bot', task: 'polish', status: 'done' }] }), { autoContinue: true }],
+    ])('keeps waiting for 继续 when %s', async (_case, plan, settings) => {
+      await serve(plan, settings);
+      await stepEnded('2');
+      expect(continues()).toHaveLength(0);
+    });
+    it('turning it on while a step waits goes on now, and shows the choice on the group and its 分工 card', async () => {
+      await serve(division(), { autoContinue: false });
+      const before = await service.getGroup(roomId);
+      expect(before.ok && [before.group.autoContinue, before.group.plans[0]?.autoContinue]).toEqual([false, false]);
+      expect(await service.updateGroup({ groupId: roomId, autoContinue: true })).toEqual({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(workspaceSettings.get(roomId)).toMatchObject({ autoContinue: true, projectDir: null });
+      expect(continues()).toHaveLength(1);
+      const after = await service.getGroup(roomId);
+      expect(after.ok && [after.group.autoContinue, after.group.plans[0]?.autoContinue]).toEqual([true, true]);
+    });
+    it('does not go on when the switch is turned off while the 分工 is read', async () => {
+      await serve(division(), { autoContinue: true }, undefined, () => {
+        workspaceSettings.set(roomId, { ...workspaceSettings.get(roomId) as object, autoContinue: false });
+      });
+      await stepEnded('2');
+      expect(continues()).toHaveLength(0);
+    });
+    it('turning it off while the 分工 is read stops the handoff before the group is re-read', async () => {
+      await serve(division(), { autoContinue: true }, undefined, () => { void service.updateGroup({ groupId: roomId, autoContinue: false }); });
+      expect(continues()).toHaveLength(0);
+    });
+    it('does not offer the switch on a server that cannot tell a 分工 from a queue', async () => {
+      workspaceSettings.set(roomId, { projectDir: null, plans: {}, autoContinue: true });
+      const result = await service.getGroup(roomId);
+      expect(result.ok && result.group).not.toHaveProperty('autoContinue');
+    });
+    it('does not try again after someone else went on first', async () => {
+      await serve(division(), { autoContinue: true }, () => ({ status: 409, body: { error: { code: 'REVISION_CONFLICT' } } }));
+      await stepEnded('2');
+      await stepEnded('3');
+      expect(continues()).toHaveLength(1);
+    });
+  });
   it('uses the mobile edited revision instead of a newer server snapshot when saving settings', async () => {
     await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));
@@ -1614,24 +1708,155 @@ describe('Chat Server result delivery and refresh', () => {
       expect(deliveries()[0][2]).not.toHaveProperty('continueDiscussion');
     });
 
-    it('sends without holding the request for a helper-model arrangement decision', async () => {
-      singleSpeaker();
-      deps.decidePlan = vi.fn() as typeof deps.decidePlan;
-      expect(await service.sendMessage({ groupId: roomId, text: 'Make a draft', clientId: 'single-speaker-send', mentions: { all: false, botIds: [] }, division: true }))
-        .toMatchObject({ ok: true });
-      await vi.advanceTimersByTimeAsync(0);
-      const post = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')!;
-      expect(post[2].deferExecution).toBe(false);
-      expect(deps.decidePlan).not.toHaveBeenCalled();
+    // A queue turn builds on the answer just before it (a 分工 hand-off's 2000 characters); older
+    // answers get a main-group message's 600, so a long queue does not resend every answer in full.
+    it('shortens the earlier answers a queue turn reads', async () => {
+      const planId = '80000000-0000-4000-8000-000000000003';
+      const ids = ['50000000-0000-4000-8000-000000000041', '50000000-0000-4000-8000-000000000042', '50000000-0000-4000-8000-000000000043'];
+      const texts = ['a'.repeat(601), 'b'.repeat(600), 'c'.repeat(2001)];
+      const plan = { id: planId, revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: otherBot, creator_id: selfId,
+        note_message_ids: [], status: 'running', current_step: 3, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [...ids.map((resultMessageId, position) => ({ position, botId: otherBot, botName: 'Peer', task: '', status: 'done', resultMessageId })),
+          { position: 3, botId, botName: 'Bot', task: '', status: 'running' }] };
+      singleSpeaker(route => {
+        if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: 'owner', plan_id: planId, plan_step: 3 } } }; }
+        if (route.includes('/plans?ids=')) return { body: [plan] };
+        if (route.includes('/messages?all=true')) return { body: ids.map((id, index) => message(id, texts[index]!, { authorId: otherBot, author: { kind: 'bot', name: 'Peer' }, origin: 'bot' })) };
+        if (route.endsWith(`/messages/${execution.source_message_id}`)) return { body: message(execution.source_message_id, 'Q') };
+        return undefined;
+      });
+      await start();
+      const block = prompt().split('<untrusted-data>\n').map(part => part.split('\n</untrusted-data>')[0]!).find(part => part.includes('earlierAnswers'))!;
+      expect(JSON.parse(block).earlierAnswers).toEqual([
+        { from: 'Peer', text: `${'a'.repeat(600)}…`, shortened: true },
+        { from: 'Peer', text: 'b'.repeat(600) },
+        { from: 'Peer', text: `${'c'.repeat(2000)}…`, shortened: true },
+      ]);
     });
 
+    // bot-group-chat.md §7.0 (2026-10-23): 「安排分工」 is back on these servers. A request that writes
+    // out who does what becomes that card and starts, with no helper model; otherwise the organizer
+    // arranges it. The request is held so the server's own queue does not answer it first.
+    describe('安排分工', () => {
+      const sourceId = '50000000-0000-4000-8000-000000000031', planId = '80000000-0000-4000-8000-000000000031';
+      const named = () => members().map(m => m.id === otherBot ? { ...m, name: 'Nova' } : m);
+      function divisionServer(open: object[] = []) {
+        singleSpeaker((route, method) => {
+          if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: named(), messages: [], cursor: '1' } };
+          if (route === `/conversations/${roomId}/messages` && method === 'POST') return { body: { id: sourceId } };
+          if (route === `/conversations/${roomId}/plans` && method === 'POST') return { body: { id: planId, revision: 1 } };
+          if (route === `/conversations/${roomId}/plans`) return { body: open };
+          return undefined;
+        });
+      }
+      const posts = () => fixture.handle.mock.calls.filter(([, method]) => method === 'POST');
+      const send = async (text: string) => {
+        expect(await service.sendMessage({ groupId: roomId, text, clientId: `division-${text.length}`, mentions: { all: false, botIds: [] }, division: true }))
+          .toMatchObject({ ok: true });
+        await vi.advanceTimersByTimeAsync(0);
+      };
+
+      it('starts the card a request writes out, without the organizer', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn() as typeof deps.decidePlan;
+        await send('登录页：@Bot (Owner) 出方案，然后 @Nova (Owner) 按方案实现');
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/messages`)![2]).toMatchObject({ deferExecution: true });
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans`)![2]).toMatchObject({ sourceMessageId: sourceId,
+          steps: [{ botId, task: '出方案' }, { botId: otherBot, task: '按方案实现' }] });
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans/${planId}`)![2]).toMatchObject({ action: 'start', expectedRevision: 1 });
+        expect(deps.decidePlan).not.toHaveBeenCalled();
+        // Only a 分工 asked for here follows this computer's 自动交接.
+        expect(workspaceSettings.get(roomId)).toMatchObject({ startedHere: [planId] });
+      });
+
+      it('lets the organizer arrange it when a picked teammate no longer reads in the text', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(async () => ({ needsPlan: true as const, steps: [{ botId, task: 'design' }, { botId: otherBot, task: 'build' }] }));
+        // Bot was picked as @OldName and renamed before sending: its step must not be dropped.
+        expect(await service.sendMessage({ groupId: roomId, text: '@OldName 出方案，然后 @Nova (Owner) 按方案实现', clientId: 'division-renamed',
+          mentions: { all: false, botIds: [botId, otherBot] }, division: true })).toMatchObject({ ok: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(deps.decidePlan).toHaveBeenCalled();
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/plans/${planId}`)).toBe(false);
+      });
+
+      it('answers the request when nobody can arrange it, and later messages still go out', async () => {
+        divisionServer();
+        deps.decidePlan = undefined;
+        await send('Make a draft');
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/messages/${sourceId}/continue`)).toBe(true);
+        expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: 'after-no-organizer', mentions: { all: false, botIds: [] } }))
+          .toMatchObject({ ok: true });
+      });
+
+      // §4.0: in a mention-only group an unaddressed message wakes nobody, not even the helper revising your proposed card.
+      it.each([['all', true], ['mentioned', false]] as const)('in %s mode, unaddressed words revise your proposed card: %s', async (mode, revises) => {
+        const proposed = { id: planId, revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId, creator_id: selfId,
+          note_message_ids: [], status: 'proposed', current_step: null, kind: 'work', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+          steps: [{ position: 0, botId, botName: 'Bot', task: 'draft', status: 'pending' }] };
+        singleSpeaker((route, method) => {
+          if (route.endsWith('/snapshot')) return { body: { room: { ...room(roomId), response_mode: mode }, members: named(), messages: [], cursor: '1' } };
+          if (route === `/conversations/${roomId}/messages` && method === 'POST') return { body: { id: sourceId } };
+          if (route === `/conversations/${roomId}/plans`) return { body: [proposed] };
+          return undefined;
+        });
+        deps.decidePlan = vi.fn(async () => null);
+        expect(await service.sendMessage({ groupId: roomId, text: 'Make it shorter', clientId: `revise-${mode}`, mentions: { all: false, botIds: [] } }))
+          .toMatchObject({ ok: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/messages`)![2]).toMatchObject({ deferExecution: revises });
+        expect(vi.mocked(deps.decidePlan!).mock.calls.length > 0).toBe(revises);
+      });
+
+      // The server cannot release a held request, so a newer message must not replace one still being arranged.
+      it('refuses a newer message while the organizer is arranging', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(() => new Promise<never>(() => {}));
+        await send('Make a draft');
+        expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: 'after-division', mentions: { all: false, botIds: [] } }))
+          .toMatchObject({ ok: false, errorCode: 'PLAN_OPEN' });
+        expect(posts().filter(([route]) => route === `/conversations/${roomId}/messages`)).toHaveLength(1);
+      });
+
+      it('asks the organizer when the steps are not written out', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(async () => ({ needsPlan: true as const, steps: [{ botId: otherBot, task: 'build' }] }));
+        await send('@Bot (Owner) 和 @Nova (Owner) 一起做登录页');
+        expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({ mode: 'forced' }), expect.anything());
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans`)![2]).toMatchObject({ steps: [{ botId: otherBot, task: 'build' }] });
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/plans/${planId}`)).toBe(false);
+      });
+
+      it('answers the request at once when no card comes of it, instead of a queue two minutes later', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(async () => { throw new Error('model unavailable'); });
+        await send('Make a draft');
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/messages/${sourceId}/continue`)).toBe(true);
+      });
+
+      it('ends your queue waiting for 继续 before opening the card', async () => {
+        const queue = { id: '80000000-0000-4000-8000-000000000032', revision: 4, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
+          creator_id: selfId, note_message_ids: [], status: 'waiting', current_step: 4, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+          steps: [{ position: 4, botId, botName: 'Bot', task: '', status: 'done' }] };
+        divisionServer([queue]);
+        await send('@Bot (Owner) 出方案');
+        const routes = posts().map(([route]) => route);
+        expect(routes.indexOf(`/conversations/${roomId}/plans/${queue.id}`)).toBeLessThan(routes.indexOf(`/conversations/${roomId}/plans`));
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans/${queue.id}`)![2]).toMatchObject({ action: 'stop', expectedRevision: 4 });
+      });
+    });
+
+    // Words for a card under way reach its current step when they would wake anyone: the requester
+    // adding to a turn, or asking the teammate who just finished a 分工 step to redo it (§4.0, §7.4).
     it.each([
       ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
       ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
-      ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'mentioned'],
-    ] as const)('with an open queue %s', async (_label, status, route, responseMode: string = 'all') => {
+      ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'talk', 'mentioned'],
+      ['of a 分工 waiting for 继续: a redo for its teammate', 'waiting', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`, 'work'],
+      ['of a 分工 waiting for 继续 in a mention-only group: an ordinary message', 'waiting', `/conversations/${roomId}/messages`, 'work', 'mentioned'],
+    ] as const)('with an open card %s', async (_label, status, route, kind: 'talk' | 'work' = 'talk', responseMode: 'all' | 'mentioned' = 'all') => {
       const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
-        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
       singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] }
         : route.endsWith('/snapshot') ? { body: { room: { ...room(roomId), response_mode: responseMode }, members: members(), messages: [], cursor: '1' } } : undefined);
@@ -1822,6 +2047,8 @@ describe('Chat Server result delivery and refresh', () => {
     await service.listGroups();
     const result = await service.getGroup(roomId);
     expect(result.ok && result.group.members[0]).toMatchObject({ botId: 'local-bot', isOwned: true, homeDeviceId: 'home-pc' });
+    // No organizer chosen yet: settings select the first companion, so it must be its local ID.
+    expect(result.ok && result.group.organizerBotId).toBe('local-bot');
   });
   it('projects hidden paused local companions with their real local identity and never claims work for them', async () => {
     fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', status: 'paused', hiddenAt: 1 }];

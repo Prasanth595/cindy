@@ -387,6 +387,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
     <View style={styles.group}>{row('profile', Info)}{row('memory', Brain)}{row('models', Sparkles)}{row('skills', Settings2)}</View>
     {/* Device preference for every teammate's chat, not part of this teammate's host profile. */}
     <View style={styles.field}>
+      <Text accessibilityRole="header" style={styles.groupLabel}>{t('devices.companionProfile.chat')}</Text>
       <View style={styles.group}><View style={styles.inline}>
         <Text style={styles.switchLabel}>{t('devices.companionProfile.showReplyTarget')}</Text>
         <NativeSwitch accessibilityLabel={t('devices.companionProfile.showReplyTarget')} value={showReplyTargets}
@@ -626,6 +627,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   note: { fontSize: typeScale.footnote, lineHeight: lineHeight.caption, color: colors.textSecondary },
   body: { fontSize: typeScale.body, lineHeight: lineHeight.body, color: colors.textPrimary },
   heading: { fontSize: typeScale.body, lineHeight: lineHeight.body, color: colors.textPrimary, fontWeight: fontWeight.medium },
+  // Mobile design guide 「分组小标签」, aligned with the group's inner padding (iOS Section title).
+  groupLabel: { fontSize: typeScale.footnote, lineHeight: lineHeight.caption, fontWeight: fontWeight.semibold, color: colors.textTertiary, paddingHorizontal: spacing.lg },
   switchLabel: { flex: 1, fontSize: typeScale.body, lineHeight: lineHeight.body, color: colors.textPrimary },
   group: { backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.container, overflow: 'hidden', paddingHorizontal: spacing.lg },
   groupText: { paddingVertical: spacing.md },

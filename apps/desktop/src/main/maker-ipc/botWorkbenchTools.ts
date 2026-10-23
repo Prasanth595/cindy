@@ -278,6 +278,15 @@ const NO_HOST: BotWorkbenchHostDeps = {
 };
 
 /** 工作台详情视图(主人自己的界面)读取一件任务的最近内容;与伙伴工具同一条授权规则。 */
+/** Host gate: a teammate acting on its own may only adjust tasks handed to it. */
+export async function canBotContinueWorkbenchTask(callerSessionId: string, taskId: string): Promise<boolean> {
+  const result = await runBotWorkbenchTool(NO_HOST, async (access) => ({
+    ok: true as const,
+    allowed: await access.canContinue({ callerSessionId, taskId }),
+  }));
+  return result.ok && result.allowed;
+}
+
 export async function readBotWorkbenchTaskForOwner(botId: string, taskId: string) {
   return runBotWorkbenchTool(NO_HOST, (access) => access.readForOwner({ botId, taskId }));
 }

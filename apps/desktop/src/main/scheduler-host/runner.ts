@@ -1,5 +1,6 @@
 import { beginQuietScheduledOutput, hidesScheduledTranscript } from './silent-output.js';
 import { untrustedJsonBlock } from '../../shared/untrustedPrompt.js';
+import { BUILTIN_ROUTINE_SCHEDULE_PREFIX, routineInstructionFromPrompt } from '../../shared/botAutonomy.js';
 import {
   captureDataOwnerBroadcastScope,
   isDataOwnerBroadcastScopeCurrent,
@@ -2000,9 +2001,13 @@ export class MakerScheduleRunner implements ScheduleRunner {
         ...(schedule.targetSessionId || schedule.source === 'bot'
           ? {
               resolveAutoReviewUserIntent: async () => {
-                const intent = restoreAutoReviewUserIntent(
-                  (await this.deps.readAutoReviewHistory?.(session.id).catch(() => [])) ?? [],
-                );
+                // A teammate routine is judged by the instruction it runs, not by the
+                // owner's unrelated chat history in the teammate's main task.
+                const intent = schedule.source === 'bot'
+                  ? routineInstructionFromPrompt(schedule.prompt)
+                  : restoreAutoReviewUserIntent(
+                    (await this.deps.readAutoReviewHistory?.(session.id).catch(() => [])) ?? [],
+                  );
                 const current = await this.readRoutinePermissions(session.id, session);
                 const expected = routinePermissions ?? heartbeatPermissions;
                 if (
@@ -3813,7 +3818,16 @@ function buildScheduledRunContextInstruction(
     `firedAtUtc: ${new Date(ctx.firedAt).toISOString()}`,
     `firedAtInScheduleTimezone: ${firedAtInScheduleTimezone}`,
     'These timestamps identify when this run was triggered, not when a queued run started processing. Use the task instructions to determine the requested time range.',
+    ...buildTeammateTurnAuthorityLine(schedule),
   ].join('\n');
+}
+
+/** Teammate routines state who the run speaks for; the host enforces the same boundary. */
+function buildTeammateTurnAuthorityLine(schedule: Pick<Schedule, 'id' | 'source'>): string[] {
+  if (schedule.source !== 'bot') return [];
+  return schedule.id.startsWith(BUILTIN_ROUTINE_SCHEDULE_PREFIX)
+    ? ['turnAuthority: autonomous. The host started this run; the owner did not ask for it. You may read, keep Todos, notify the owner and continue or re-route tasks already handed to you. Other changes to the owner\'s tasks need the owner\'s request: propose them in a Todo or notification instead.']
+    : ['turnAuthority: entrusted. This run carries out the standing instructions the owner set for this routine; stay within them.'];
 }
 
 function buildScheduleRefLine(schedule: Pick<Schedule, 'id' | 'name'>): string[] {

@@ -18,7 +18,7 @@ import {
   type WheelEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Plus, X, EllipsisVertical, Monitor, WifiOff, Folder } from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Plus, X, EllipsisVertical, Pencil, Monitor, WifiOff, Folder } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppShortcutDisplay } from '@/hooks/useAppShortcut';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
@@ -83,11 +83,14 @@ function WorkerModelLine({
   model,
   effort,
   device,
+  reserveClassName = 'mr-7',
 }: {
   workerSessionId: string;
   model: string;
   effort: string | null;
   device?: WorkerExecutionDevice;
+  /** 右侧 hover 操作图标的保留宽度；默认给单个归档 X 留空。 */
+  reserveClassName?: string;
 }) {
   const { t } = useTranslation();
   const effortLabel = workerEffortLabel(t, effort);
@@ -133,7 +136,12 @@ function WorkerModelLine({
   // 菜单有 overflow-x-hidden,整行 nowrap 会把后加的档位裁掉;
   // 模型名可截,档位词短、必须留在可见区。右侧给 archive / ERR 留空。
   return (
-    <div className="mt-0.5 mr-7 ml-[26px] flex min-w-0 items-baseline gap-1.5 text-12 leading-snug text-[var(--text-secondary)]">
+    <div
+      className={cn(
+        'mt-0.5 ml-[26px] flex min-w-0 items-baseline gap-1.5 text-12 leading-snug text-[var(--text-secondary)]',
+        reserveClassName,
+      )}
+    >
       {project && <Tip text={project.path}><span className="inline-flex min-w-0 items-center gap-1"><Folder size={11} aria-hidden className="shrink-0" /><span className="truncate">{project.name}</span><span>·</span></span></Tip>}
       <span className="min-w-0 truncate">{simplifyModelName(model)}</span>
       {effortLabel ? <span className="shrink-0">· {effortLabel}</span> : null}
@@ -392,6 +400,8 @@ export interface RolePillDropdownProps {
   activeWorkerCount: number;
   onSwitchFocus: (workerId: string) => void;
   onArchiveWorker: (workerId: string) => void;
+  /** 打开「编辑 Worker」表单；undefined 表示当前入口不支持（如远程旧版被控端）。 */
+  onEditWorker?: (workerId: string) => void;
   /** false 时,选中的 worker 不会仅因组件挂载/刷新而自动清 attention。 */
   clearAttentionWhenVisible?: boolean;
   className?: string;
@@ -523,6 +533,7 @@ function WorkerLayoutMenu({
   selectedWorkerId,
   onSwitchFocus,
   onArchiveWorker,
+  onEditWorker,
   clearAttentionWhenVisible = true,
 }: {
   layout: WorkerListLayout;
@@ -531,6 +542,7 @@ function WorkerLayoutMenu({
   selectedWorkerId: string | null;
   onSwitchFocus: (workerId: string) => void;
   onArchiveWorker: (workerId: string) => void;
+  onEditWorker?: (workerId: string) => void;
   clearAttentionWhenVisible?: boolean;
 }) {
   const { t } = useTranslation();
@@ -711,8 +723,30 @@ function WorkerLayoutMenu({
                             </>
                           )}
                         </div>
-                        <WorkerModelLine workerSessionId={w.sessionId} model={w.model} effort={w.effort} device={w.executionDevice} />
+                        <WorkerModelLine
+                          workerSessionId={w.sessionId}
+                          model={w.model}
+                          effort={w.effort}
+                          device={w.executionDevice}
+                          reserveClassName={onEditWorker ? 'mr-14' : 'mr-7'}
+                        />
                       </button>
+                      {onEditWorker && (
+                        <button
+                          type="button"
+                          className="absolute right-8 top-1/2 -translate-y-1/2 inline-flex h-[22px] w-[22px] items-center justify-center rounded opacity-0 transition-opacity group-hover:opacity-100 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeMenu();
+                            onEditWorker(w.workerId);
+                          }}
+                          aria-label={t('orca.rolePill.editWorkerAria', {
+                            name: getWorkerArchiveDisplayName(w),
+                          })}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      )}
                       {/* hover archive ✕ */}
                       <button
                         type="button"
@@ -841,12 +875,14 @@ function WorkerTabsList({
   selectedWorkerId,
   onSwitchFocus,
   onArchiveWorker,
+  onEditWorker,
   clearAttentionWhenVisible = true,
 }: {
   workers: WorkerInfo[];
   selectedWorkerId: string | null;
   onSwitchFocus: (workerId: string) => void;
   onArchiveWorker: (workerId: string) => void;
+  onEditWorker?: (workerId: string) => void;
   clearAttentionWhenVisible?: boolean;
 }) {
   const { t } = useTranslation();
@@ -983,7 +1019,8 @@ function WorkerTabsList({
                   type="button"
                   ref={selected ? focusedTabRef : undefined}
                   className={cn(
-                    'inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border py-0 pl-2 pr-6 text-11 leading-none transition-colors',
+                    'inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border py-0 pl-2 text-11 leading-none transition-colors',
+                    onEditWorker ? 'pr-10' : 'pr-6',
                     selected
                       ? isError
                         ? 'border-[var(--error-fg)] bg-[var(--accent-cta-bg)] text-[var(--accent-pure-cta-fg)]'
@@ -1006,6 +1043,26 @@ function WorkerTabsList({
                       (会连带裁剪垂直溢出), 角标朝上溢出会被切掉; 行内则始终在 pill 边界内。 */}
                   {isError && <WorkerErrorBadge className="ml-0.5" />}
                 </button>
+                {onEditWorker && (
+                  <button
+                    type="button"
+                    className={cn(
+                      'absolute right-[21px] top-1/2 inline-flex h-[18px] w-[18px] -translate-y-1/2 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100',
+                      selected
+                        ? 'text-[var(--surface-on-card)] hover:text-[var(--surface-on-card)]'
+                        : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]',
+                    )}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditWorker(worker.workerId);
+                    }}
+                    aria-label={t('orca.rolePill.editWorkerAria', {
+                      name: getWorkerArchiveDisplayName(worker),
+                    })}
+                  >
+                    <Pencil size={11} />
+                  </button>
+                )}
                 <button
                   type="button"
                   className={cn(
@@ -1094,6 +1151,7 @@ export function WorkerListToolbar({
   onOpenCreate,
   onOpenSettings,
   onArchiveWorker,
+  onEditWorker,
   trailingActions,
   clearAttentionWhenVisible = true,
   className,
@@ -1127,6 +1185,7 @@ export function WorkerListToolbar({
           selectedWorkerId={selectedWorkerId}
           onSwitchFocus={onSwitchFocus}
           onArchiveWorker={onArchiveWorker}
+          onEditWorker={onEditWorker}
           clearAttentionWhenVisible={clearAttentionWhenVisible}
         />
         {trailingActions}
@@ -1150,6 +1209,7 @@ export function WorkerListToolbar({
             selectedWorkerId={selectedWorkerId}
             onSwitchFocus={onSwitchFocus}
             onArchiveWorker={onArchiveWorker}
+            onEditWorker={onEditWorker}
             clearAttentionWhenVisible={clearAttentionWhenVisible}
           />
         </>
@@ -1170,6 +1230,7 @@ export function WorkerListToolbar({
               activeWorkerCount={activeWorkerCount}
               onSwitchFocus={onSwitchFocus}
               onArchiveWorker={onArchiveWorker}
+              onEditWorker={onEditWorker}
               clearAttentionWhenVisible={clearAttentionWhenVisible}
             />
           </div>
@@ -1182,6 +1243,7 @@ export function WorkerListToolbar({
         selectedWorkerId={selectedWorkerId}
         onSwitchFocus={onSwitchFocus}
         onArchiveWorker={onArchiveWorker}
+        onEditWorker={onEditWorker}
         clearAttentionWhenVisible={clearAttentionWhenVisible}
       />
       {trailingActions}
@@ -1195,6 +1257,7 @@ export function RolePillDropdown({
   selectedWorkerId,
   onSwitchFocus,
   onArchiveWorker,
+  onEditWorker,
   clearAttentionWhenVisible = true,
   className,
 }: RolePillDropdownProps) {
@@ -1433,8 +1496,30 @@ export function RolePillDropdown({
                     </div>
                     {/* 副行: 简化 model 名 (去 provider 前缀) + 档位文字.
                         各模型档位集合不同,不用信号条假装同一把尺子. */}
-                    <WorkerModelLine workerSessionId={w.sessionId} model={w.model} effort={w.effort} device={w.executionDevice} />
+                    <WorkerModelLine
+                      workerSessionId={w.sessionId}
+                      model={w.model}
+                      effort={w.effort}
+                      device={w.executionDevice}
+                      reserveClassName={onEditWorker ? 'mr-14' : 'mr-7'}
+                    />
                   </button>
+                  {onEditWorker && (
+                    <button
+                      type="button"
+                      className="absolute right-8 top-1/2 inline-flex h-[22px] w-[22px] -translate-y-1/2 items-center justify-center rounded opacity-0 transition-opacity group-hover:opacity-100 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeDropdown();
+                        onEditWorker(w.workerId);
+                      }}
+                      aria-label={t('orca.rolePill.editWorkerAria', {
+                        name: getWorkerArchiveDisplayName(w),
+                      })}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  )}
                   {/* hover archive ✕ */}
                   <button
                     type="button"
