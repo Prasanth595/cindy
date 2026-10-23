@@ -158,7 +158,9 @@ const D_GHOST_FORGE_PACK = [
 const D_GHOST_FORGE_INSTALL = [
   "把当前源码目录重新校验、打包，并立即安装到 Cindy；同 id 已安装时原位更新。",
   "只有用户明确要求安装或更新当前插件时才调用。不要因为 scaffold 或 pack 成功就自动调用。",
-  "首次安装后直接启用；更新保留原有启用状态、配置、数据与面板位置，同版本也可覆盖。",
+  "新装默认个人范围(namespace:null)，不会因登录组织而新建组织副本；已有个人实例优先更新，唯一的旧组织实例原位更新。只有用户明确要求组织安装时传当前组织 namespace，不能从登录身份推断安装归属。",
+  "首次安装后直接启用；同来源更新保留启用状态、配置、数据与面板位置；换源会隔离旧账号与数据，需要重新连接。",
+  "遇到 INSTALL_TARGET_REQUIRED，向用户展示 targets 的身份与版本，让用户选择更新已有实例(target_instance_id)，或另装一份(install_copy:true)。不得替用户默认另装或迁移账号。",
   "dir 传插件源码目录绝对路径(工作目录外走与 pack 相同的会话权限)。成功返回本次真实执行的是 installed 还是 updated；",
   "仅当用户明确选择 AI 生成图标时，可像 ghost_forge_pack 一样传 icon_source。",
   "失败返回打包校验或 Host 安装事务的结构化错误。ghost_forge_pack 始终只打包，不受本工具影响。",
@@ -1153,11 +1155,14 @@ export async function handleForgePack(
 /** ghost_forge_install 的 handler 主体(导出供单测)。 */
 export async function handleForgeInstall(
   deps: CindyGhostsMcpDeps,
-  input: { dir: string; icon_source?: string },
+  input: { dir: string; icon_source?: string; target_instance_id?: string; install_copy?: boolean; namespace?: string | null },
 ): Promise<McpTextResult> {
   try {
     const result = await deps.forgeInstall({
       dir: input.dir,
+      ...(input.target_instance_id !== undefined ? { targetInstanceId: input.target_instance_id } : {}),
+      ...(input.install_copy !== undefined ? { installCopy: input.install_copy } : {}),
+      ...(input.namespace !== undefined ? { namespace: input.namespace } : {}),
       ...(input.icon_source !== undefined ? { iconSource: input.icon_source } : {}),
     });
     if (!result.ok) {
@@ -1475,6 +1480,9 @@ export function createCindyGhostsMcpServer(
     D_GHOST_FORGE_INSTALL,
     {
       dir: z.string().describe("插件源码目录的绝对路径(目录里须有 ghost.json)"),
+      target_instance_id: z.string().max(256).optional().describe("用户选择更新的已有实例 ID，来自 INSTALL_TARGET_REQUIRED.targets；不能与 install_copy:true 同用"),
+      namespace: z.string().min(1).max(128).nullable().optional().describe("仅用户明确选择安装范围时传；null 为个人，字符串仅允许当前组织。新装默认个人，更新保留已有实例；不能与 target_instance_id 同用"),
+      install_copy: z.boolean().optional().describe("仅用户明确另装一份时传 true；不覆盖或停用其它身份的插件，需要独立连接账号"),
       icon_source: z
         .string()
         .optional()

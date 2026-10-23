@@ -541,6 +541,8 @@ export default {
     requiredUnitWorkspace('@cindy/maker-scheduler', 'packages/maker-scheduler'),
     requiredUnitWorkspace('@cindy/maker-shared', 'packages/maker-shared'),
     requiredUnitWorkspace('@cindy/model-providers', 'packages/model-providers'),
+    noCollectableWorkspace('@jackwener/opencli', 'packages/opencli-vendor',
+      'Pinned production adapter sources; execution, host credentials and discovery are tested through @cindy/mcps and the browser-control-runtime.'),
     {
       name: '@cindy/orca-workflow',
       cwd: 'packages/orca-workflow',

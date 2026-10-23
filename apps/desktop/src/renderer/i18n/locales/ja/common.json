@@ -5,7 +5,9 @@
     "title": "メール",
     "openMailbox": "メールボックスで開く",
     "loading": "メールを読み込み中…",
-    "failed": "メールを読み込めませんでした。接続したアカウントを確認して再試行するか、メールボックスで開いてください。",
+    "failed": "メールを読み込めませんでした。再試行するか、メールボックスで開いてください。",
+    "unavailable": "利用できるメールプラグインがありません。メールボックスで開けます。",
+    "notReady": "メールプラグインの設定が完了していません。メールボックスを接続するか、元のリンクを開いてください。",
     "retry": "再試行",
     "to": "宛先",
     "cc": "Cc",
@@ -20,7 +22,9 @@
     "collapseMessage": "{{from}} からのメールを折りたたむ",
     "conversationFailed": "前後のメールを読み込めませんでした。",
     "messageCount": "{{count}} 件のメール",
-    "showMessages": "{{count}} 件のメールを表示"
+    "showMessages": "{{count}} 件のメールを表示",
+    "choosePlugin": "このメールを開くプラグインを選んでください。",
+    "personalPlugin": "個人用プラグイン"
   },
   "taskActionConfirmation": {
     "title": "セッション操作の確認",
@@ -966,6 +970,9 @@
     "handoffWindow": "代理入力 · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "この SSH タスクでは Harness を切り替えられません。現在の Harness のモデルを選ぶか、必要な Harness で新しい SSH タスクを作成してください。",
+    "MODEL_SELECTION_UNAVAILABLE": "選択したプロバイダーのモデルは利用できなくなりました。設定で接続を確認するか、利用可能なモデルを選び直してください。",
+    "HARNESS_SWITCH_NOT_READY": "Harness の切り替えが完了していません。エラーの詳細を確認し、Harness の準備ができてから再試行してください。",
     "DEVICE_LINK_BUSY": "接続先のコンピュータが混み合っています。しばらくしてから再試行してください。",
     "INVALID_PARAMS": "パラメータが無効です。確認して再試行してください。",
     "PRECONDITION_FAILED": "現在の状態ではこの操作を実行できません。しばらくしてから再試行してください。",
@@ -6657,7 +6664,7 @@
         "installMeta": "バージョン {{version}} · {{source}}",
         "updateMeta": "バージョン {{from}} → {{to}} · {{source}}",
         "installDescription": "確認するまでインストールされません。インストール後はすぐに有効になり、プラグインページからいつでも無効化・アンインストールできます。",
-        "updateDescription": "新しいバージョンはより多くの権限を必要とするため、確認するまで更新されません。それまでは現在のバージョンをそのまま使えます。",
+        "updateDescription": "確認後に更新します。それまでは現在のバージョンをそのまま使えます。",
         "grantsTitle": "インストール後に持つ権限:",
         "noPermissions": "このプラグインは追加の権限を宣言していません。",
         "addedTitle": "追加・変更される権限:",
@@ -6674,7 +6681,11 @@
         "confirmInstall": "インストール",
         "confirmUpdate": "更新",
         "cancel": "キャンセル",
-        "updateNeedsConsent": "新しい権限の確認が必要"
+        "updateNeedsConsent": "新しい権限の確認が必要",
+        "targetIdentity": "インストール先: {{name}}",
+        "personalTarget": "個人",
+        "sourceChanged": "この更新でローカルソースに切り替わります。既存のアカウントとデータは別に保管されます。更新後にアカウントを接続し直してください。",
+        "otherCopies": "同名のプラグインがほかに {{count}} 個あります。上書きや無効化はされません。別のコピーには個別のアカウント接続が必要です。"
       },
       "trust": {
         "official": "Cindy 公式プラグイン",
@@ -9778,7 +9789,8 @@
           "archived": "アーカイブ済みです。履歴は引き続き閲覧できます。",
           "noneHint": "このグループでは仲間の所有者だけが応答を依頼できます。",
           "companionPermissions": "仲間の権限",
-          "configureCapabilities": "ツールと利用権限の設定"
+          "configureCapabilities": "ツールと利用権限の設定",
+          "capabilityScope": "これは{{name}}自身のツールと利用権限で、このグループだけの設定ではありません。"
         }
       },
       "lifecycle": {
@@ -12288,6 +12300,9 @@
       "daemonNotReady": "{{manager}} のアップグレードは完了しましたが、リモート daemon がまだ起動していません — メッセージを手動で再送信してください"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "この SSH タスクでは Harness を切り替えられません。現在の Harness のモデルを選ぶか、必要な Harness で新しい SSH タスクを作成してください。",
+      "MODEL_SELECTION_UNAVAILABLE": "選択したプロバイダーのモデルは利用できなくなりました。設定で接続を確認するか、利用可能なモデルを選び直してください。",
+      "HARNESS_SWITCH_NOT_READY": "Harness の切り替えが完了していません。エラーの詳細を確認し、Harness の準備ができてから再試行してください。",
       "DEVICE_LINK_BUSY": "接続先のコンピュータが混み合っています。しばらくしてから再試行してください。",
       "REMOTE_DAEMON_CLOSED": "リモート接続が切れました。更新中の可能性があります。このターンは終了したので、もう一度送信してください。",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "リモートセッションではローカルのファイル/画像の添付にアクセスできません。内容を直接貼り付けてください。",
@@ -12867,10 +12882,10 @@
         "title": "セッションをアーカイブ",
         "description": "このセッションをアーカイブしますか？アーカイブ後はリストから消えます。",
         "dirtyWorktreeWarning": "このセッションのワークツリーには未コミットの変更があります。アーカイブ前に git スナップショットとして自動保存され、後でセッションから復元できます。",
-        "scheduleWarning_one": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
-        "scheduleWarning_other": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
-        "scheduleWarningMany_one": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
-        "scheduleWarningMany_other": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+        "scheduleWarning_one": "関連する自動化{{names}}は引き続き実行され、その際にこのセッションを復元します。",
+        "scheduleWarning_other": "関連する自動化{{names}}は引き続き実行され、その際にこのセッションを復元します。",
+        "scheduleWarningMany_one": "{{count}} 件のセッションに自動化が紐づいており、次回実行時にセッションが復元されます。",
+        "scheduleWarningMany_other": "{{count}} 件のセッションに自動化が紐づいており、次回実行時にセッションが復元されます。",
         "scheduleName": "「{{name}}」",
         "scheduleNameSeparator": "、",
         "confirm": "確認",
@@ -12973,6 +12988,7 @@
         "moveToProjectRunningBlocked": "このセッションは実行中です。完了後に移動してください。",
         "moveToProjectAttachedBlocked": "このセッションはリモート操作中です。操作終了後に移動してください。",
         "moveToProjectRemoteUnsupported": "リモートセッションの移動はまだサポートされていません",
+        "moveToProjectWorktreeBlocked": "このタスクの作業ディレクトリは worktree のため、他のプロジェクトへは移動できません",
         "openInNewWindow": "新しいウィンドウで開く",
         "exportShare": "セッションをエクスポート…",
         "exportHtml": "HTML にエクスポート…",
@@ -13713,7 +13729,7 @@
         "card": {
           "open": "セッションを開く",
           "unbind": "連携を解除",
-          "persistentNote": "セッションがアーカイブされると自動的に再作成して連携を継続します",
+          "persistentNote": "アーカイブ後も、次回実行時に元のセッションが復元されます",
           "deleted": "連携先セッションは削除されました",
           "deletedPersistentNote": "次回の実行時に新しいセッションを作成して再連携します",
           "fallbackTitle": "セッション {{id}}"
@@ -17065,6 +17081,10 @@
     "exitFullscreen": "全画面表示を終了"
   },
   "richAnswer": {
+    "send": "メッセージを送信",
+    "sending": "送信中…",
+    "sent": "送信済み",
+    "sendFailed": "メッセージを送信できませんでした。入力内容は保持されています。",
     "playVideo": "動画を再生",
     "openVideoSource": "元の動画を開く",
     "calculationUnavailable": "この値を計算できません。",

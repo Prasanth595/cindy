@@ -246,6 +246,8 @@ export class GhostPipeDispatcher {
     if (ghost.manifest.mail === true && ghost.manifest.mailReader?.tool === tool) {
       toolArgs = { ...args };
       delete toolArgs.markRead;
+      delete toolArgs.openDraft;
+      if (request.mailReaderOpened === true) toolArgs.openDraft = true;
       if (request.mailReaderOpened === true && ghost.manifest.mailReader.markRead === true)
         toolArgs.markRead = true;
     }

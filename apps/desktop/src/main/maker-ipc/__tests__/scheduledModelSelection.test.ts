@@ -239,7 +239,7 @@ describe('saved effort uses the selected provider and Harness catalog copy', () 
 });
 
 describe('bound target Harness capability', () => {
-  it.each([{ remoteHostId: 'ssh-host' }, { orcaRole: 'lead' }, { orcaRole: 'worker' }])(
+  it.each([{ remoteHostId: 'ssh-host' }, { remoteHostId: 'ssh-host', orcaRole: 'lead' }])(
     'rejects cross-Harness overrides on %j while preserving same-Harness and follow modes', (restriction) => {
       const target = { agentKind: 'codex' as const, status: 'active', ...restriction };
       expect(() => assertScheduledHarnessSupported(target, 'pi')).toThrow('current Harness');
@@ -247,6 +247,37 @@ describe('bound target Harness capability', () => {
       expect(() => assertScheduledHarnessSupported(target, undefined)).not.toThrow();
     },
   );
+  // Regression: ordinary Orca switching supports all three Harnesses, but the
+  // scheduled guard blocked both the override and the next manual send's restore.
+  // Unit tier: enter a persisted scope, switch, reload it and restore via the real
+  // selection entry; the old guard fails before any model can be applied.
+  it.each(['lead', 'worker'])('applies and restores a cross-Harness override for an Orca %s', async (orcaRole) => {
+    let profile: ScheduledModelSelection = { ...selection, agentKind: 'codex', model: 'owner-model' };
+    const original = { ...profile };
+    let baseline: string | null = null;
+    const apply = async (_id: string, choice: ScheduledModelSelection) => {
+      await applyScheduledModelSelection(choice, {
+        getTarget: async () => ({ agentKind: profile.agentKind, status: 'active', orcaRole }),
+        isBusy: () => false,
+        resolveSelection: async (value) => value,
+        switchHarness: async (value) => { profile = { ...profile, agentKind: value.agentKind }; return { engineReady: true }; },
+        applyModel: async (value) => { profile = { ...value }; },
+      });
+    };
+    const deps = {
+      createId: () => 'scope', isBusy: () => false,
+      read: async () => ({ profile, baseline }),
+      write: async (_id: string, value: unknown) => { baseline = value ? JSON.stringify(value) : null; },
+      apply,
+    };
+    expect(() => assertScheduledHarnessSupported({ agentKind: 'codex', status: 'active', orcaRole }, 'pi')).not.toThrow();
+    await createScheduledModelScope(deps).begin('task');
+    await apply('task', selection);
+    expect(profile).toEqual(selection);
+    await createScheduledModelScope(deps).restore('task');
+    expect(profile).toMatchObject(original);
+    expect(baseline).toBeNull();
+  });
   it('preserves ordinary local cross-Harness selection and archived-target recovery', () => {
     expect(() => assertScheduledHarnessSupported({ agentKind: 'codex', status: 'active' }, 'pi')).not.toThrow();
     expect(() => assertScheduledHarnessSupported({ agentKind: 'codex', status: 'archived', remoteHostId: 'ssh-host' }, 'pi')).not.toThrow();

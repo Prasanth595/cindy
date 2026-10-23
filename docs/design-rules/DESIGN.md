@@ -145,8 +145,10 @@ Wallpaper Visibility ranges from 0% (hidden) to 100% (fully visible), in 1% step
 100% minus visibility. Video uses visibility directly as the video element's opacity over
 an opaque theme-surface backing, without a separate translucent veil; this avoids the
 observed Windows HDR brightness shift when P3 content changes the output composition.
-The video wrapper's opacity is reserved for loading/exit crossfades. Never reduce text
-or control opacity. Release video playback at 0%. Blend-mode controls remain out of scope.
+The video wrapper's opacity is reserved for loading/exit crossfades. Visibility never fades
+text or controls: they keep their token colors (including the translucent text tiers of §2)
+and no element opacity is layered on top. Release video playback at 0%. Blend-mode controls
+remain out of scope.
 Optional Wallpaper Blur (user addition, 2026-10-06) ranges from 0 (off, default) to 20
 in whole steps, applying a CSS-pixel radius only to the wallpaper image/video. No UI,
 theme backing, or text is blurred; video opacity remains on the video itself. At zero,
@@ -259,6 +261,8 @@ Small interactive chips (button backgrounds, tag pills, avatar fills, selected-n
 > ~~**Border Light** (`#d4d4d4`)~~ — deprecated (2026-06, G2). Once labeled the "white-button border color", but no real component ever used it (only bare hardcodes in the experimental view). White Pill secondary borders uniformly use **Board** (`--border-default` `#d7d7d4`).
 
 ### Neutrals & Text
+
+**Text tiers (user decision, 2026-10-22).** Neutral text follows one strictly ordered ladder in every theme: primary > description > secondary > tertiary > placeholder/disabled. In the CINDY family every tier is the same ink at decreasing alpha — black in Light, white in Dark (values in §15.16) — the way Apple's label colors work: a translucent tier keeps its step on glass, wallpaper, hover fills and cards, and picks up the warmth of the surface beneath it. Don't recreate a tier with a solid gray picked by eye, and don't fake a tier by fading an element with `opacity`. Text on inverse surfaces (selected pills, tooltips, CTAs) uses its dedicated foreground token, never a translucent ink tier. The same ink at low alpha draws the CINDY hover, chip, selected and pressed fills and its borders and dividers (§15.16). The hex values below are the Classic (default) theme's reference sample.
 
 - **Stone** (`#737373`): Secondary body text, footer links, and de-emphasized content. The primary "muted" tone.
 - **Mid Gray** (`#525252`): Emphasized secondary text, slightly darker than Stone.
@@ -526,7 +530,7 @@ Ordinary confirmations opt into standard buttons with `presentation="standard"` 
 - Preserve the accepted hierarchy: ordinary ConfirmDialog title 18/500; provider/MCP form title 18/600; compact prompt title 15/600 where already specified. Different roles are not interchangeable merely because their font size matches.
 - Pair Button md (32px) with Input sm (32px), Button lg (36px) with Input md (36px). Input lg remains 40px for spacious fields; Button has no 40px size. Size names are local component APIs, not a shared ordinal scale.
 - Font aliases may share default numbers while retaining separate line-height/role contracts. Preserve public aliases; do not globally round historical unitless line heights or optical spacing. On affected surfaces, UI text consumes `--text-*`, and line boxes must grow with font settings.
-- FormField reading hints use `--form-field-hint` (defaults to `--text-secondary-mid`; One Dark Pro / Solarized Light override this help role only): this keeps Cindy Light/Dark's existing hint colors while providing stronger reading contrast in other built-in themes. Preserve `text-tertiary` metadata and `text-placeholder` roles.
+- FormField reading hints use `--form-field-hint` (defaults to `--text-secondary-mid`; One Dark Pro / Solarized Light override this help role only): in Cindy Light/Dark this is the description ink tier (70% / 66%, §15.16), and other built-in themes get stronger reading contrast. Preserve `text-tertiary` metadata and `text-placeholder` roles.
 - MarketCard's title is a registered frameless text action inside the existing card content, with an independent inset focus indicator. The title button supplies keyboard detail access without nesting the card's Clone/manage controls inside a button. Mouse card selection remains available.
 
 ### Select & Dropdown
@@ -637,6 +641,22 @@ Opening the process changes that outer frame into a panel, using the ordinary co
 The registration covers only the collapsed outer frame; the inner buttons retain their own
 control-tier treatment. Keep semantic surface/border/text colors in both Light and Dark.
 It does not authorize pill-shaped toolbars or other status panels.
+
+### Desktop hidden channel records
+
+`BotChannelsPage` lists each connection's hidden channel tasks. The record name and
+summary are one narrowly scoped bare-text control: resting, hover and pressed states
+keep the existing text block (12px `--text-primary` name, 11px `--text-tertiary` meta,
+no fill, border, radius or added padding). Making that existing text open the read-only
+history page does not assign a pill frame or change task state. The separate restart
+action remains the registered compact secondary Button and is outside this exemption.
+This records the accepted quiet list, not a general exemption for settings actions.
+
+Keyboard focus uses the theme-invariant `--focus-ring` as a `focus-visible` box-shadow
+ring. Non-input `outline` is suppressed globally, so an outline class is not a visible
+focus treatment here. The ring appears only for keyboard focus and does not create an
+ordinary control frame (§5). The single-page comparison showed no resting-pixel change;
+this registration does not claim a new client screenshot of the keyboard ring.
 
 ### About: harness versions
 
@@ -768,7 +788,7 @@ Ordinary control frames, containers and inner-control surfaces not covered by St
 
 **A layer with no frame or surface to round needs no corner-radius assignment.** This does not authorize a control to discard its prescribed frame treatment merely by omitting a fill or border. A transient hover or pressed surface on an ordinary control remains that control's frame and takes its assigned tier.
 
-**A focus or selection indicator is a separate visual treatment.** Its appearance alone does not create a new ordinary control frame or reclassify the associated layer. Registered bare-text buttons (wizard back-navigation "← 上一步", the §16.3 login text-button category) remain frameless and retain their visible focus treatment; new bare-text-button usages must still be registered in the introducing component entry.
+**A focus or selection indicator is a separate visual treatment.** Its appearance alone does not create a new ordinary control frame or reclassify the associated layer. Registered bare-text buttons (wizard back-navigation "← 上一步", the §16.3 login text-button category, and the hidden-channel record text in the §4 Desktop hidden channel records entry) remain frameless and retain their visible focus treatment; new bare-text-button usages must still be registered in the introducing component entry.
 
 Evaluate the approved component treatment across its states, including shared styles and pseudo-elements. **The absence of a local background or border class is not evidence of frameless status.**
 
@@ -827,6 +847,7 @@ Making something clickable never moves a layer between Step 1 and Step 2.
 - Don't use font weights above 600 in UI chrome — 700 only inside the exemption domains registered in the §3 registry (that table is the single source of truth; it currently covers markdown content, hljs theme ports, login / Splash brand canvas, third-party viewers under `vendor/`, and imperative third-party APIs). Don't re-enumerate the domains here — read §3. No 800+, no in-between values, anywhere
 - Don't add decorative illustrations — Cindy's working UI carries no mascots or artwork; brand imagery appears only on the explicitly enumerated sanctioned brand surfaces in §15.7 / §16
 - Don't use gradients anywhere — flat blocks and borders only
+- Don't hard-code a solid gray for neutral text or fake a text tier with element `opacity` — use the text tier tokens (§2); in the CINDY family they are translucent ink and stay correct on glass and wallpaper
 - Don't overcomplicate the layout — stick to the region structure in §5; no complex nested grids
 - Don't use borders heavier than 1px — containment is always the lightest possible touch
 - Don't add decorative or large-motion animation — no bounce, parallax, looping, or gratuitous movement. Short **functional** state transitions (color / background / opacity, ≤150ms) are fine and expected — see §14.4.
@@ -1043,6 +1064,7 @@ CSS variable names are always kebab-case. Dot-style ids (VSCode's `sidebar.itemA
 3. **HSL tokens must be wrapped**: `hsl(var(--background))`, never bare `var(--background)` (the latter yields a raw HSL string, not a valid CSS color)
 4. **No suitable token? Don't force one**: discuss adding a slot/singleton with the user instead
 5. **Never** use `bg-[#xxx] dark:bg-[#xxx]` hardcoded pairs — the pre-P2 anti-pattern; it was migrated away once and new code must not reintroduce it
+6. **Text color = the tier token for its role**: `--text-primary`, `--text-secondary-mid` (description), `--text-secondary`, `--text-tertiary`, `--text-placeholder` (or its input aliases). Placeholders use the placeholder tier itself, not `--text-tertiary` or an extra `placeholder:opacity-*`; neutral text never pairs its token with a static `opacity-*` to sit between tiers (disabled states and `opacity-0`/`100` reveals excepted). Guarded by `textTierDiscipline.test.ts`
 
 This section is the authoritative token-usage text; i18n rules for UI copy live in `docs/dev-rules/engineering-conventions.md` §5.
 
@@ -1664,9 +1686,9 @@ peek 有值 → 调用方跳过重验 → 链路恢复后也不再问。两端�
 | Deep brand red (hover/pressed) | `#A61629`                                                                                                          | `#A61629`                                   |
 | Background                     | `#F2F2ED` (warm ivory — 2026-08 revision, see 15.16)                                                               | `#181818` (pure neutral — 2026-08 revision) |
 | Card / input                   | `#FDFDF8`                                                                                                          | `#1F1F1F`                                   |
-| Border                         | `#E4E4DF` (desktop, warm; mobile owns its own ramp since 2026-09-26 — see 15.13)                                  | `#313131`                                   |
-| Secondary info                 | `#888883` (2026-08 ruling: warmed + raised to ≥3.0, supersedes the 2026-07-20 `#8C8E94`; history in 15.5)          | `#6F6F6F`                                   |
-| Body text                      | `#1A1A1A` (near-black neutral; emphasis tier `#0C0C0C`)                                                            | `#D4D4D4`                                   |
+| Border                         | black ink 8% (desktop, since 2026-10-22 — see 15.16; mobile owns its own ramp since 2026-09-26 — see 15.13)       | white ink 10%                               |
+| Secondary info                 | black ink 56% (2026-10-22 ink ladder, supersedes `#888883` and U2; full ladder in 15.16)                           | white ink 55%                               |
+| Body text                      | black ink 88% (emphasis 95%)                                                                                       | white ink 82% (emphasis 100%)               |
 | Pure white                     | `#FFFFFF`                                                                                                          | `#FFFFFF`                                   |
 
 ### 15.2 Red-Boundary Test Maps(品牌红边界)
@@ -1689,18 +1711,15 @@ See the skin decision table §2 (design-stage working file, not in repo). The Li
 - **hljs syntax colors** (light = highlight.js `github.css`; dark = globals.css `.dark .hljs-*` mirroring github-dark) — dual-threshold ruling (2026-07-17): syntax colors ≥3:1, body text ≥4.5:1. The hljs palettes were designed for GitHub's default canvases; CINDY's code-block canvas (`surface-elevated`, since 2026-08 `#FDFDF8`/`#1F1F1F`; code block fill `perm-code-bg` `#FAFAF5`/`#191919`) sits close to default's, so marginal shortfalls are inherited, not CINDY-introduced (default is equally affected). Light: all syntax colors ≥3 — no remediation, itemized as exemptions. Dark: `[data-theme="cindy-dark"]` overrides `.hljs-section` to `#2573ec` (3.00:1 on the pre-2026-08 canvas; 3.72:1 after the darker revision — margins only improved, override retained) and sets `.hljs-punctuation` / `.hljs-tag` explicitly to `#c9d1d9` (defensive). Guarded by `cindyCodeBlockContrast.test.ts` (≥2 baseline + text ≥4.5). Full derivation: decision log.
 - model-budget spectrum bar / GhostTool shimmer: explicitly exempt (neutral shimmer, theme-invariant).
 
-### 15.5 U2 Explicit Exception (secondary-info color stays true to Figma)
+### 15.5 U2 Explicit Exception — retired 2026-10-22
 
-- Tokens: `text-secondary` (light `#888883` since 2026-08 / dark `#6F6F6F`) / `text-secondary-cross` (light merged into the same `#888883` tier in 2026-08; was `#9A9DA3`).
-- **Light side superseded 2026-08-13 (user ruling)**: light secondary info moved to `#888883` — warmed to the ivory hue (B=R−5) and raised to a ≥3.0 floor on every surface it sits on (page 3.17 / hover 3.06 / sidebar 3.06). The U2 "stay true to Figma" exemption now applies to **dark only** (`#6F6F6F` untouched).
-- Measured contrast (WCAG): × surface `2.32/2.92:1`, × elevated `2.56/2.65:1`, × chip `2.41/2.72:1` — all below the 4.5:1 body-text AA. Ruling **U2 (2026-07-16): stay true to the Figma values**, readability loss accepted as a recorded explicit deviation. (Light was later re-tuned in two rounds to `#8C8E94`, finalized 2026-07-20, desktop and mobile in sync — see decision log.)
-- Constraint: **never darken unilaterally** (`#686B72` was tried and rejected, kept only as an archived sample); changing the value requires a fresh user ruling (the 2026-08 light change carries one).
-- **Scope: desktop only since 2026-09-26.** Mobile no longer carries the U2 exception — by user ruling its secondary text is `#4D4D4A` / `#BDBDBD` and meets 4.5:1 (see 15.13). Desktop values above are unchanged.
-- Reverse-frozen test: `cindyThemes.test.ts` group ⑦ asserts the exact finalized values (light `#888883`, ruling 2026-08-13 / dark `#6F6F6F`); injecting `#686B72` must fail; update the baseline only after a user ruling.
+- **Retired by user ruling (2026-10-22).** CINDY text tiers are translucent ink (§2, §15.16), so the dark secondary `#6F6F6F` "stay true to Figma" exemption and the light `#888883` secondary no longer apply on Desktop. The reverse-frozen test in `cindyThemes.test.ts` group ⑦ is re-baselined to the ink ladder under this ruling; changing a tier's alpha still requires a fresh user ruling.
+- Mobile keeps its own secondary values (`#4D4D4A` / `#BDBDBD`, §15.13) until its own phase.
+- History (U2 2026-07-16, light re-tunes 2026-07-20 / 2026-08-13, mobile scope 2026-09-26) is in [`design-decision-log.md`](./design-decision-log.md).
 
 ### 15.6 HSL Format Contract
 
-The 42 `HSL_FORMAT_IDS` must be HSL triplets (`h s% l%`, `h∈[0,360)`, grays use `hue=0`, 1 decimal place); every other token is hex/rgba. Round-trip HSL→RGB channel error ≤1. Nothing outside `HSL_FORMAT_IDS` may be written as an HSL triplet.
+The 42 `HSL_FORMAT_IDS` must be HSL triplets (`h s% l%`, `h∈[0,360)`, grays use `hue=0`, 1 decimal place); every other token is hex/rgba. Translucent values append the same alpha as their rgba twin (`h s% l% / a`, e.g. the text tiers). Tailwind opacity modifiers on these slots (`border-border/40`) compile through `color-mix` (`tailwind.config.ts` `hslVar`), so a slot that carries its own alpha stays valid; never hand-write `hsl(var(--x) / a)` for a slot that may be translucent. Round-trip HSL→RGB channel error ≤1. Nothing outside `HSL_FORMAT_IDS` may be written as an HSL triplet.
 
 ### 15.7 Brand Assets (icon + logo)
 
@@ -1762,8 +1781,8 @@ The splash wordmark is a separate asset pair (`assets/splash/wordmark.png`, whit
 - Red is confined to semantic exceptions: `destructive`/delete, `error-*`, warning, diff red, status dots, and the explicit Mobile Beta-channel state badge (`betaChannelBadgeBackground/Foreground`, user decision 2026-08-25) — plus the login brand accent via `--login-brand-accent` (§16). The Desktop sidebar's Beta label is ordinary version text. The older `brand-login-*` tokens were retired with the wave4 white-canvas login and survive only as whitelist strings in `cindyDecisionData.ts` (harmless — the whitelist permits, it does not require).
 - **send-btn family**: `send-btn-bg/-icon/-hover-bg/-pressed-bg/-disabled-bg/-disabled-icon` — CINDY overrides the whole family to the neutral four states + disabled grays (light `#444242`/`#585555` unchanged; dark shifted 2026-08 to `#323232`/`#464646`); defaults keep `--accent-cta-bg` with the opacity-85 hover. Whole family sits in `cindyDecisionData` REQUIRED_IDS + CINDY_EXPECTED, guarded by assertion ③.
 - **Sidebar color hierarchy** (same set for light/dark):
-  - Body (session titles) = `text-foreground` (= `text-primary`: light `#3C3F43` / dark `#D4D4D4`).
-  - Secondary gray (leading icons at rest / timestamps / meta / group labels) = light `#888883` (2026-08, was `#9A9DA3`) / dark `#6F6F6F` (same as `text-secondary`); CINDY overrides `sidebar-muted` / `sidebar-action-icon` (HSL `60.0 2.1% 52.4%` / `0 0% 43.5%`) + `cmd-palette-item-meta` (hex).
+  - Body (session titles) = `text-foreground` (= `text-primary`: black ink 88% / white ink 82%, §15.16).
+  - Secondary gray (timestamps / meta / group labels) = secondary ink (black 56% / white 55%, same as `text-secondary`), via CINDY overrides `sidebar-muted` (HSL with alpha) and `cmd-palette-item-meta`; leading icons at rest use `sidebar-action-icon` = tertiary ink (black 44% / white 40%). Since 2026-10-22 these follow the ink ladder (§15.16) instead of `#888883` / `#6F6F6F`.
   - Selected pill = inverse pill: `sidebar-item-active` light `#3C3F43` / dark `#EEEEEE`, foreground `sidebar-item-active-foreground` light `#FCFCFC` / dark `#151515` (2026-08, was `#252222`), border transparent. **Any foreground sitting on `bg-sidebar-item-active` must use `text-sidebar-item-active-foreground` — `text-foreground` is forbidden there** (the token defaults to foreground, so non-CINDY themes see zero change).
   - Running-state leading icons (vendor glyph / Puzzle / RadioTower / Clock) = **Thinking Orange `--warning-accent` `#EA6B17`**, breathing via `session-status-breathing`; the selected state stays orange (running outranks the inverse foreground). Mobile `statusAccent` mirrors value and priority. Persistent breathing sits on an HTML wrapper; SVG stays static (engineering conventions §7).
   - Assertions: ③ CINDY_EXPECTED locks the 4 token values; ⑦ adds hierarchy assertions (secondary gray clearly weaker than body; selected-pill foreground ≥4.5 on its fill).
@@ -1888,11 +1907,12 @@ The execution rulebook for subsequent desktop / mobile UI updates. Sources: the 
 
 > Value authority: [`token-decision-table.md`](./token-decision-table.md) §9 (full ladders, text tiers, contrast matrix, approval trail). Frozen in `cindyDecisionData.ts`; this subsection pins the rules.
 
-- **Light** = warm ivory: page `#F2F2ED`; every surface/border is warm with **B = R−5** (single warmth constant; one sanctioned ceiling exception — pure white `#FFFFFF` stays for floating planes that need maximum lift above the near-white card, currently `ask-option-list-bg` only). Cards stay near-white (`#FDFDF8`) — card lift ≈9.4%, matching the original spec. Hover/chip tiers sit **below** the page (the white ceiling leaves no room above); the sidebar is its own plane one step darker (`#EEEEE9` at 85% glass opacity).
+- **Light** = warm ivory: page `#F2F2ED`; every surface is warm with **B = R−5**, and the translucent borders and fills inherit that warmth (single warmth constant; one sanctioned ceiling exception — pure white `#FFFFFF` stays for floating planes that need maximum lift above the near-white card, currently `ask-option-list-bg` only). Cards stay near-white (`#FDFDF8`) — card lift ≈9.4%, matching the original spec. Hover/chip tiers sit **below** the page (the white ceiling leaves no room above); the sidebar is its own plane one step darker (`#EEEEE9` at 85% glass opacity).
 - **Dark** = pure neutral: page `#181818`, all layers R=G=B (zero warmth), simple parallel shift from the 2026-07 values. Known debt: near-black compression keeps only ~65% of the original perceived layer separation — recorded in [#2559](https://github.com/makecindy/cindy/issues/2559), fix is the equal-luminance ladder.
-- **Text ramp (light)**: deepest emphasis `#0C0C0C` → body `#1A1A1A` (both neutral, crisp) → tertiary `#6B6B67` (warm −4) → secondary/meta `#888883` (warm −5, ≥3.0 floor) → disabled `#9D9D98` (WCAG-exempt). Warmth increases as text gets lighter; dark text tiers are all neutral (tertiary `#C1C1C1`, equal-luminance neutralized 2026-08).
-- **Dual anchoring**: interactive fills that sit on the **page** anchor to the page (`surface-hover` tier); fills that sit on **cards/popovers** anchor to the card (light `#F6F6F1`, ≈6% below card — `settings-menu-bg-selected`, `perm-item-selected-bg`, `ask-badge-bg`, `cmd-palette-item-hover`, etc.). Dark exception, this revision only: `settings-menu-bg-selected` uses the menu-hover lift `#282828`, not the page-anchored `#1D1D1D` chip. `perm-item-selected-bg`, `ask-badge-bg`, and `cmd-palette-item-hover` stay on the page-anchored chip/hover values until their own follow-up. A single token cannot serve both planes after the revision; do not "unify" them back.
-- **Twin sync**: every color carried in both hex and HSL forms (24 pairs) must stay value-identical; derived translucent inlines (e.g. `chat-input-border-focus` = tertiary at 30%) must be re-derived when their source moves.
+- **Text tiers (user ruling 2026-10-22, replaces the 2026-08 warm text ramp)**: one neutral ink at decreasing alpha, black in Light and white in Dark — emphasis 95% / 100%, primary 88% / 82%, description 70% / 66%, secondary 56% / 55%, tertiary 44% / 40%, placeholder and disabled 32% / 30%. On the page that measures 17.4 / 15.0 / 8.1 / 4.8 / 3.2 / 2.2 (Light) and 17.8 / 12.1 / 8.2 / 6.1 / 3.8 / 2.7 (Dark); the ≥3.0 floor for informational text holds on page, card and hover planes. Warmth now comes from the ivory surface showing through, not from per-tier hue shifts. Desktop only; Mobile keeps its values until its own phase. Values and tokens: token-decision-table §9.4.
+- **Fills and lines (user ruling 2026-10-22, replaces dual anchoring)**: hover, chip, selected and pressed fills and all borders and dividers are the same ink at low alpha — soft hover 3.5% / 4%, hover and chip 5% / 6%, selected and pressed 8% / 10%, weak tier (file chip, scrollbar hover) 10% / 13%, borders and dividers 8% / 10% (Light black / Dark white). A translucent fill shifts whatever plane it sits on — page, card, popover, glass or wallpaper — by the same step, so page- and card-anchored variants are no longer needed, and in Dark a chip is always lighter than the card beneath it. Borders read softer on wallpaper than the former solid lines; this was accepted with the ruling. A line or fill that sits over a transparent window region (the layout dividers between panes under glass) is laid on the page color first, so the native window material never shows through. The Light switch off-track darkens to `#808080` so it keeps 3:1 on hovered rows. Values: token-decision-table §9.2–§9.3.
+- **Icons on ink**: icons take their tier through `currentColor`, so an icon drawn from several strokes would turn darker (Light) or brighter (Dark) wherever its strokes overlap. In the CINDY family `globals.css` composites each icon as one shape — strokes drawn opaque, the whole icon masked to the ink's alpha — so it reads like a solid icon at reduced opacity; opaque icon colors are unchanged. Lucide icons get this automatically; a hand-drawn single-color icon made of several strokes adds `data-ink-icon`. Don't add it to an SVG whose parts carry their own colors: the mask would fade those parts too.
+- **Twin sync**: every color carried in both hex/rgba and HSL forms (24 pairs) must stay value-identical, translucent tiers included (same alpha in both forms). Pairs follow the tier, not the token name: `text-tertiary-hsl` / `muted-foreground` serve the secondary tier (`text-secondary`), exactly as in Classic. Control outlines such as `chat-input-border-focus` keep their own values and are no longer derived from a text tier.
 - **Exempt families untouched**: `login-*` (58 tokens), `diff-*`, `error-*`, `overlay-*`, semantic status colors, shadows — per §10/§16 and `protected-tokens.ts`.
 - User-tuned one-offs: dark sidebar glass `rgba(5,5,5,0.85)` (2026-08-11); light sidebar glass 85% opacity (2026-08-17, aligned with dark).
 

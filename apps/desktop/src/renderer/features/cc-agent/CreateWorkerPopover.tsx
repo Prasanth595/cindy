@@ -1000,7 +1000,7 @@ export function CreateWorkerPopover({
           <input
             ref={roleInputRef}
             type="text"
-            className="mt-2 w-full rounded-full border border-[var(--border-default)] bg-transparent px-3 py-1.5 text-13 leading-none text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus:border-[var(--text-secondary)]"
+            className="mt-2 w-full rounded-full border border-[var(--border-default)] bg-transparent px-3 py-1.5 text-13 leading-none text-[var(--text-primary)] placeholder:text-[var(--text-placeholder)] outline-none focus:border-[var(--text-secondary)]"
             placeholder={t('orca.createWorker.customRolePlaceholder')}
             value={customRole}
             maxLength={32}
@@ -1176,7 +1176,7 @@ export function CreateWorkerPopover({
             </span>
           </div>
           <textarea
-            className="h-[96px] w-full resize-none rounded-xl border border-[var(--border-default)] bg-transparent px-3.5 py-2.5 text-13 leading-snug text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none"
+            className="h-[96px] w-full resize-none rounded-xl border border-[var(--border-default)] bg-transparent px-3.5 py-2.5 text-13 leading-snug text-[var(--text-primary)] placeholder:text-[var(--text-placeholder)] outline-none"
             placeholder={t('orca.createWorker.initialTaskPlaceholder')}
             value={initialTask}
             onChange={(e) => setInitialTask(e.target.value)}

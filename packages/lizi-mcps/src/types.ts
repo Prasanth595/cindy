@@ -665,6 +665,10 @@ export interface BrowserMcpDeps {
   supportsResourceDownloads?(): boolean;
   /** Whether the active backend accepts semantic element queries. */
   supportsSemanticQueries?(): boolean;
+  /** Trusted host-only credential IO; never exposed as a tool or page input. */
+  recipeSecrets?: { read(key: string): string | null; write(key: string, value: string): boolean };
+  /** Creates invocation-local file access using the host's existing upload policy. */
+  recipeFiles?: (sessionId?: string) => Promise<{ read(file: string): Buffer; open(file: string): number }>;
   /**
    * 代输入: true while the target tab still shows a page where the owner just
    * typed a secret. Page-state reads (evaluate, requests, response bodies,

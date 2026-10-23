@@ -1,4 +1,3 @@
-import { reviewTeammateLearning } from './botLearningReview.js';
 import { botLearningTracker } from './botLearningTracker.js';
 import { learningTurnIdentity } from './botLearningFeedback.js';
 import type { BotDelegationService } from './botDelegationService.js';
@@ -647,11 +646,6 @@ export function finishSessionTerminalEvent(
       !deps.agentInputCoordinatorHolder?.isAutoResumePending(session.id) &&
       !deps.agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id)
     ) {
-      if (turnBoundaryAssistantPersistId && !session.remoteHostId) {
-        const replyId = turnBoundaryAssistantPersistId;
-        void reviewTeammateLearning(session.id, replyId).catch(() =>
-          deps.log.warn('Teammate learning review did not complete'));
-      }
       const callback = deps.onSuccessfulProductTurn;
       if (callback && terminalOwner) {
         void callback(session.id, terminalOwner).catch(() =>

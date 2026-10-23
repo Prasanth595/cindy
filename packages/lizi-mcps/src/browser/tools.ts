@@ -116,6 +116,7 @@ const ACT_KINDS = [
 
 /** Tools that read page script state, network traffic or console output. */
 function readsPageState(request: BrowserControlRequest): boolean {
+  if (request.action === 'recipeCommand') return request.recipeCommand?.method !== 'Cindy.end';
   if (request.action === 'console' || request.action === 'requests' || request.action === 'responseBody') return true;
   const act = request.request as { kind?: unknown; fn?: unknown } | undefined;
   return request.action === 'act' && (act?.kind === 'evaluate' || (act?.kind === 'wait' && act.fn !== undefined));
@@ -777,14 +778,18 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           };
           runningRecipes.add(id);
           const runResult = await runRecipe(entry.recipe, args.inputs as Record<string, unknown> | undefined, {
+            targetId: args.targetId,
+            recipeSecrets: deps.recipeSecrets,
+            recipeFiles: deps.recipeFiles,
             call: async (req) => {
               lastCallDispatched = false;
               const res = await runtime.call({
                 ...req,
                 ...(args.profile ? { profile: args.profile } : {}),
-                ...(activeTargetId ? { targetId: activeTargetId } : {}),
+                ...((req.targetId ?? activeTargetId) ? { targetId: req.targetId ?? activeTargetId } : {}),
               });
-              const next = (res.data as { targetId?: unknown } | undefined)?.targetId;
+              const next = (res.data as { targetId?: unknown; tabId?: unknown } | undefined)?.targetId
+                ?? (res.data as { tabId?: unknown } | undefined)?.tabId;
               if (typeof next === 'string' && next) activeTargetId = next;
               return res;
             },
@@ -843,10 +848,14 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           } catch (err) {
             return errorResult('siteguide', `siteguide registry error: ${err instanceof Error ? err.message : String(err)}`);
           }
-          const recipeInputsOf = (ids: string[] | undefined) =>
+          const recipeInputsOf = (ids: string[] | undefined, compact = false) =>
             (ids ?? []).map((id) => {
               const r = recipeReg.get(id);
               const spec = r?.recipe.inputs ?? {};
+              if (compact && id.startsWith('opencli:')) return {
+                id, access: r?.recipe.access,
+                ...(r?.recipe.validation ? { state: r.recipe.validation.state } : {}),
+              };
               return {
                 id,
                 // Surface the author's description at discovery time — it carries
@@ -854,6 +863,8 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
                 // bare input-name list cannot express.
                 description: r?.recipe.description,
                 ...(r?.recipe.validation ? { state: r.recipe.validation.state } : {}),
+                ...(r?.recipe.access ? { access: r.recipe.access } : {}),
+                ...(r?.recipe.adapter ? { parameters: spec } : {}),
                 inputs: Object.keys(spec),
                 required: Object.entries(spec)
                   .filter(([, v]) => v?.required)
@@ -871,7 +882,7 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
                 site: e.guide.site,
                 provenance: e.provenance,
                 auth: e.guide.auth,
-                recipes: recipeInputsOf(e.guide.recipes),
+                recipes: recipeInputsOf(e.guide.recipes, true),
               }))
               .sort((a, b) => a.site.localeCompare(b.site));
             // Also surface recipes that exist in the registry but aren't listed by
@@ -894,6 +905,8 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
                     ok: true,
                     action: 'siteguide',
                     siteCount: sites.length,
+                    recipeCount: recipeReg.size,
+                    hint: '按 site 查询完整参数、默认值及 read/write 分类。',
                     sites,
                     ...(recipesWithoutGuide.length ? { recipesWithoutGuide } : {}),
                   }),
@@ -902,7 +915,8 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
               isError: false,
             };
           }
-          const entry = registry.get(args.site);
+          const entry = registry.get(args.site) ?? [...registry.values()].find(value =>
+            Array.isArray(value.guide.aliases) && value.guide.aliases.includes(args.site));
           if (!entry) {
             return errorResult('siteguide', `no siteguide for "${args.site}" (available: ${[...registry.keys()].join(', ') || 'none'})`);
           }

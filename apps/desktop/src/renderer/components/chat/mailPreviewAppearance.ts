@@ -1,6 +1,23 @@
+const authoredStyleAttribute = 'data-cindy-mail-authored-style';
+
+/** Restore both live nodes and browser-created clones from the same preview
+ * metadata. The mail sanitizer strips this attribute from incoming/outgoing HTML. */
+export function restoreMailPreviewPaint(root: Element): void {
+  for (const el of [root, ...root.querySelectorAll(`[${authoredStyleAttribute}]`)]) {
+    const encoded = el.getAttribute(authoredStyleAttribute);
+    if (encoded === null) continue;
+    el.removeAttribute(authoredStyleAttribute);
+    try {
+      const style: unknown = JSON.parse(encoded);
+      if (style === null) el.removeAttribute('style');
+      else if (typeof style === 'string') el.setAttribute('style', style);
+    } catch { /* Invalid transient metadata is never interpreted as a style. */ }
+  }
+}
+
 /** Preview-only paint. Source HTML, CID images and editing spans stay intact. */
 export function followMailPreviewTheme(doc: Document, host: Document): () => void {
-  let restore = () => {};
+  const restore = () => restoreMailPreviewPaint(doc.documentElement);
   let previous = '';
   const paint = () => {
     const root = host.documentElement;
@@ -26,11 +43,6 @@ export function followMailPreviewTheme(doc: Document, host: Document): () => voi
       return { el, style: el.getAttribute('style'), color: css.color, background: css.backgroundColor,
         image: css.backgroundImage, border: css.borderTopColor };
     });
-    restore = () => {
-      for (const { el, style } of authored) {
-        if (style === null) el.removeAttribute('style'); else el.setAttribute('style', style);
-      }
-    };
     const colorInfo = (color: string) => {
       const rgb = color.match(/^rgba?\(([^)]+)\)/)?.[1].split(/[, /]+/).map(Number);
       if (!rgb || rgb.length < 3 || rgb[3] === 0) return null;
@@ -41,6 +53,9 @@ export function followMailPreviewTheme(doc: Document, host: Document): () => voi
     };
     for (const entry of authored) {
       const { el } = entry;
+      // Native Enter/split/undo can clone these nodes. Carry the authored
+      // style with the clone so neither saving nor cleanup relies on identity.
+      el.setAttribute(authoredStyleAttribute, JSON.stringify(entry.style));
       const set = (name: string, value: string) => el.style.setProperty(name, value, 'important');
       const background = colorInfo(entry.background), foreground = colorInfo(entry.color);
       if (background && background.brightness > 0.25) {

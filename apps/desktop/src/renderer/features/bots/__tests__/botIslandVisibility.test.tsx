@@ -20,7 +20,7 @@ vi.mock('@/hooks/useAgentIslandSettings', () => ({
 // The private-chat topic host belongs to the chat surface these tests isolate.
 vi.mock('../BotDmThreadHost', () => ({ BotDmThreadHost: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
-  CCAgentSessionView: () => <div data-testid="chat" />,
+  CCAgentSessionView: ({ readOnly }: { readOnly?: boolean }) => <div data-testid="chat" data-readonly={String(!!readOnly)} />,
 }));
 vi.mock('../botReadState', () => ({ getBotLastReadAt: () => null, markBotRead: vi.fn() }));
 
@@ -162,6 +162,30 @@ describe('history ownership gate disposes the clicked island card', () => {
   beforeEach(() => {
     mocks.params = { botId: 'bot-a', sessionId: 'old-a' };
     mocks.location = { state: { islandEntryId: '42' } };
+  });
+
+  // 测试价值: 渠道专线不在 history() 中, 旧门禁无法显示; 最小输入是 get() 的 channel 投影。
+  // unit: 复用真实历史页验证只读挂载和归属失败时不处置提醒, 补齐既有历史用例的角色缺口。
+  it.each(['active', 'archived'])('shows an owned %s IM lane in the same read-only view', async (status) => {
+    history.mockResolvedValue([]);
+    get.mockResolvedValue({ ...profile, sessions: [{ id: 'old-a', kind: 'channel', role: 'channel', status }] });
+    const view = render(<BotHistorySessionView />);
+    await waitFor(() => expect(view.getByTestId('chat').dataset.readonly).toBe('true'));
+    expect(consumeEntryAlert).toHaveBeenCalledExactlyOnceWith('old-a', '42');
+  });
+
+  it.each([
+    { id: 'other', role: 'channel', status: 'active' },
+    { id: 'old-a', role: 'channel', status: 'deleted' },
+    { id: 'old-a', role: 'group', status: 'active' },
+    { id: 'old-a', role: 'delegation', status: 'active' },
+  ])('does not grant IM transcript access from an unrelated/deleted projection: %j', async (projection) => {
+    history.mockResolvedValue([]);
+    get.mockResolvedValue({ ...profile, sessions: [projection] });
+    const view = render(<BotHistorySessionView />);
+    await act(async () => {});
+    expect(view.queryByTestId('chat')).toBeNull();
+    expect(consumeEntryAlert).not.toHaveBeenCalled();
   });
 
   it('disposes only once its gate has shown the transcript', async () => {

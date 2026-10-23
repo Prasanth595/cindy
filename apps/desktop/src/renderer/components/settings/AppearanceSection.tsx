@@ -762,7 +762,7 @@ export function AppearanceSection() {
                   >
                     {t('settings.appearance.font.uiSize.label')}
                   </p>
-                  <p className="mt-1 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                  <p className="mt-1 text-12 leading-[1.4] text-[var(--text-secondary)]">
                     {t('settings.appearance.font.uiSize.description')}
                   </p>
                 </div>
@@ -848,7 +848,7 @@ export function AppearanceSection() {
                   >
                     {t('settings.appearance.font.codeSize.label')}
                   </p>
-                  <p className="mt-1 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                  <p className="mt-1 text-12 leading-[1.4] text-[var(--text-secondary)]">
                     {t('settings.appearance.font.codeSize.description')}
                   </p>
                 </div>
@@ -925,7 +925,7 @@ export function AppearanceSection() {
                 >
                   {t('settings.appearance.sidebarCardMode.label')}
                 </p>
-                <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
                   {t('settings.appearance.sidebarCardMode.hint')}
                 </p>
               </div>
@@ -953,7 +953,7 @@ export function AppearanceSection() {
                 >
                   {t('settings.appearance.sidebarMainListMode.label')}
                 </p>
-                <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
                   {t('settings.appearance.sidebarMainListMode.hint')}
                 </p>
               </div>

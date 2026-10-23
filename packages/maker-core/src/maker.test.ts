@@ -4221,7 +4221,9 @@ describe('Session permission mode leases', () => {
     expect(handle.send).toHaveBeenCalledOnce();
   });
 
-  it('defers an unsafe external permission switch until a host turn lease is released', async () => {
+  // Regression: an IM turn lease must not postpone any owner permission choice.
+  // Exercise the public Session API while retaining the lease that fences new sends.
+  it.each(['ask', 'auto', 'bypassPermissions'] as const)('applies %s immediately during a host turn lease without admitting another turn', async (mode) => {
     const handle = createHandle({ id: 'permission-host-lease-thread' });
     const applied: PermissionMode[] = [];
     handle.setPermissionMode = vi.fn(async (mode: PermissionMode) => {
@@ -4253,64 +4255,24 @@ describe('Session permission mode leases', () => {
 
     const releaseLease = session.acquireTurnLease();
     const temporary = await session.setPermissionModeTracked('ask');
-    const externalChange = session.setPermissionMode('bypassPermissions');
-    await Promise.resolve();
-
-    expect(applied).toEqual(['ask']);
-    expect(session.stablePermissionModeState).toBeNull();
+    const externalChange = session.setPermissionMode(mode);
+    await expect(externalChange).resolves.toBeUndefined();
+    expect(applied).toEqual(['ask', mode]);
+    expect(session.stablePermissionModeState).toEqual({ mode, generation: 2 });
     await expect(
       session.setPermissionModeIfUnchanged(temporary, 'bypassPermissions'),
     ).resolves.toBe(false);
-    expect(applied).toEqual(['ask']);
+    expect(applied).toEqual(['ask', mode]);
 
     const nextTurn = session.send('after leased permission change');
+    await Promise.resolve();
+    expect(handle.send).not.toHaveBeenCalled();
     releaseLease();
-    await expect(externalChange).resolves.toBeUndefined();
     await expect(nextTurn).resolves.toEqual({ accepted: true });
-    expect(applied).toEqual(['ask', 'bypassPermissions']);
+    expect(applied).toEqual(['ask', mode]);
     expect(handle.send).toHaveBeenCalledOnce();
   });
 
-  it('allows a safe external permission switch during a host turn lease', async () => {
-    const handle = createHandle({ id: 'permission-safe-host-lease-thread' });
-    const applied: PermissionMode[] = [];
-    handle.setPermissionMode = vi.fn(async (mode: PermissionMode) => {
-      applied.push(mode);
-    });
-    const baseCapabilities = createAgent(async () => handle).capabilities;
-    const session = new Session({
-      id: 'permission-safe-host-lease-session',
-      agentKind: 'codex',
-      workDir: '/repo',
-      handle,
-      capabilities: {
-        ...baseCapabilities,
-        permissionModes: [
-          { id: 'ask', displayName: 'Ask' },
-          { id: 'auto', displayName: 'Auto' },
-          { id: 'bypassPermissions', displayName: 'Full access' },
-        ],
-        setPermissionModeMidSession: { supported: true },
-        turnPermissionPolicy: {
-          supported: { supported: true },
-          unsupportedPermissionModes: ['bypassPermissions'],
-        },
-      },
-      logger: createLogger(),
-      permissionMode: 'bypassPermissions',
-    });
-
-    const releaseLease = session.acquireTurnLease();
-    const temporary = await session.setPermissionModeTracked('ask');
-    await expect(session.setPermissionMode('auto')).resolves.toBeUndefined();
-    await expect(
-      session.setPermissionModeIfUnchanged(temporary, 'bypassPermissions'),
-    ).resolves.toBe(false);
-    releaseLease();
-
-    expect(applied).toEqual(['ask', 'auto']);
-    expect(session.permissionModeState).toEqual({ mode: 'auto', generation: 2 });
-  });
 });
 
 describe('Maker invalid-resume persistence bridge', () => {

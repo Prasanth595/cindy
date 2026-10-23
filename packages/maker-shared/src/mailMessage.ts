@@ -7,6 +7,32 @@ export interface MailReaderDeclaration {
   /** The reader accepts markRead:true for an explicit user opening, never background reads. */
   markRead?: true;
 }
+/** Host-issued instance reference. Never inferred from a plugin name or URL. */
+export interface MailReaderChoice { id: string; name: string; namespace: string | null }
+export interface MailPreviewResult {
+  supported: boolean;
+  message?: MailMessage;
+  /** Host-verified card in this task, for an explicitly opened saved draft. */
+  draftCallId?: string;
+  error?: string;
+  providerId?: string;
+  providers?: MailReaderChoice[];
+}
+export function parseMailDraftCallId(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value) ? value : undefined;
+}
+export function parseMailReaderChoices(value: unknown): MailReaderChoice[] | undefined {
+  if (!Array.isArray(value) || !value.length || value.length > 100) return undefined;
+  const choices: MailReaderChoice[] = [];
+  for (const p of value) {
+    if (!p || typeof p !== 'object' || typeof p.id !== 'string' || !p.id || p.id.length > 512 ||
+        typeof p.name !== 'string' || !p.name || p.name.length > 256 ||
+        !(p.namespace === null || typeof p.namespace === 'string' && p.namespace.length <= 128) ||
+        choices.some(c => c.id === p.id)) return undefined;
+    choices.push({ id: p.id, name: p.name, namespace: p.namespace });
+  }
+  return choices;
+}
 export function parseMailReader(value: unknown): MailReaderDeclaration | null {
   if (!value || typeof value !== 'object') return null;
   const p = value as Record<string, unknown>;

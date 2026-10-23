@@ -2765,7 +2765,7 @@ describe('ModelSelector trigger variants', () => {
     expect(searchInput.hasAttribute('disabled')).toBe(true);
     expect(searchInput.className).toContain('cursor-not-allowed');
     expect(searchInput.className).toContain('text-[var(--text-disabled)]');
-    expect(searchInput.className).toContain('placeholder:text-[var(--text-disabled-tertiary)]');
+    expect(searchInput.className).toContain('placeholder:text-[var(--text-disabled)]');
     expect(searchInput.parentElement?.className).toContain('bg-[var(--surface-elevated-soft)]');
 
     fireEvent.click(opusRow);

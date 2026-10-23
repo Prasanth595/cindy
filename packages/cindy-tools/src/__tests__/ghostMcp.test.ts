@@ -1613,7 +1613,7 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
   });
 
   it("forge_install 透传源码目录与可选图标并返回真实安装动作;失败标 isError", async () => {
-    const requests: Array<{ dir: string; iconSource?: string }> = [];
+    const requests: Array<{ dir: string; iconSource?: string; targetInstanceId?: string }> = [];
     const installed = await handleForgeInstall(
       fakeDeps({
         forgeInstall: async (request) => {
@@ -1632,6 +1632,7 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
       {
         dir: "/src/my-ghost",
         icon_source: `cindy-media://blobs/${"a".repeat(64)}.png`,
+        target_instance_id: '_root__my-ghost',
       },
     );
     expect(parsePayload(installed)).toMatchObject({
@@ -1644,6 +1645,7 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
       {
         dir: "/src/my-ghost",
         iconSource: `cindy-media://blobs/${"a".repeat(64)}.png`,
+        targetInstanceId: '_root__my-ghost',
       },
     ]);
 

@@ -515,11 +515,10 @@ describe('guest send options', () => {
     const started: Started[] = [];
     const host = makeHost(started);
     await host.handle(controller, { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
-    await vi.waitFor(() => expect(started).toHaveLength(1));
-    await vi.waitFor(async () => {
-      const poll = await host.handle(controller, { op: 'poll', runs: [{ runId: RUN_1, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
-      expect(Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8')).toContain('"started"');
-    });
+    // Open acknowledges receipt before filesystem preparation; wait for startup,
+    // not the default 1s poll budget (Windows CI run 39835502754).
+    await waitForStarted(host, controller, RUN_1);
+    expect(started).toHaveLength(1);
     await host.handle(controller, {
       op: 'call',
       runId: RUN_1,

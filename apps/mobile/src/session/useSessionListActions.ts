@@ -175,6 +175,7 @@ export function useSessionListActions(options?: {
     }
   }, [animateListChange, invoke, preferredRpcDeviceId, t]);
 
+  // 归档预检提示 active 自动化后续会恢复原任务；沿用乐观归档事务，取消时恢复行。
   const runSwipeAction = useCallback((session: RemoteSession, action: Exclude<SessionSwipeAction, 'rename'>) => {
     void patchSession(session, swipeActionPatch(action), action === 'archive' ? async (isLatest) => {
       const devices = resolveSessionWriteDevices(session.id, session, preferredRpcDeviceId);

@@ -18,6 +18,8 @@ interface GroupData {
   wrappedReactions?: boolean;
   /** A single-speaker server group: nobody was named, so everyone answers in turn (bot-group-chat.md §4.0/§7.0). */
   arrangement?: Queue;
+  /** A preserved work plan whose ordinary messages must stay quiet. */
+  workMentioned?: boolean;
   /** Open the group settings drawer as its owner. */
   settings?: boolean;
   /** Server read state: unread thread entries and the in-chat 话题 hint. */
@@ -191,10 +193,11 @@ function threadSummaries() {
 
 function groupFrom(data: GroupData) {
   const bubbles = data.bubbles ? bubbleMessages(data.wrappedReactions) : null;
+  const planKind = data.workMentioned ? 'work' : 'talk';
   return {
     id: 'fixture-group',
     name: data.name,
-    replyMode: 'all',
+    replyMode: data.workMentioned ? 'mentioned' : 'all',
     speakingMode: 'auto',
     members: [...(data.settings ? [{ botId: '', actorId: 'me', actorKind: 'user', name: 'You', isSelf: true, isOwned: true, role: 'owner', avatar: '', avatarColor: 'gray', status: 'active' }] : []),
       ...data.members.map((member) => ({
@@ -213,10 +216,10 @@ function groupFrom(data: GroupData) {
     openPlan: null,
     createdAt: 1,
     updatedAt: 1,
-    plans: data.arrangement ? [arrangementPlan(data.arrangement)] : [],
+    plans: data.arrangement ? [{ ...arrangementPlan(data.arrangement), kind: planKind }] : [],
     ...(data.arrangement ? { openPlan: data.arrangement === 'long'
-      ? { id: 'p1', status: 'waiting', currentStep: 4, stepCount: 7, currentBotName: 'Pax', currentStepStatus: 'done', kind: 'talk' }
-      : data.arrangement === 'running' ? { id: 'p1', status: 'running', currentStep: 1, stepCount: 2, currentBotName: 'Nova', currentStepStatus: 'running', kind: 'talk' } : null,
+      ? { id: 'p1', status: 'waiting', currentStep: 4, stepCount: 7, currentBotName: 'Pax', currentStepStatus: 'done', kind: planKind }
+      : data.arrangement === 'running' ? { id: 'p1', status: 'running', currentStep: 1, stepCount: 2, currentBotName: 'Nova', currentStepStatus: 'running', kind: planKind } : null,
       singleSpeaker: true } : {}),
     ...(data.bubbles || data.arrangement ? { serverBacked: true } : {}),
     ...(data.threadUnread ? { threads: threadSummaries() } : {}),

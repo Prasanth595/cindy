@@ -104,13 +104,16 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    渠道工具租约还被 `botSkillService` 复用来判定专线上「是不是主人触发的轮次」；没有 `channelToolScopeFor`
    的可绑定渠道靠 `LaneTurnScope` 兜住这一判定，否则主人在专线上也只能只读技能。
    `onAccepted` 成功落库后把本轮输入的 `clientId` 绑定到同一租约；事件持久化在租约释放前
-   将它写为 `replyToClientId`。后台学习只据这条确切输入的持久主人来源判定，不借用后续轮次
-   的租约或最近一条消息。受保护内容未落库时不绑定，复用作用域前清除旧输入。
+   将它写为 `replyToClientId`，用于保留回复与本轮输入的确切关联；这不是后台学习的触发约定，
+   回复后不再启动辅助模型复盘。显式技能工具的写权限仍按当前轮租约 / `LaneTurnScope` 的
+   主人身份判定，不把持久回复关联当作新授权，也不借用后续轮次的租约或最近一条消息。
+   受保护内容未落库时不绑定，复用作用域前清除旧输入。
    6b. **发送前上下文体检同源**：个人 IM 的 `dispatchQueuedSend` 在伙伴守卫（`companion.prepareSend`）
    之后、拿发送锁（`acquirePendingAgentSwitch`）之前调用 `deps.prepareUnhealthySession`（orchestrator 接
    `register.prepareUnhealthySessionForSend`），与桌面直发、官方 hook 走同一个
-   `contextOverflowRollover.prepareUnhealthySession`：伙伴对话（主任务 + channel / group 专线）的空闲
-   间隔刷新（≥12h）、90% 到线换窗、坏历史重建都在这里发生，IM 不另设换窗 / 换任务规则
+   `contextOverflowRollover.prepareUnhealthySession`：伙伴对话（主任务 + channel / group 专线）沿用
+   普通 Session 的真实满窗、明确压缩失败和坏历史恢复；健康上下文交给原生压缩，不按空闲时长
+   或 70%/90% 伙伴阈值提前换窗，正常压缩也不重启伙伴实例。IM 不另设换窗 / 换任务规则
    （[`cindy-bots-runtime.md` §3.2](../product-rules/cindy-bots-runtime.md)）。体检关闭 live handle 的原因是
    `runtime-refresh`，close 监听在有 `acquirePendingAgentSwitch` 时保住任务，新 handle 由
    `refreshSessionAfterPendingAgentSwitch` 按最新 DB 行重建；体检抛错按直发口径让这条消息失败。
