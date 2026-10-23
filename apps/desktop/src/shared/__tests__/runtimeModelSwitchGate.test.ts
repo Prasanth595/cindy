@@ -293,20 +293,26 @@ describe('buildDeferredRuntimeSelectionProfile', () => {
         model: 'local-llama',
         providerId: 'custom:ollama',
         atomicSelection: { effort: null, fastMode: false },
+        currentEffort: 'xhigh',
         currentFastMode: true,
       }).effort,
     ).toBeNull();
   });
 
-  it('without atomic selection, Fast falls back to the live session, effort stays null', () => {
+  // Regression: scheduler Pi route refresh omitted atomicSelection and projected
+  // null over an xhigh session. Both immediate and queued profiles use this
+  // production builder; previous coverage only exercised explicit selections.
+  // Unit tier: no native process or database is needed to reproduce the lost axis.
+  it.each(['xhigh', null] as const)('route-only refresh preserves current effort %s', (currentEffort) => {
     expect(
       buildDeferredRuntimeSelectionProfile({
-        agentKind: 'codex',
-        model: 'gpt-5.5',
-        providerId: 'openai',
+        agentKind: 'pi',
+        model: 'reasoner',
+        providerId: 'custom',
+        currentEffort,
         currentFastMode: true,
       }),
-    ).toMatchObject({ effort: null, fastMode: true });
+    ).toMatchObject({ effort: currentEffort, fastMode: true });
   });
 });
 

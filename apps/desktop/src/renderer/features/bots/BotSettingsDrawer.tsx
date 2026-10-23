@@ -27,12 +27,19 @@ export function BotSettingsDrawer() {
     (item) =>
       item.id === remoteMatch?.params.botId && item.deviceId === remoteMatch?.params.deviceId,
   );
+  // Group routes stay on /bots/groups/:id. A generic /bots/:botId match would
+  // treat "groups" as a teammate and replace the chat with a private route.
+  const groupMatch = matchPath('/bots/groups/:groupId', location.pathname);
   const match =
-    matchPath('/bots/:botId/*', location.pathname) ?? matchPath('/bots/:botId', location.pathname);
+    remoteMatch || groupMatch
+      ? null
+      : (matchPath('/bots/:botId/*', location.pathname) ??
+        matchPath('/bots/:botId', location.pathname));
   const cloud = useCompanionCloud();
+  const settingsBotId = groupMatch ? searchParams.get('settingsBot') : null;
   const localBot = remoteMatch
     ? null
-    : (bots.find((candidate) => candidate.id === match?.params.botId) ?? null);
+    : (bots.find((candidate) => candidate.id === (settingsBotId ?? match?.params.botId)) ?? null);
   // A demoted copy (the companion runs on another computer) is read-only: edits here would never
   // reach the companion. Its settings live on the main computer (the banner on its task links there).
   const bot = localBot && cloud.demotedBotIds.includes(localBot.id) ? null : localBot;
@@ -85,9 +92,27 @@ export function BotSettingsDrawer() {
     };
   }, [blocker]);
 
+  const clearSettingsParams = () => {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete('settings');
+        next.delete('settingsPage');
+        next.delete('settingsBot');
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const performClose = (alreadyChecked = true) => {
     // These callers already passed BotSettings' async save/draft guard.
     allowNavigation.current = alreadyChecked;
+    // Opened over a group: the chat underneath is the group, not this teammate's
+    // private page. Closing must not follow the paused/archived redirects.
+    if (groupMatch) {
+      clearSettingsParams();
+      return;
+    }
     if (bot?.status === 'archived') {
       navigate('/bots', { replace: true });
       return;
@@ -98,15 +123,7 @@ export function BotSettingsDrawer() {
       navigate('/bots/list', { replace: true });
       return;
     }
-    setSearchParams(
-      (current) => {
-        const next = new URLSearchParams(current);
-        next.delete('settings');
-        next.delete('settingsPage');
-        return next;
-      },
-      { replace: true },
-    );
+    clearSettingsParams();
   };
 
   // Header, Escape and overlay dismissal take the same route guard as Back
@@ -143,6 +160,11 @@ export function BotSettingsDrawer() {
                 <X size={17} />
               </Dialog.Close>
             </header>
+            {groupMatch && bot ? (
+              <p className="shrink-0 border-b border-[var(--border-default)] px-5 py-3 text-12 leading-5 text-[var(--text-secondary)]">
+                {t('bots.groupChat.server.settings.capabilityScope', { name: bot.name })}
+              </p>
+            ) : null}
             {remoteBot ? (
               <RemoteBotSettings
                 key={`${remoteBot.deviceId}:${remoteBot.id}:${open}:${initialPage}`}

@@ -82,7 +82,8 @@ export function botRouteForOwnedSession(
       consumesAlert: false,
     };
   }
-  if (projection?.kind === 'history' || projection?.role === 'history') {
+  if (projection?.kind === 'history' || projection?.role === 'history'
+    || projection?.kind === 'channel' || projection?.role === 'channel') {
     // Its ownership gate re-checks after the route commits and may redirect away, so the
     // gate itself disposes the card once it shows the transcript.
     return { route: `${botRoute}/history/${encodeURIComponent(sessionId)}`, consumesAlert: false, gateConsumesAlert: true };

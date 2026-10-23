@@ -1375,6 +1375,7 @@ function DeviceDetailSessionRow({
       onArchive={swipe.onArchive}
       onShowOptions={swipe.onShowOptions}
       onTogglePin={swipe.onTogglePin}
+      onMarkRead={swipe.onMarkRead}
       registry={swipe.registry}
       session={item.session as RemoteSession}
       testID={`${testID}.swipe`}

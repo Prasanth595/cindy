@@ -2625,6 +2625,13 @@ describe('CodexAgent permissions', () => {
       suggestions: undefined,
     });
     if (!handle.setPermissionMode) throw new Error('expected setPermissionMode');
+    // Owner takeover must apply to subsequent approvals in this same policy turn.
+    await handle.setPermissionMode('bypassPermissions');
+    await expect(handlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-wechat-policy', itemId: 'cmd-owner-takeover',
+      command: 'rm -rf build', cwd: '/repo',
+    })).resolves.toEqual({ decision: 'accept' });
+    expect(resolver).toHaveBeenCalledOnce();
     await handle.setPermissionMode('ask');
     expect(host.request).toHaveBeenCalledWith(Method.TurnInterrupt, {
       threadId: 'start-thread-id',
@@ -7359,6 +7366,33 @@ describe('CodexAgent fast mode service tier', () => {
 });
 
 describe('CodexAgent thread/settings/update channel', () => {
+  it('forces standard native requests despite stale tier defaults, notifications and re-enables under a host prohibition', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, method => method === Method.ThreadSettingsUpdate ? {} : method === Method.ThreadStart ? {
+      thread: { id: 'start-thread-id' }, model: 'gpt-5.4', modelProvider: 'openai', cwd: '/repo', serviceTier: 'ultrafast',
+    } : undefined);
+    const handle = await agent.startSession({ sessionId: 's-policy', model: 'gpt-5.4', workingDir: '/repo', fastMode: true,
+      fastModePolicy: { isAllowed: () => false, subscribe: () => () => {} } });
+    expect((host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as { serviceTier?: unknown }).serviceTier).toBeNull();
+    expect(handle.getFastMode?.()).toBe(false);
+    host.getThreadHandlers()?.threadSettingsUpdated?.({ threadId: 'start-thread-id', threadSettings: { serviceTier: 'fast' } });
+    await handle.setFastMode?.('ultrafast');
+    expect(handle.getFastMode?.()).toBe(false);
+    await handle.send({ type: 'user', content: 'hello' });
+    const turns = host.request.mock.calls.filter(([method]) => method === Method.TurnStart);
+    expect(turns.length).toBeGreaterThan(0);
+    expect(turns.every(([, params]) => (params as { serviceTier?: unknown }).serviceTier === null)).toBe(true);
+    await handle.close();
+  });
+
+  it('reports a failed native policy update so the host cannot acknowledge enforcement prematurely', async () => {
+    const agent = new CodexAgent(createDeps());
+    installFakeHost(agent, method => { if (method === Method.ThreadSettingsUpdate) throw Error('native unavailable'); return undefined; });
+    const handle = await agent.startSession({ sessionId: 's-policy-failure', model: 'gpt-5.4', workingDir: '/repo',
+      fastModePolicy: { isAllowed: () => false, subscribe: () => () => {} } });
+    await expect(handle.setFastMode?.(false)).rejects.toThrow('native unavailable');
+    await handle.close();
+  });
   const settingsCalls = (host: { request: { mock: { calls: Array<[string, unknown]> } } }) =>
     host.request.mock.calls.filter(([m]) => m === Method.ThreadSettingsUpdate).map(([, p]) => p);
 
@@ -16080,7 +16114,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
-  it.each([false, true])('Auto to Full access retains turn scope without restoring MCP forced prompts (%s)', async (restricted) => {
+  it.each([false, true])('Auto to Full access applies the owner choice during review (IM policy=%s)', async (restricted) => {
     const gate = deferred<{ verdict: 'allow' }>();
     const review = vi.fn<AutoReviewDelegate>(() => gate.promise);
     const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction: review, getMcpToolApprovalPolicy: () => 'prompt-each-time' }));
@@ -16100,7 +16134,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     await vi.waitFor(() => expect(review).toHaveBeenCalledOnce());
     await handle.setPermissionMode!('bypassPermissions');
     gate.resolve({ verdict: 'allow' });
-    expect(await pending).toEqual({ action: restricted ? 'decline' : 'accept', content: null, _meta: null });
+    expect(await pending).toEqual({ action: 'accept', content: null, _meta: null });
     expect(resolver).not.toHaveBeenCalled();
     await handle.close();
   });
@@ -16518,18 +16552,22 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
-  it.each(['auto', 'bypassPermissions'] as const)('pending MCP approvals follow a switch to %s', async (mode) => {
+  it.each((['auto', 'bypassPermissions'] as const).flatMap(mode => [false, true].map(imPolicy => ({ mode, imPolicy }))))('pending MCP approvals follow a switch to $mode (IM policy=$imPolicy)', async ({ mode, imPolicy }) => {
     // Full 批准挂起请求；Auto 不能将尚未审阅的旧请求批量批准。
     const agent = new CodexAgent(createDeps({}, {
       getMcpToolApprovalPolicy: () => 'prompt-each-time',
     }));
-    const host = installFakeHost(agent);
+    const host = installFakeHost(agent, method => method === Method.TurnStart
+      ? { turn: { id: 'turn-1' } } : undefined);
 
     const handle = await agent.startSession({
       sessionId: 'session-high-risk-mode-switch',
       model: 'gpt-5.4',
       workingDir: '/repo',
       permissionMode: 'ask',
+    });
+    if (imPolicy) await handle.send({ type: 'user', content: 'Merge the contacts.' }, {
+      turnPermissionPolicy: { origin: { kind: 'im', channel: 'feishu' }, confirmationSurface: 'channel', forceConfirmToolCall: () => true },
     });
     const iterator = handle.events()[Symbol.asyncIterator]();
     const handlers = host.getThreadHandlers();
@@ -16554,7 +16592,9 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.setPermissionMode(mode);
 
     await expect(responsePromise).resolves.toEqual({ action: mode === 'auto' ? 'decline' : 'accept', content: null, _meta: null });
-    await expect(nextEvent(iterator)).resolves.toMatchObject({
+    let dismissed = await nextEvent(iterator);
+    while (dismissed.type !== 'interaction_dismissed') dismissed = await nextEvent(iterator);
+    expect(dismissed).toMatchObject({
       type: 'interaction_dismissed',
       data: {
         reason: `permission_mode_changed_to_${mode}`,
@@ -21422,7 +21462,7 @@ describe('CodexAgent yield continuation', () => {
     await handle.close();
   });
 
-  it.each([false, true])('inherits the origin policies on yield continuation (text-only=%s)', async (toolsDisabled) => {
+  it.each([[false, false], [true, false], [false, true]])('inherits origin policies and current permissions on yield continuation (text-only=%s, Full access=%s)', async (toolsDisabled, fullAccess) => {
     const agent = new CodexAgent(createDeps({}, { registerCodexTextOnlyPolicy: () => () => {} }));
     let turnSeq = 0;
     const host = installFakeHost(agent, (method) => {
@@ -21451,6 +21491,7 @@ describe('CodexAgent yield continuation', () => {
     // The fake notification exercises continuation policy even though a real
     // text-only tool would have been denied before producing this output.
     await handle.send({ type: 'user', content: 'run typecheck' }, { turnPermissionPolicy: policy, toolsDisabled });
+    if (fullAccess) await handle.setPermissionMode!('bypassPermissions');
     const resumesBeforeContinuation = host.request.mock.calls.filter(([method]) => method === Method.ThreadResume).length;
     handlers.itemCompleted({
       threadId: 'start-thread-id',
@@ -21471,7 +21512,10 @@ describe('CodexAgent yield continuation', () => {
       expect(yieldTurnStartCalls(host)).toHaveLength(1);
     });
     const [, continuationParams] = yieldTurnStartCalls(host)[0] as [string, Record<string, unknown>];
-    expect(continuationParams).toMatchObject({
+    expect(continuationParams).toMatchObject(fullAccess ? {
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    } : {
       approvalPolicy: 'untrusted',
       sandboxPolicy: { type: 'readOnly' },
     });
@@ -24350,13 +24394,18 @@ describe('CodexAgent native fork anchor events', () => {
 describe('CodexAgent.forkSdkSession', () => {
   // Review #6563: exercise createHost/spawn configuration, which a mocked getHost
   // bypasses. A shared subscription needs the same scoped proxy as a guest turn.
+  // The fake mirrors Desktop's guest gate (maker-host prepareCodexExtraSpawnConfig): a shared-provider
+  // host also needs a guest session. Forks used to omit it, so every Codex fork through a shared
+  // provider failed with "requires its own session-bound scoped proxy".
   it('starts shared-subscription forks with their own proxy scope and retires it', async () => {
     MockCodexTransport.userAgent = 'mock-codex/0.153.4';
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-guest-fork-'));
     tempRoots.push(home);
     const onHostRetired = vi.fn(async () => {});
     const prepare = vi.fn<NonNullable<AgentDeps['prepareCodexExtraSpawnConfig']>>(async (_providers, ctx) => {
-      if (!ctx?.accountHostKey) throw Object.assign(new Error('shared-provider Codex host requires its own scoped proxy'), { codexSpawnConfigFatal: true });
+      if (ctx?.deviceHostedGuestProviderId !== undefined && (!ctx.deviceHostedGuestSessionId?.trim() || !ctx.accountHostKey)) {
+        throw Object.assign(new Error('shared-provider Codex host requires its own session-bound scoped proxy'), { codexSpawnConfigFatal: true });
+      }
       return { extraArgs: [], extraEnv: {}, onHostRetired };
     });
     MockCodexTransport.onCreate = transport => transport.setMockResponse('account/login/start', {
@@ -24374,7 +24423,13 @@ describe('CodexAgent.forkSdkSession', () => {
         accountHostKey: expect.stringMatching(/^local-fork:/),
         runtimeCodexHome: path.join(home, 'codex'),
         deviceHostedGuestProviderId: 'openai',
+        deviceHostedGuestModelIds: ['gpt-5.4'],
       }));
+      // The guest session is this one-shot fork host's own key (never registered as a guest
+      // session; codexProxyGuestRoute.test.ts covers that the guard then refuses everything).
+      const spawnCtx = prepare.mock.calls[0]?.[1];
+      expect(spawnCtx?.deviceHostedGuestSessionId).toMatch(/^local-fork:[0-9a-f-]{36}$/);
+      expect(spawnCtx?.accountHostKey?.startsWith(`${spawnCtx.deviceHostedGuestSessionId}:`)).toBe(true);
       expect(createdTransports).toHaveLength(1);
       expect(createdTransports[0].closed).toBe(true);
       expect(onHostRetired).toHaveBeenCalledOnce();
@@ -24396,6 +24451,16 @@ describe('CodexAgent.forkSdkSession', () => {
     }));
     expect(resolveCodexThreadStorage).not.toHaveBeenCalled();
     expect(prepareCodexResumeSession).not.toHaveBeenCalled();
+  });
+  // Fail closed: without the shared provider a guest fork would start an ordinary host that
+  // can use the owner's own login.
+  it('refuses a guest fork that has no shared provider before starting any host', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, undefined, { userAgent: 'mock-codex/0.153.4' });
+    await expect(agent.forkSdkSession({ sourceSdkSessionId: 'guest-source', upToMessageId: undefined,
+      lastTurnId: 'guest-turn', hostedGuestHome: path.join(os.tmpdir(), 'guest-fork-fixture') }))
+      .rejects.toThrow(/requires the shared provider/);
+    expect(host.getHost).not.toHaveBeenCalled();
   });
   it('reads cross-account fork boundaries and records the child in the source index', async () => {
     const recordCodexThreadLocation = vi.fn(async () => {});

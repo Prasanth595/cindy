@@ -97,6 +97,8 @@ const makerPiManagerIntegrationInclude = [
 ];
 const desktopE2eInclude = [
   'src/main/maker-host/__tests__/*.e2e.test.ts',
+  // Guest fork through a provider group with a real Claude Code; skipped without apps/claude-code-bin.
+  'src/main/remote-agent/__tests__/groupRelayClaudeFork.e2e.test.ts',
 ];
 const mobileGuardInclude = [
   // Swift/delegate authorization, recording lifecycle, and native clipping are cross-runtime contracts.
@@ -541,6 +543,8 @@ export default {
     requiredUnitWorkspace('@cindy/maker-scheduler', 'packages/maker-scheduler'),
     requiredUnitWorkspace('@cindy/maker-shared', 'packages/maker-shared'),
     requiredUnitWorkspace('@cindy/model-providers', 'packages/model-providers'),
+    noCollectableWorkspace('@jackwener/opencli', 'packages/opencli-vendor',
+      'Pinned production adapter sources; execution, host credentials and discovery are tested through @cindy/mcps and the browser-control-runtime.'),
     {
       name: '@cindy/orca-workflow',
       cwd: 'packages/orca-workflow',

@@ -170,6 +170,7 @@ import {
   isSelectedSourceDisconnected,
   resolveEffort,
   resolveRequestedEffort,
+  resolveRemoteSwitchEffort,
   composeAtomicModelSelection,
   resolveIntentReselectEffort,
   resolveProviderSwitchEffort,
@@ -259,7 +260,7 @@ import {
   CindyMakePreflightDialog,
   type CindyMakePreflightProps,
 } from '@/components/cindy-make/CindyMakePreflightDialog';
-import { getModelById } from '@/lib/modelDefinitions';
+import { getModelById, getModelsForVendor } from '@/lib/modelDefinitions';
 import {
   beginSlashCommandRosterLoad,
   EMPTY_SLASH_COMMANDS,
@@ -532,6 +533,10 @@ interface ChatInputProps {
    * 语音回填、发送后清空等程序写入）。父组件据此提前启动 Agent；每次都会调用，节流由接收方负责。
    */
   onComposerTyping?: () => void;
+  /** Includes recording, transcription and refinement, before preview text becomes a saved draft. */
+  onComposerVoiceBusyChange?: (busy: boolean) => void;
+  /** Capture source ownership before unmount; returned callback runs after detached ASR settles. */
+  onComposerVoiceDetached?: () => (() => void) | undefined;
   /** Session ID for binding workingDir. When absent, folder picker is hidden. */
   sessionId?: string;
   /**
@@ -591,6 +596,9 @@ interface ChatInputProps {
   initialModel?: string;
   /** Initial effort from session data. null explicitly means the model has no effort selector. */
   initialEffort?: Effort | null;
+  /** 持久化基线档（session.runtimeBaseline.effort）。投影把 effort 折成 null→''（如远程
+   * 切模把占位档据成固定档）时，胶囊回落它而不渲染字面量「低」——DB/实跑档位未变。 */
+  baselineEffort?: Effort | null;
   /**
    * per-session 来源(供应商)初值。来自 session.providerId(null = 跟随默认路由)。
    * 决定 ModelSelector 来源栏高亮哪家;不传 = 跟随默认(显示列表首项为默认命中)。
@@ -1199,9 +1207,33 @@ function deriveSyntheticAtQuery(editor: Editor, anchor: number, rangeEnd: number
   return text;
 }
 
+/**
+ * Pi 切模/切来源时随 selection 携带的目标模型思考开关意图。
+ *
+ * 与思考开关展示同一口径：记忆缺失按 UI 默认（开）处理；引擎/来源/模型未知时
+ * 返回 undefined（不猜、不改 Pi 现状）。Pi 的 set_model 不重置 thinking level，
+ * 不带上这个意图就会让上一个模型的 off/旧档位漂移到新模型。
+ */
+function resolveModelThinkingIntent(input: {
+  kind: Parameters<typeof getProviderModelThinking>[0] | null | undefined;
+  providerId: string | null | undefined;
+  modelId: string | null | undefined;
+  memory: ModelMemoryAccessors | undefined;
+  deviceLinkDeviceId: string | null | undefined;
+}): boolean | undefined {
+  const { kind, providerId, modelId, memory, deviceLinkDeviceId } = input;
+  if (!kind || !providerId || !modelId) return undefined;
+  const remembered =
+    memory?.getThinking?.(kind, providerId, modelId) ??
+    (!deviceLinkDeviceId ? getProviderModelThinking(kind, providerId, modelId) : undefined);
+  return remembered ?? true;
+}
+
 export function ChatInput({
   onSend,
   onComposerTyping,
+  onComposerVoiceBusyChange,
+  onComposerVoiceDetached,
   sessionId,
   runtimeAgentKind,
   runtimeEffective,
@@ -1218,6 +1250,7 @@ export function ChatInput({
   modelMemoryOverride,
   initialModel,
   initialEffort,
+  baselineEffort,
   initialProviderId,
   initialPermissionMode,
   planModeEnabled = false,
@@ -1812,7 +1845,9 @@ export function ChatInput({
   // A missing runtime projection keeps the persisted choice; null/empty session
   // effort remains unspecified instead of sending the display-only fallback.
   const selectedEffort = composerSelection.display.effort ?? initialEffort ?? '';
-  const activeEffort = selectedEffort || 'low';
+  // legacy 轴把投影 null 折成 ''（同一份 patched 会同时清掉 initialEffort），'' 不是
+  // 用户可见档位：回落持久化基线，避免把「未知」渲染成字面量「低」。
+  const activeEffort = selectedEffort || baselineEffort || 'low';
   const activePermissionMode: PermissionMode =
     initialPermissionMode ?? localVendorDefaults.permissionMode;
 
@@ -3282,6 +3317,8 @@ export function ChatInput({
 
   const voiceInputBusyRef = useRef(false);
   const voiceInputStopAndSendPromiseRef = useRef<Promise<void> | null>(null);
+  const onComposerVoiceDetachedRef = useRef(onComposerVoiceDetached);
+  onComposerVoiceDetachedRef.current = onComposerVoiceDetached;
 
   // Declared before useVoiceInput so React 19 runs this cleanup first
   // (declaration order). Arm must be visible before the voice hook decides
@@ -3326,7 +3363,11 @@ export function ChatInput({
         persistKey &&
         persistKey === editorStorageKey
       ) {
-        armDetachedVoiceDraftPersist(persistKey, voiceDraftTextRef.current.trim());
+        armDetachedVoiceDraftPersist(
+          persistKey,
+          voiceDraftTextRef.current.trim(),
+          onComposerVoiceDetachedRef.current?.(),
+        );
       }
     };
   }, [editor]);
@@ -3349,6 +3390,9 @@ export function ChatInput({
     currentStorageKey: storageKeyForDraftRef.current,
   });
   const composerMutationLocked = composerEditorLocked || voiceBusyOnCurrentComposer;
+  useEffect(() => {
+    onComposerVoiceBusyChange?.(voiceBusyOnCurrentComposer);
+  }, [onComposerVoiceBusyChange, voiceBusyOnCurrentComposer]);
   const composerTypingLocked =
     disabled || waitingForFolders || (sendDispatchInFlight && !allowTypeDuringSend) || voiceBusyOnCurrentComposer;
   composerMutationLockedRef.current = composerTypingLocked;
@@ -6405,7 +6449,32 @@ export function ChatInput({
       targetAgentKind?: AgentKind,
     ): { efforts: readonly Effort[]; defaultEffort: Effort | null } => {
       if (catalogDeviceId) {
-        const m = getModelById(modelId, catalogDeviceId);
+        // 被控端 per-provider 真目录优先（与 modelFastSupported 同一数据源）。控制端
+        // 拍平 capabilities 镜像是首帧/旧被控端的兑底，陈旧或查不到时返回空 efforts
+        // 会被上游当成「固定档」拟成 null/占位快照（远程切模假「低」根因）。
+        if (providerId) {
+          const kinds: readonly AgentKind[] = targetAgentKind
+            ? [targetAgentKind]
+            : currentModelAgentKind
+              ? [currentModelAgentKind]
+              : ['claude-code', 'codex', 'pi'];
+          for (const kind of kinds) {
+            const scoped = resolveProviderModelEfforts({
+              providers,
+              providerId,
+              modelId,
+              agentKind: kind,
+            });
+            if (scoped) return scoped;
+          }
+        }
+        // 镜像（首帧/旧被控端兑底）只聚合 cc/codex，pi 恒查不到——再补三份被控端
+        // 能力缓存清单，避免把 pi 模型误判成空档位「固定档」。
+        const m =
+          getModelById(modelId, catalogDeviceId) ??
+          (['cc', 'codex', 'pi'] as const)
+            .flatMap((vendorKey) => getModelsForVendor(vendorKey, catalogDeviceId))
+            .find((candidate) => candidate.id === modelId);
         return { efforts: m?.efforts ?? [], defaultEffort: m?.defaultEffort ?? null };
       }
       const kinds: readonly AgentKind[] = targetAgentKind
@@ -6945,7 +7014,7 @@ export function ChatInput({
       targetAgentKind: 'claude-code' | 'codex' | 'pi',
       newModelId: string,
       providerId: string | null = null,
-      // 意图期内的档位/Fast 改动经此显式覆盖(用户手选优先于记忆/默认解析)。
+      // 意图期内的档位/Fast/思考开关改动经此显式覆盖(用户手选优先于记忆/默认解析)。
       overrides?: {
         effort?: Effort;
         fastMode?: boolean | 'ultrafast';
@@ -6956,6 +7025,7 @@ export function ChatInput({
          * 的运行位置一起换。不传 = 沿用已登记的换位置意图,没有就是位置不变。
          */
         agentDeviceId?: string | null;
+        thinking?: boolean;
       },
     ): Promise<boolean> => {
       // ★ 返回值 = **本端请求的完整配置真的落到会话上了没有**(2026-08-17 review 确立
@@ -7068,6 +7138,14 @@ export function ChatInput({
         const targetFast = fromOtherCatalog
           ? overrides?.fastMode ?? false
           : fastCapable ? requestedFast : false;
+        // Pi 的思考开关意图：显式 override 优先，否则按目标 (引擎,来源,模型) 记忆，
+        // 缺记忆按 UI 默认开；没有来源/记忆时不猜（不传该参）。
+        const targetThinking =
+          overrides?.thinking !== undefined
+            ? overrides.thinking
+            : providerId && modelMemory
+              ? (modelMemory.getThinking?.(targetAgentKind, providerId, newModelId) ?? true)
+              : undefined;
 
         // 会话级操作按来源路由:device-link 远程会话隧道到被控端(意图注册表与引擎
         // 交接都在那边),本机会话零变化直连本机 maker。
@@ -7091,6 +7169,7 @@ export function ChatInput({
               newEffort,
               targetFast,
               switchOptions,
+              targetThinking,
             )
           : await switchApi.switchSessionAgent(
               sourceSessionId,
@@ -7099,6 +7178,8 @@ export function ChatInput({
               providerId,
               newEffort,
               targetFast,
+              undefined,
+              targetThinking,
             );
         // device-link 往返期间可以切到另一个任务:同一路由下 ChatInput 会带着新
         // sessionId 继续渲染,sameEngineReselectRef 等闭包也已指向新会话。旧会话的
@@ -7739,6 +7820,17 @@ export function ChatInput({
         fastSupported: modelFastSupported(newModelId, effectiveSourceId),
         requestedFast: restoredFast,
       });
+      // Pi 切模后不重置 thinking level：把目标模型（同来源）的思考开关意图一起放进
+      // 选择快照，让被控端/本机 runtime 在切换成功后收敛档位，避免上一个模型的 off
+      // 残留到新模型（模型只能把推理写进正文）。缺记忆时按 UI 默认（开）处理；
+      // 来源/引擎未知时不猜（不传该字段）。旧被控端会忽略这个额外字段。
+      const nextThinking = resolveModelThinkingIntent({
+        kind: currentModelAgentKind,
+        providerId: effectiveSourceId,
+        modelId: newModelId,
+        memory: modelMemory,
+        deviceLinkDeviceId,
+      });
       try {
         if (sessionId) {
           // 切模型时 fast 恢复该 (供应商, 模型) 的记忆值(对齐 effort);模型不支持 → false。
@@ -7748,9 +7840,20 @@ export function ChatInput({
             // 被控端 SET_MODEL；host 会在同一 session 锁内完成 runtime + DB 后才回 ack，避免
             // close/wake 的 queue drain 在独立 SET_EFFORT/SET_FAST 之前抢锁。
             // 乐观显示目标 (model, effort) + 置灰 selector,等被控端 echo 回流;失败回滚。
+            // 目录「未知」（provider:list 未回流 / 旧被控端 / 镜像缺该 agent）≠「固定档」：
+            // 占位解析此时给的是 'low'，只能用于 UI。乐观显示与草稿记忆改用会话当前档，
+            // 不再把「未知」显示成「低」；但**不**把它当显式档发给被控端 —— 被控端对显式档
+            // 按目标目录硬校验（resolveSessionRuntimeAxes → effort-unavailable，整个切模
+            // 失败），当前档不在目标目录里时会更糟。快照仍用 resolveRequestedEffort 的结果，
+            // 由被控端自己收敛（真固定档目标收敛为 null 轴）。
+            const remoteSwitchEffort = resolveRemoteSwitchEffort({
+              efforts,
+              requested: newEffort,
+              currentEffort: committedActiveEffort,
+            });
             setPendingRemoteSwitch({
               model: newModelId,
-              effort: newEffort,
+              effort: remoteSwitchEffort,
               providerId: selectedProviderId,
               fastMode: atomicFast,
             });
@@ -7772,7 +7875,8 @@ export function ChatInput({
                   ? ({
                       effort: atomicEffort,
                       fastMode: atomicFast,
-                    } as { effort: string | null; fastMode: boolean | 'ultrafast' })
+                      ...(nextThinking !== undefined ? { thinking: nextThinking } : {}),
+                    } as { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean })
                   : undefined,
               );
               if (remoteSetModelResult?.superseded) {
@@ -7781,7 +7885,9 @@ export function ChatInput({
               }
               remoteDeferred = remoteSetModelResult?.deferred === true;
               if (!useAtomicSelection) {
-                await remoteMaker.setEffort(sessionId, newEffort);
+                // 旧被控端走独立 SET_EFFORT：目录未知时 newEffort 是占位 'low'，发给被控端
+                // 会把真实档位污染成 low。无信息就不猜，保留被控端现值。
+                if (efforts.length > 0) await remoteMaker.setEffort(sessionId, newEffort);
                 fastPersisted = await persistFastModeChange(restoredFast, {
                   silent: true,
                   remoteDeviceId: sourceRemoteDeviceId,
@@ -7803,7 +7909,7 @@ export function ChatInput({
             }
             syncSessionDraftModelPrefs(
               newModelId,
-              { effort: newEffort, fast: fastPersisted ? restoredFast : fastMode },
+              { effort: remoteSwitchEffort, fast: fastPersisted ? restoredFast : fastMode },
               { remoteDeviceId: sourceRemoteDeviceId, markModelChoice: true },
             );
             if (remoteDeferred && isSourceSessionCurrent()) {
@@ -7833,8 +7939,14 @@ export function ChatInput({
                     {
                       effort: atomicEffort,
                       fastMode: atomicFast,
+                      ...(nextThinking !== undefined ? { thinking: nextThinking } : {}),
                       ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                    } as { effort: string | null; fastMode: boolean | 'ultrafast' },
+                    } as {
+                      effort: string | null;
+                      fastMode: boolean | 'ultrafast';
+                      thinking?: boolean;
+                      confirmedContextWindow?: number;
+                    },
                   );
                 },
               );
@@ -7904,10 +8016,20 @@ export function ChatInput({
             localRuntimeSwitchSeqBySessionRef.current.get(sessionId) &&
           !getSessionDeviceId(sessionId)
         ) {
+          // 失败回滚同样要带旧模型的思考意图：否则回滚这次不下发档位，Pi 会停在
+          // 失败那次收敛后的档位（可能是 off），与 UI 显示的旧模型选择不一致。
+          const rollbackThinking = resolveModelThinkingIntent({
+            kind: currentModelAgentKind,
+            providerId: effectiveSourceId,
+            modelId: rollbackModelAfterPersistFailure.model,
+            memory: modelMemory,
+            deviceLinkDeviceId,
+          });
           await window.electronAPI.maker
             .setModel(sessionId, rollbackModelAfterPersistFailure.model, undefined, undefined, {
               effort: activeEffort,
               fastMode,
+              ...(rollbackThinking !== undefined ? { thinking: rollbackThinking } : {}),
             })
             .catch((rollbackErr) => {
               log.warn('model change rollback failed:', rollbackErr);
@@ -8330,6 +8452,13 @@ export function ChatInput({
               ? reconciledFast
               : resolveFast(targetModel, newProviderId),
         });
+        const targetThinking = resolveModelThinkingIntent({
+          kind: currentModelAgentKind,
+          providerId: newProviderId,
+          modelId: targetModel,
+          memory: modelMemory,
+          deviceLinkDeviceId,
+        });
         // 乐观显示目标 (model, effort, provider) + 置灰 selector,等被控端 echo 回流;失败回滚 provider/快照。
         setPendingRemoteSwitch({
           model: targetModel,
@@ -8354,7 +8483,8 @@ export function ChatInput({
               ? ({
                   effort: remoteAtomicEffort,
                   fastMode: restoredFast,
-                } as { effort: string | null; fastMode: boolean | 'ultrafast' })
+                  ...(targetThinking !== undefined ? { thinking: targetThinking } : {}),
+                } as { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean })
               : undefined,
           );
           if (remoteSetModelResult?.superseded) {
@@ -8425,6 +8555,13 @@ export function ChatInput({
             fastSupported: modelFastSupported(modelId, newProviderId),
             requestedFast,
           });
+          const targetThinking = resolveModelThinkingIntent({
+            kind: currentModelAgentKind,
+            providerId: newProviderId,
+            modelId,
+            memory: modelMemory,
+            deviceLinkDeviceId,
+          });
           const switchSeqBySession = localRuntimeSwitchSeqBySessionRef.current;
           const rollbackSeq = (switchSeqBySession.get(sessionId) ?? 0) + 1;
           switchSeqBySession.set(sessionId, rollbackSeq);
@@ -8451,8 +8588,14 @@ export function ChatInput({
                   {
                     effort: atomicEffort,
                     fastMode: restoredFast,
+                    ...(targetThinking !== undefined ? { thinking: targetThinking } : {}),
                     ...(confirmedContextWindow ? { confirmedContextWindow } : {}),
-                  } as { effort: string | null; fastMode: boolean | 'ultrafast' },
+                  } as {
+                    effort: string | null;
+                    fastMode: boolean | 'ultrafast';
+                    thinking?: boolean;
+                    confirmedContextWindow?: number;
+                  },
                 );
               },
             );
@@ -8543,10 +8686,18 @@ export function ChatInput({
           rollbackProvider.seq === localRuntimeSwitchSeqBySessionRef.current.get(sessionId) &&
           !isRemoteSession
         ) {
+          const rollbackThinking = resolveModelThinkingIntent({
+            kind: currentModelAgentKind,
+            providerId: rollbackProvider.providerId,
+            modelId: rollbackProvider.model,
+            memory: modelMemory,
+            deviceLinkDeviceId,
+          });
           await window.electronAPI.maker
             .setModel(sessionId, rollbackProvider.model, rollbackProvider.providerId, undefined, {
               effort: activeEffort,
               fastMode,
+              ...(rollbackThinking !== undefined ? { thinking: rollbackThinking } : {}),
             })
             .catch((rollbackErr) => {
               log.warn('provider change rollback failed:', rollbackErr);
@@ -9572,6 +9723,18 @@ export function ChatInput({
                             activeModel,
                             enabled,
                           );
+                        }
+                      }
+                      // 意图期内(点选尚未发送)必须把开关写回 staged 意图：否则结算回放
+                      // 会按登记时的旧快照下发档位，把用户刚关掉的思考又打开(或反之)。
+                      if (sessionId && currentModelAgentKind) {
+                        const intent = makerChatStore.getAgentSwitchIntent(sessionId);
+                        if (intent) {
+                          await performAgentSwitch(intent.target, intent.model, intent.providerId, {
+                            ...(intent.effort ? { effort: intent.effort as Effort } : {}),
+                            fastMode: intent.fastMode,
+                            thinking: enabled,
+                          });
                         }
                       }
                       if (sessionId) {

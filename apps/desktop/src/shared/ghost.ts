@@ -6949,7 +6949,7 @@ export type GhostPipePreviewResult =
  * 主机落到台前任务,插件据此把自己的业务状态(如设备)绑定到该任务。
  */
 export type GhostPipeTaskViewResult =
-  | { ok: true; sessionId: string }
+  | { ok: true; sessionId: string; focusRequested?: true }
   | {
       ok: false;
       errorCode: 'PERMISSION_DENIED' | 'INVALID_REQUEST' | 'HOST_NOT_READY' | 'INTERNAL';

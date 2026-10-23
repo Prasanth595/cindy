@@ -234,6 +234,9 @@
     "cancel": "取消",
     "edit": "編輯",
     "steer": "插話",
+    "moveUp": "提前一位",
+    "moveDown": "延後一位",
+    "cancelSend": "取消傳送",
     "collapseQueued": "收起排隊訊息",
     "expandRemainingQueued": "展開剩餘 {{n}} 條排隊訊息",
     "collapse": "收起",
@@ -407,6 +410,10 @@
     "skillUpdated": "已更新技能：{{title}}"
   },
   "richAnswer": {
+    "send": "傳送訊息",
+    "sending": "正在傳送…",
+    "sent": "已提交",
+    "sendFailed": "訊息未提交，已保留填寫內容",
     "playVideo": "播放影片",
     "openVideoSource": "開啟原影片",
     "calculationUnavailable": "此項暫時無法計算。",

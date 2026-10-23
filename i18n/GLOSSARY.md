@@ -443,6 +443,10 @@ issue #882：模型管理/新对话选择器的分类标签，对应 Gateway mod
 
 模型目录维护的权威协议；独立于各 Harness 的实际接入配置。设置面板用于简短对比原生支持与兼容模式。
 
+### Nightly learning
+
+伙伴的内置例行任务：到点（默认每天 3:30，可改每周一 3:30）回看上次之后和主人的对话，整理伙伴自己的记忆与技能（合并、拆分、停用、把反复出现的做法转正为技能），每条改动可撤销；没有新对话时不调用模型（docs/product-rules/bot-routines.md「内置夜间学习」）。英文句中小写 nightly learning，故 checkCase 为 false。只出现过一次、等待再次出现的做法叫「在观察的做法 / approaches being watched」，不叫候选技能。先登记为 proposed，等 UI 走查后再定。
+
 ### Not signed in
 
 跳过登录后应用内的账号状态名（侧边栏账号胶囊、设置页资料卡、语音服务提示，以及 main 侧不走 locale 的 model-visible 文案——已知 mcp-integrations/ghost.ts 的 GHOST_NOT_FOUND tool result，它会被模型读到并可能回显进对话，#907 review 补上）。**约束范围不限于 locale JSON**：guard 只扫 locale 文件，这类硬编码文案要人工找（见 engineering-conventions §5.1「Slack / IM 侧的文案不在任何 locale 文件里」同类问题）。2026-07-29 产品口径：面向用户只说「未登录」，不再叫「本地模式」——后者听起来像另一种服务端连接方式，实际只是没有登录 Cindy 账号。「本地」仅用于描述数据落在本机（如资料卡副文案「数据仅保存在本机」），不作为状态名。代码内部标识（AuthState mode='local'、authEnterLocal IPC、data owner）不受本条约束，仍用 local。en 侧统一走 not signed in 一种说法（含 settings.userProfile.local 的 exit / exitFailed 两条当前无引用的文案：the not-signed-in state），不与 unauthenticated 混用——PR #907 review 指出过同一状态两种英文说法会让日后启用这些文案时 UI 自相矛盾。status 仍为 proposed：Not signed in 作为状态名尚未与设计侧正式过一遍。

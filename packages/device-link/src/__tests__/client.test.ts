@@ -34,6 +34,8 @@ import {
   parseTransportPayload,
 } from '../transport.js';
 import { PLUGIN_SYNC_CHANNEL } from '../pluginSyncProtocol.js';
+import { DIRECT_LINK_SIGNAL, type DirectRuntime, type DirectRuntimeEvents } from '../directNegotiation.js';
+import { createDirectRuntimeBridge, createDirectRuntimeHost } from '../directRuntimeBridge.js';
 import { DL_CONTACTS_SYNC_CHANNEL } from '../contactsSyncProtocol.js';
 import { resolveRemoteInvokeTimeoutMs } from '../invokePolicy.js';
 import { SESSION_ACTIVITY_CHANNEL } from '../topics.js';
@@ -800,7 +802,7 @@ function makeRelayClient(
   relay: MemoryRelay,
   deviceId: string,
   timing?: ConstructorParameters<typeof DeviceLinkClient>[0]['timing'],
-  extra?: Pick<ConstructorParameters<typeof DeviceLinkClient>[0], 'transferCodec' | 'invokeMetrics'>,
+  extra?: Pick<ConstructorParameters<typeof DeviceLinkClient>[0], 'transferCodec' | 'invokeMetrics' | 'directRuntime'>,
 ): DeviceLinkClient {
   return new DeviceLinkClient({
     ...extra,
@@ -10529,6 +10531,107 @@ function connectDirect(
 
 const reliableKinds = (envs: readonly Envelope[] | undefined, kind: Envelope['kind'], src?: string): number =>
   (envs ?? []).filter(env => env.kind === kind && parseTransportPayload(env.payload) && (!src || env.src === src)).length;
+
+/** #6825 lacked automatic negotiation. Exercise real clients and native bridges;
+ * only RTC is in memory. Protect compatibility, per-peer fallback and revocation. */
+class MemoryDirectRuntime {
+  readonly sessions = new Map<string, Array<{ events: DirectRuntimeEvents; closed: boolean; drop: boolean }>>();
+  frames = 0;
+  createRuntime(): DirectRuntime {
+    const native: DirectRuntime = { create: (id, events) => {
+      const row = { events, closed: false, drop: false };
+      const pair = this.sessions.get(id) ?? [];
+      this.sessions.set(id, pair);
+      pair.push(row);
+      return {
+        offer: async () => id, accept: async () => id,
+        answer: async () => { queueMicrotask(() => pair.forEach(p => { if (!p.closed) p.events.open(); })); },
+        send: (text) => {
+          if (row.closed) throw new Error('closed');
+          this.frames++;
+          const other = pair.find(p => p !== row);
+          if (!row.drop && other && !other.closed) setTimeout(() => other.events.message(text), 0);
+        },
+        bufferedAmount: 0,
+        close: () => pair.forEach(p => { if (!p.closed) { p.closed = true; p.events.closed(); } }),
+      };
+    } };
+    const bridge = createDirectRuntimeBridge();
+    const host = createDirectRuntimeHost(native, event => bridge.receive(event));
+    const detach = bridge.attach(command => { void host.command(command); });
+    return { ...bridge.runtime, suspend: () => { detach(); host.dispose(); } };
+  }
+}
+
+describe('automatic LAN connection through platform bridges', () => {
+  it.each(['both', 'old-host', 'old-viewer', 'unavailable'] as const)('negotiates automatically and keeps %s compatible', async mode => {
+    vi.useFakeTimers();
+    const relay = new MemoryRelay(), rtc = new MemoryDirectRuntime();
+    const unavailable: DirectRuntime = { create: () => { throw new Error('native not ready'); } };
+    const host = makeRelayClient(relay, 'desktop', undefined,
+      mode === 'old-host' ? {} : { directRuntime: mode === 'unavailable' ? unavailable : rtc.createRuntime() });
+    const viewer = makeRelayClient(relay, 'viewer', undefined,
+      mode === 'old-viewer' ? {} : { directRuntime: rtc.createRuntime() });
+    const pump = () => relay.settle(async () => { await vi.advanceTimersByTimeAsync(1); });
+    let executions = 0;
+    host.onFrame(env => {
+      if (env.kind === 'link-open') host.sendLinkAccept(env.src!, env.id!, { appVersion: '1', allowlistHash: 'hash' });
+      if (env.kind === 'invoke') { executions++; host.sendInvokeResult(env.src!, env.id!, { ok: true, result: 'remote-provider-result' }); }
+    });
+    try {
+      host.start(); viewer.start(); await pump();
+      const opening = viewer.openLink('desktop', { controllerName: 'Phone', protocolVersion: 1, appVersion: '1' });
+      await pump(); await opening;
+      expect(viewer.getPeerPath('desktop')).toBe(mode === 'both' ? 'direct' : 'relay');
+      const before = reliableKinds(relay.deliveredTo.get('desktop'), 'invoke');
+      const result = viewer.invoke('desktop', { channel: 'maker:remote-agent:v1', args: [{ op: 'poll', runId: 'one' }] });
+      await pump(); expect(await result).toEqual({ ok: true, result: 'remote-provider-result' });
+      expect(executions).toBe(1);
+      expect(reliableKinds(relay.deliveredTo.get('desktop'), 'invoke') - before).toBe(mode === 'both' ? 0 : 1);
+    } finally { host.stop(); viewer.stop(); vi.useRealTimers(); }
+  });
+
+  it.each(['close', 'silent-result'] as const)('falls back after %s without executing twice or disturbing a second controller', async failure => {
+    vi.useFakeTimers();
+    const relay = new MemoryRelay(), rtc = new MemoryDirectRuntime();
+    const options = { requestTimeoutMs: 30_000, transportRetryIntervalMs: 500 };
+    const host = makeRelayClient(relay, 'desktop', options, { directRuntime: rtc.createRuntime() });
+    const a = makeRelayClient(relay, 'viewer-a', options, { directRuntime: rtc.createRuntime() });
+    const b = makeRelayClient(relay, 'viewer-b', options, { directRuntime: rtc.createRuntime() });
+    const pump = () => relay.settle(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const executions: string[] = [];
+    host.onFrame(env => {
+      if (env.kind === 'link-open') host.sendLinkAccept(env.src!, env.id!, { appVersion: '1', allowlistHash: 'hash' });
+      if (env.kind === 'invoke') { executions.push(env.src!); host.sendInvokeResult(env.src!, env.id!, { ok: true, result: 'done' }); }
+    });
+    try {
+      host.start(); a.start(); b.start(); await pump();
+      for (const viewer of [a, b]) {
+        const opening = viewer.openLink('desktop', { controllerName: 'Viewer', protocolVersion: 1, appVersion: '1' });
+        await pump(); await opening;
+      }
+      expect(a.getPeerPath('desktop')).toBe('direct'); expect(b.getPeerPath('desktop')).toBe('direct');
+      const first = [...rtc.sessions.values()][0];
+      if (failure === 'close') first[0].events.closed(); else first[0].drop = true;
+      const result = a.invoke('desktop', { channel: 'maker:remote-agent:v1', args: [{ op: 'send' }] });
+      const other = b.invoke('desktop', { channel: 'maker:remote-agent:v1', args: [{ op: 'poll' }] });
+      await pump();
+      for (let n = 0; n < 5 && a.getPeerPath('desktop') !== 'relay'; n++) {
+        await vi.advanceTimersByTimeAsync(500); await pump();
+      }
+      await pump();
+      expect(await result).toEqual({ ok: true, result: 'done' });
+      expect(await other).toEqual({ ok: true, result: 'done' });
+      expect(executions.sort()).toEqual(['viewer-a', 'viewer-b']);
+      expect(a.getPeerPath('desktop')).toBe('relay'); expect(b.getPeerPath('desktop')).toBe('direct');
+      expect(host.getStatus()).toBe('online');
+      a.closeLink('desktop', 'user'); await pump();
+      await vi.advanceTimersByTimeAsync(65_000); await pump();
+      expect(a.getPeerPath('desktop')).toBe('relay');
+      expect([...rtc.sessions.values()][0].every(p => p.closed)).toBe(true);
+    } finally { host.stop(); a.stop(); b.stop(); vi.useRealTimers(); }
+  });
+});
 
 describe('直连优先、中继兜底(Device Link direct path)', () => {
   it('replays a partially written large head while an older relay tail is still in flight', async () => {

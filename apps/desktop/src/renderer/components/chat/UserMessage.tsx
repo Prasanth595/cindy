@@ -1754,8 +1754,8 @@ export function UserMessage({
                         className={cn(
                           'mt-2 inline-flex items-center gap-1 rounded-full px-1 py-0.5',
                           'text-12 font-medium leading-5',
-                          'text-[var(--msg-user-text)] opacity-65 transition-opacity',
-                          'hover:opacity-100',
+                          'text-[var(--text-secondary)] transition-colors',
+                          'hover:text-[var(--msg-user-text)]',
                           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
                         )}
                       >

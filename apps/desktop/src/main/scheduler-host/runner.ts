@@ -23,12 +23,8 @@ import {
  * 一次 fire 的工作流：
  *   1. effort 白名单校验 — 防止 user-input 把非法 effort 透传给 maker.createSession
  *      （Phase 2 mapper 没有运行时校验，runner 是最后一道关卡）。
- *   2. heartbeat 模式（schedule.targetSessionId 存在）：并行查
- *        a) maker.getSessionMeta → 拿 sdkSessionId 做 SDK resume
- *        b) desktop sessions 表的 status 列 → 判断是否 archived/deleted
- *      命中兜底 → scheduler.pause(scheduleId) + notify failure + throw
- *      （maker-core SessionMeta 已删 status 字段——archived 是 desktop 产品语义，
- *       存在 sessions.status enum，必须直查；详见 plan 文件 §「关键事实 #3」）
+ *   2. 绑定普通任务时，先按用户发送入口恢复已归档任务，再执行前置检查。
+ *      沿用原 sdkSessionId 恢复上下文；删除/丢失目标与 Bot 生命周期仍按各自规则处理。
  *   3. workingDir：useWorktree=true 走 workdir-resolver 建 ephemeral worktree
  *      （绝不手动注册清理，maker-host:116-122 onClose 会自动清）
  *   4. maker.createSession（heartbeat 模式不传 title，让现有 row 标题保留）
@@ -61,7 +57,6 @@ import type {
   Effort,
   PermissionMode,
   Session,
-  TurnContinuationState,
 } from '@cindy/maker-core';
 import { clampEffortToSupported } from '@cindy/model-providers';
 import {
@@ -123,6 +118,7 @@ import { backfillSessionMeta } from './runners/_shared';
 import { buildSkipResultText, executePreRunHook, formatPreRunHookFailure } from './pre-run-hook';
 import { beginHeadlessGhostSetupTurn } from '../mcp-integrations/ghostSetupInteractionSurface.js';
 import { terminalErrorText } from '../im/shared/turnRetryNotice.js';
+import { isManagedScheduledTarget, restoreScheduledTarget } from './restore-target';
 
 const ALLOWED_EFFORT = new Set<string>([
   'minimal',
@@ -808,13 +804,17 @@ export class MakerScheduleRunner implements ScheduleRunner {
       throw new Error(errMsg);
     }
 
-    // Explicit retirement is checked before hooks: a broken external check must not
-    // keep an archived task's heartbeat alive. Persistent automations still rebind;
-    // bot routines retain their service-owned canonical-session lifecycle.
-    if (schedule.source !== 'bot' && schedule.targetSessionId && !schedule.persistentSession) {
+    // A scheduled message restores its ordinary target just like user input.
+    // Do this before hooks/model selection, while keeping deleted-target behavior
+    // and service-owned Bot lifecycle separate.
+    if (schedule.source !== 'bot' && schedule.targetSessionId) {
       const target = await getSessionRowSnapshot(schedule.targetSessionId);
-      if (target?.status === 'archived' || target?.status === 'deleted') {
+      if (target && !schedule.persistentSession && (target.status === 'deleted'
+        || (target.status === 'archived' && isManagedScheduledTarget(target)))) {
         return this.retireHeartbeat(schedule, ctx, target.status);
+      }
+      if (target && target.status !== 'deleted') {
+        await restoreScheduledTarget(schedule.targetSessionId, target, ctx.signal);
       }
     }
 
@@ -995,12 +995,16 @@ export class MakerScheduleRunner implements ScheduleRunner {
       if (archived) {
         holder.releaseAgentSwitchLock?.();
         holder.releaseAgentSwitchLock = undefined;
-        // persistentSession=true：自我续命。清空死的 targetSessionId,本次 fire 走新建分支,
-        // session 创建成功后 4.7.1 会重新绑定到新 sessionId。这样用户即便手动归档/删除
-        // 了之前持续会话的 session,自动化也不会卡死,而是无感开新的继续跑。
+        // The user archived again during preparation. Consume this occurrence;
+        // do not undo that newer action or pause the recurring automation.
+        if (row?.status === 'archived' && schedule.source !== 'bot' && !isManagedScheduledTarget(row)) {
+          return { sessionId, skipped: true, resultText: 'Scheduled target archived during preparation' };
+        }
+        // 持续任务的目标已删除/丢失时重新绑定；Bot 保留原有服务侧生命周期。
+        // 普通已归档任务已在入口恢复，不因归档创建替代任务。
         if (schedule.persistentSession && this.scheduler) {
           this.deps.logger.info?.(
-            `[runner] persistent session ${sessionId} archived; auto-rebinding`,
+            `[runner] persistent session ${sessionId} unavailable; auto-rebinding`,
           );
           try {
             await this.scheduler.update(schedule.id, { targetSessionId: undefined });

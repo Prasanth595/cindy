@@ -15,6 +15,7 @@ import { PluginSyncAccess } from './pluginSyncAccess.js';
 
 import os from 'node:os';
 import { tryPeerInvoke, stopFilePeers } from './filePeer';
+import { desktopDirectRuntime } from './directLink';
 import { assertBackgroundLinkAccepted, linkOpenCapabilities } from './backgroundLink';
 import { deviceName, initializeDeviceName } from './deviceName';
 import { desktopTransferCodec } from './transferCodec';
@@ -28,6 +29,7 @@ import {
   FILE_PEER_CHANNEL,
   isScopedPeer,
   parseSharedTaskPeer,
+  parseProviderSharePeer,
   probeSharedTaskHost,
   PROVIDER_SHARE_RELAY_CAPABILITY,
   sharedTaskTopics,
@@ -151,6 +153,7 @@ import { startSharedTaskRuntime, stopSharedTaskRuntime } from './sharedTaskRunti
 import { startProviderShareRuntime, stopProviderShareRuntime } from './providerShareRuntime.js';
 import {
   isProviderShareRefusal,
+  getReceivedShares,
   noteProviderShareAccessFailure,
   PROVIDER_SHARE_UNAVAILABLE_MESSAGE,
   resolveRemoteAgentTargetWhenReady,
@@ -704,6 +707,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     return membership && token ? { realm: authManager.getActiveAuthRealm(), membership, authDevice: authManager.getDeviceId(), token } : null;
   };
   client = new DeviceLinkClient({
+    directRuntime: desktopDirectRuntime,
     getWsUrl: wsUrl,
     transferCodec: desktopTransferCodec,
     getToken: async () => {
@@ -1062,6 +1066,13 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     }
     if (env.kind !== 'push') return;
     const p = env.payload as PushPayload;
+    const sharePeer = parseProviderSharePeer(env.src);
+    if (sharePeer && p?.channel === 'maker:provider:changed') {
+      if (sharePeer.role !== 'host' || !getReceivedShares().some(share => share.shareId === sharePeer.shareId
+        && share.hostDeviceId === sharePeer.deviceId && share.status === 'active')) return;
+      broadcast(DEVICE_LINK_PUSH.REMOTE_PUSH, { deviceId: `share:${sharePeer.shareId}`, channel: p.channel, payload: {} });
+      return;
+    }
     const sourceEpoch = sharedHostStreams.get(env.src)?.epoch;
     // 词典同步帧在 main 侧消费,不转给 renderer —— 它不是远程视图事件,
     // renderer 也不该看到别的设备的同步状态。

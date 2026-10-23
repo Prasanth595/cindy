@@ -733,6 +733,16 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 `ghost_forge_install`、点击市场安装或服务端 `defaultInstall` 明确触发；Forge 安装与本地
 导入必须复用同一套 Main 安装／更新事务。
 
+Forge 新装默认 root，不按当前登录组织自动创建组织实例。已有 root 优先原位更新；仅有
+一份当前组织的旧实例时原位更新，保留其归属。新装组织实例必须明确传当前组织 `namespace`，
+不能从名称前缀或当前登录推断归属。无法唯一确定已有实例时返回 `INSTALL_TARGET_REQUIRED`
+与现有实例的身份、版本、启用状态，不默认新增并启用副本。用户选择更新时传 `target_instance_id`，另装时明确传
+`install_copy:true`，两者互斥。更新受体仅可为 root 或当前组织，不能借当前组织权限更新
+其它组织；落位前复核原受体 receipt 和实例键，变更后拒绝而非改选。换源或存在其它副本
+时复用既有确认卡，说明位置、旧账号数据隔离及独立连接要求。不会自动迁移凭证、停用
+旧副本或保存全局选择。本地文件导入仍只更新 root；新增 root 的确认框告知已有其它副本，
+换源更新即使没有扩权也要确认账号影响。已装插件不会因升级被停用或要求补确认。
+
 凡改动**插件作者可见的契约**，同一改动内必须同步更新手册对应章节：
 
 - (a) `ghost.json` 身份卡字段或校验规则（`shared/ghost.ts` 的 `validateGhostManifest`）；
@@ -753,10 +763,19 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 `taskView`（跟对话的任务页）的现行协议在 `FORGE_GUIDE` §4.22；v2 对应 `task-view` 槽。
 任务页页签（右侧栏 kind `plugin-task`）存在各任务自己的页签桶里，随任务切换；页面与
 panel / mainView 同一 Ghost WebView 沙箱（零桥、专属分区），只经查询参数 `session`
-得知所在任务。逻辑页经 `cindy.taskView({sessionId?})`（管子 `task-view-request`）打开或
-聚焦它：只承载包内页面、不收网址，因此不设 preview 式白名单与限速；Host 只做资格审
+得知所在任务。逻辑页经 `cindy.taskView({sessionId?, focus?})`（管子 `task-view-request`）
+打开或聚焦它：只承载包内页面、不收网址，因此不设 preview 式白名单与限速。Host 做资格审
 （已装、启用、声明 taskView）与落点解析（显式任务优先，缺省台前任务），回执带回落点
-任务。远程任务不投影本机插件的任务页；插件停用、卸载或不再声明 taskView 时页签隐藏。
+任务。缺省或 `focus: false` 只打开页签，不切换任务或抢前台。
+用户点击跳转时可传 `focus: true`：Host 须消费该插件实例最近 3 秒内的真实鼠标/键盘手势
+（复用派活的一次性账本），无手势、过期或已消费均返回 `PERMISSION_DENIED`，不开页也不导航。
+有效请求复用任务导航切到目标任务，并按用户操作显示任务页签；内嵌、分离侧栏和弹出页签均
+保留用户放置位置，分离命令由 Main 沿既有路由与排队路径传递来源，不在执行端降级为后台。
+成功回执的 `focusRequested: true` 仅表示导航请求已投递，不保证任务存在或已呈现；
+旧 Host 可能忽略 focus，缺该回执字段时插件应提示更新。`peek: true` 始终只查询落点，
+即使同时传 focus 也不消费手势或导航。实现与回归见 `taskViewSlot.ts`、`taskViewSlot.test.ts`
+和 right-sidebar 的 `openPluginTaskTab.test.ts`、`executeSidebarCommand.test.ts`。
+远程任务不投影本机插件的任务页；插件停用、卸载或不再声明 taskView 时页签隐藏。
 使用该能力的插件须声明实际支持且完成整包验收的最低宿主版本。旧 Host 可能保留未知顶层
 字段，但会拒绝 `locale.taskView` 或 v2 的 `task-view` 槽；运行时检测 API 不能替代安装兼容验证。
 `mainView.icon` 只接受 Cindy 系统线性图标

@@ -5227,10 +5227,31 @@ describe("remote desktop controls", () => {
     const starts = requests().filter(r => r.op === 'start').length;
     const stops = requests().filter(r => r.op === 'stop').length;
     renderGeometry({ ...geometry, regions: [{ kind: 'division', x: 0, y: 300, width: 900, height: 30 }] });
+    expect(sent().filter(m => m.type === 'mouseButtons').at(-1)).toMatchObject({ fitToInsets: false });
+    expect(host.querySelector('[data-testid="remoteDesktop.foldTouchpad"]')).toBeNull();
+    fixture.size = { width: 700, height: 900 };
+    renderGeometry({ ...geometry, ...fixture.size, barEdge: 'none',
+      regions: [{ kind: 'division', x: 0, y: 400, width: 700, height: 30 }] });
     expect(sent().filter(m => m.type === 'mouseButtons').at(-1)).toMatchObject({
-      fitToInsets: true, topInset: 0, bottomInset: 400,
+      fitToInsets: true, topInset: 0, bottomInset: 500,
     });
+    // Unit: Duo jitter regression. Drive the real folded-pad responder, not a
+    // synthetic viewer command, to ensure the cursor ownership reaches WebView.
+    const pad = fixture.views['remoteDesktop.foldTouchpad'];
+    fixture.post.mockClear();
+    act(() => pad.onResponderGrant({ nativeEvent: { pageX: 50, pageY: 550 } }));
+    act(() => pad.onResponderMove({ nativeEvent: { pageX: 70, pageY: 560 } }));
+    act(() => pad.onResponderRelease());
+    expect(sent().filter(m => m.type === 'nativeTouchpad')).toEqual([
+      { type: 'nativeTouchpad', phase: 'start' },
+      { type: 'nativeTouchpad', dx: 20, dy: 10 },
+      { type: 'nativeTouchpad', phase: 'end' },
+    ]);
+    act(() => pad.onResponderGrant({ nativeEvent: { pageX: 70, pageY: 560 } }));
+    act(() => pad.onResponderTerminate());
+    expect(sent().at(-1)).toEqual({ type: 'releaseInput' });
     expect(host.querySelector('[data-testid="remoteDesktop.viewer"]')).toBe(viewerNode);
+    fixture.size = { width: 900, height: 700 };
     renderGeometry(geometry);
     expect(sent().filter(m => m.type === 'mouseButtons').at(-1)).toMatchObject({ fitToInsets: false });
     expect(host.querySelector('[data-testid="remoteDesktop.viewer"]')).toBe(viewerNode);

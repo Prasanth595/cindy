@@ -292,9 +292,8 @@ interface TurnState {
   interactionRouteLease: InteractionRouteLease | null;
   /**
    * Host turn lease held for the duration of a per-turn permission policy turn.
-   * While held, session.setPermissionMode() blocks any switch into a mode the
-   * agent lists as turnPermissionPolicy-unsupported (e.g. Pi Full Access),
-   * closing the hot-switch bypass window. Released on every terminal / requeue /
+   * Keeps new sends and retirement behind this turn's background continuations;
+   * the owner's live permission changes remain immediate. Released on every terminal / requeue /
    * cleanup path via releaseTurnInteractionRoute. Null when the turn has no policy.
    */
   hostTurnLeaseRelease: (() => void) | null;
@@ -715,8 +714,8 @@ export interface ImTurnRunnerDeps {
   /** 连接交给伙伴后的路由(只对实现了 adapter.companionLane 的渠道生效)。 */
   companion?: ImCompanionRouteDeps;
   /**
-   * 与桌面直发同源的发送前上下文体检(`register.prepareUnhealthySessionForSend`):到线换窗、
-   * 空闲间隔刷新、已知坏历史重建。伙伴主对话与 IM 专线同一条规则,不为 IM 单设一套。
+   * 与桌面直发同源的发送前故障恢复(`register.prepareUnhealthySessionForSend`)。
+   * 健康伙伴主对话与 IM 专线均沿用 Session 原生压缩,不按空闲时长或伙伴阈值换窗。
    * 体检重建时会以 'runtime-refresh' 关掉当前 live handle,新 handle 由
    * `refreshSessionAfterPendingAgentSwitch` 按最新 DB 行重建。
    */
@@ -1514,8 +1513,8 @@ export function createTurnRunner(
           return { kind: 'rejected', reason: 'companion_unavailable' };
         }
       }
-      // 发送前上下文体检(与桌面直发、官方 hook 同一个入口): 伙伴对话隔了半天再开口、
-      // 占用到线、已知坏历史都在这里换干净的原生会话。关闭原因是 'runtime-refresh',
+      // 发送前故障恢复(与桌面直发、官方 hook 同一个入口): 仅在真实满窗或已知
+      // 压缩失败、坏历史等恢复条件下重建原生会话。关闭原因是 'runtime-refresh',
       // 上面的 close 监听在有 acquirePendingAgentSwitch 时会保住本任务; 新 live session
       // 由下面的 refreshSessionAfterPendingAgentSwitch 按最新 DB 行(sdkSessionId 已清空)
       // 重建并换绑。体检失败按直发同一口径让这条消息失败, 不带着过期的 resume 选项发送。
@@ -1675,10 +1674,8 @@ export function createTurnRunner(
             if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
             return im.sendText(userId, text, { threadTs: noticeScope });
           });
-          // 策略轮持一张 host turn lease:期间 setPermissionMode 切到 agent 声明为
-          // turnPermissionPolicy-unsupported 的档位(如 Pi Full Access)会被阻塞到本轮
-          // 终态,堵死"热切到 bypass 让 bridge 直接放行、策略连冒泡机会都没有"的绕过。
-          // 两个 surface 都需要:channel 与 desktop 的策略同样必须扛住热切。
+          // 策略轮保留逻辑占用直到后台续跑和收尾结束；新输入仍须等待，
+          // 主人在 Cindy 中切换权限则立即沿用普通任务的运行时切换。
           if (effectiveTurnPolicy) {
             item.turn.hostTurnLeaseRelease = state.makerSession.acquireTurnLease();
           }

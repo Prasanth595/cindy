@@ -30,6 +30,10 @@ import {
   type LoginItemState,
 } from '../shared/loginItem';
 import type { BotToolsetContext } from '../shared/botRemoteCapabilities';
+import {
+  STARTUP_GATE_STALL_CHANNEL,
+  type StartupGateStallSnapshot,
+} from '../shared/startupGateStall';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { createChatFolderUpload } from './chatFolderUpload';
 import { DESKTOP_LOCAL, type RemoteDesktopApi } from '../shared/remoteDesktop';
@@ -1072,9 +1076,14 @@ const clientEndpointsInfo = ipcRenderer.sendSync('client-endpoints:get-sync') as
   websiteUrl: string;
 };
 
-const appearanceSettingsInfo = ipcRenderer.sendSync(
+let appearanceSettingsInfo = ipcRenderer.sendSync(
   'appearance-settings:get-sync',
 ) as AppearanceSettings | null;
+// Keep the bootstrap snapshot current even before a terminal mounts. Register
+// before renderer subscriptions so getSync() sees the same update as onChanged.
+ipcRenderer.on('appearance-settings:changed', (_event, settings: AppearanceSettings) => {
+  appearanceSettingsInfo = settings;
+});
 
 contextBridge.exposeInMainWorld('electronAPI', {
   localAgent: {
@@ -1133,6 +1142,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     runNow: (botId: string, id: string) => ipcRenderer.invoke('routines:run-now', botId, id),
     history: (botId: string, id: string) => ipcRenderer.invoke('routines:history', botId, id),
     sources: () => ipcRenderer.invoke('routines:sources'),
+    nightlyLearning: {
+      get: (botId: string): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:get', botId),
+      setEnabled: (botId: string, enabled: boolean): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:set-enabled', botId, enabled),
+      setFrequency: (botId: string, frequency: import('../shared/botNightlyLearning').NightlyLearningFrequency): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:set-frequency', botId, frequency),
+      runNow: (botId: string): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:run-now', botId),
+      revert: (botId: string, runId: string, itemId: string, redo: boolean): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:revert', botId, runId, itemId, redo),
+      candidate: (botId: string, candidateId: string, action: 'promote' | 'decline'): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:candidate', botId, candidateId, action),
+    },
     onChanged: (listener: () => void) => {
       const wrapped = () => listener();
       ipcRenderer.on('routines:changed', wrapped);
@@ -1226,6 +1249,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     msg: string,
   ): void => ipcRenderer.send('renderer:log', level, scope, msg),
 
+  /** 开屏卡住时上报一次启动门快照;main 校验字段后写进可上传的诊断日志。 */
+  reportStartupGateStall: (snapshot: StartupGateStallSnapshot): void =>
+    ipcRenderer.send(STARTUP_GATE_STALL_CHANNEL, snapshot),
+
   localThemes: {
     listSync: (): LocalThemesResult => {
       try {
@@ -1297,7 +1324,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 意识仓库 (shared/ghost.ts)。listSync 走 sendSync:意识面板要与内置
   // 面板同帧注册进布局引擎(规则 7 无跳变);目录扫描极小,同步读不卡启动。
   ghosts: {
-    mailPreview: (sessionId: string, url: string, read: boolean, opened = false) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened),
+    mailPreview: (sessionId: string, url: string, read: boolean, opened = false, providerId?: string) => ipcRenderer.invoke('ghosts:mail-preview', sessionId, url, read, opened, providerId),
     openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget): Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView> =>
       ipcRenderer.invoke('device-link:plugin-settings:open', target),
     closeRemoteSettings: (id: string): Promise<void> => ipcRenderer.invoke('device-link:plugin-settings:close', id),
@@ -4651,6 +4678,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('update-relaunch:blocking-activity', opts),
 
   /**
+   * 同一条忙闲判定的脱敏摘要。busy 仍是布尔;categories 为空表示读不出具体类别,
+   * 界面保留通用警告。不返回会话 id、路径、提示词或远程控制者。
+   */
+  describeRelaunchBlockingActivity: (): Promise<{
+    busy: boolean;
+    categories: Array<'companion' | 'conversation' | 'background-command' | 'scheduled-task' | 'generation' | 'subtask'>;
+    companionNames: string[];
+  }> => ipcRenderer.invoke('update-relaunch:blocking-summary'),
+
+  /**
    * Tell the main process to apply the downloaded update and relaunch.
    */
   relaunchToUpdate: (theme: 'light' | 'dark'): void => {
@@ -5761,6 +5798,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         locale?: import('../shared/locale').SupportedLocale;
       }): Promise<unknown[]> => ipcRenderer.invoke('local-db:bots:list', body),
       get: (botId: string): Promise<unknown> => ipcRenderer.invoke('local-db:bots:get', botId),
+      chooseAvatarSource: (): Promise<{ canceled: boolean; previewDataUrl?: string }> =>
+        ipcRenderer.invoke('local-db:bots:choose-avatar-source'),
       chooseAvatar: (body: { botId: string; avatarImageBase64?: string }): Promise<unknown> =>
         ipcRenderer.invoke('local-db:bots:choose-avatar', body),
       searchHistory: (body: unknown): Promise<unknown> =>
@@ -7222,14 +7261,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // providerId 可选 —— 选了某供应商的模型时一并传,决定本会话路由到哪个上游/钥匙。
     // 不传 = 不改动该会话的供应商选择(老调用兼容);传 null = 清除选择回落默认路由。
     // 返回 { deferred } —— deferred=true 表示会话自己在跑 turn,凭证切换已登记为
-    // pending、turn 结束自动生效(renderer 据此提示"任务结束后生效")。旧被控端 /
+    // pending、turn 结束自动生效(renderer 据此提示“任务结束后生效”)。旧被控端 /
     // 老 host 可能返回 undefined,调用方按非 deferred 处理。
+    // selection.thinking(Pi-only) = 目标模型的思考开关意图，Pi 用它收敛切模后的
+    // thinking level；其它引擎忽略。
     setModel: (
       sessionId: string,
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean },
     ): Promise<{ deferred: boolean; superseded?: boolean } | undefined> =>
       ipcRenderer.invoke(
         'maker:set-model',
@@ -7254,6 +7295,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       fastMode?: boolean | 'ultrafast',
       // 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
+      thinking?: boolean,
     ): Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';
@@ -7263,7 +7305,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       sameEngineRevision?: number;
       sameEngineSuperseded?: boolean;
     }> =>
-      options
+      options || thinking !== undefined
         ? ipcRenderer.invoke(
             'maker:switch-session-agent',
             sessionId,
@@ -7273,6 +7315,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
             effort,
             fastMode,
             options,
+            thinking,
           )
         : ipcRenderer.invoke(
             'maker:switch-session-agent',

@@ -247,9 +247,11 @@ describe('conversationSearch plugin background tasks', () => {
 });
 
 // Production search entry + real SQLite. The prior source-only test could not
-// catch missing personal history or leaked imported channel lanes. Unit tier.
+// catch missing companion transcripts and accidentally exposed remote lanes. DB tier.
 describe('conversationSearch personal companion chats', () => {
-  it('finds hidden/archived personal threads and imported history, excluding internal lanes and deleted tasks', async () => {
+  // 测试价值: searchConversations 必须返回本机渠道记录并标成只读, 旧覆盖只验证渠道被排除。
+  // 最小输入: 一条渠道链接(含迁移来源)及同词消息; 验证远程、删除与群专线仍不放行。DB tier。
+  it('finds local channel transcripts like history while retaining remote and deletion boundaries', async () => {
     const db = createSearchDb();
     const client = makeSearchDbClient(db);
     setCurrentDbClient(client, 'test-user');
@@ -265,6 +267,9 @@ describe('conversationSearch personal companion chats', () => {
         ['imported', 'feishu', 'history', 'archived'],
         ['group', 'bot', 'group', 'active'],
         ['channel', 'desktop', 'channel', 'active'],
+        ['feishu-channel', 'bot', 'channel', 'active'],
+        ['old-channel', 'feishu', 'channel', 'archived'],
+        ['deleted-channel', 'bot', 'channel', 'deleted'],
         ['deleted', 'bot', 'history', 'deleted'],
         ['task', 'desktop', 'delegation', 'active'],
         ['review', 'review', null, 'active'],
@@ -274,19 +279,49 @@ describe('conversationSearch personal companion chats', () => {
         if (role) db.prepare('INSERT INTO bot_session_links VALUES (?, ?, ?)').run(id, 'bot', role);
       }
       const result = await searchConversations({ query: 'needle', semanticMode: 'keyword' });
-      expect(result.results.map(item => item.session.id).sort()).toEqual(['imported', 'main', 'old', 'task']);
+      const localIds = ['channel', 'feishu-channel', 'imported', 'main', 'old', 'old-channel', 'task'];
+      expect(result.results.map(item => item.session.id).sort()).toEqual(localIds);
       expect(result.results.find(item => item.session.id === 'old')?.session.companion).toEqual({
         id: 'bot', name: 'Melody', role: 'history', readOnly: true,
       });
       expect(result.results.find(item => item.session.id === 'main')?.session.companion?.readOnly).toBe(false);
+      expect(result.results.find(item => item.session.id === 'feishu-channel')?.session.companion).toEqual({
+        id: 'bot', name: 'Melody', role: 'channel', readOnly: true,
+      });
       expect(result.results.find(item => item.session.id === 'task')?.session.companion).toBeUndefined();
-      expect(mocks.searchChatHistoryHybrid.mock.calls[0][0].sessionIds.sort()).toEqual(['imported', 'main', 'old', 'task']);
+      expect(mocks.searchChatHistoryHybrid.mock.calls[0][0].sessionIds.sort()).toEqual(localIds);
       expect(mocks.searchChatHistoryHybrid.mock.calls[0][0].sessionSources).toBeNull();
+      const archived = await searchConversations({ query: 'needle', filters: { status: 'archived' } });
+      expect(archived.results.map(item => item.session.id).sort()).toEqual(['imported', 'old', 'old-channel']);
       const remote = await searchConversations({ query: 'needle' }, { remoteVisibleOnly: true });
       expect(remote.results.map(item => item.session.id)).toEqual(['task']);
       db.exec("UPDATE bot_profiles SET hidden_at = NULL");
       const visibleRemote = await searchConversations({ query: 'needle', filters: { status: 'archived' } }, { remoteVisibleOnly: true });
       expect(visibleRemote.results.map(item => item.session.id).sort()).toEqual(['imported', 'old']);
+
+      // A content-only hit must retain its client id and read-only owner so the
+      // existing result handler can open history at the exact message.
+      db.prepare('INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run('channel-message', 'channel-client', 'feishu-channel', 'assistant', 'contentneedle', 10);
+      mocks.searchChatHistoryHybrid.mockResolvedValue({
+        hits: [{ messageId: 'channel-message', sessionId: 'feishu-channel', role: 'assistant',
+          createdAt: 10, score: 1, ftsRank: 1, vectorRank: null,
+          context: [{ isHit: true, content: 'contentneedle' }] }],
+        sessions: {}, vectorUsed: false, vectorSkipReason: null,
+        nextOffset: null, hasMore: false, poolSize: 1, poolCapped: false,
+      });
+      const content = await searchConversations({ query: 'contentneedle', semanticMode: 'keyword' });
+      expect(content.results).toHaveLength(1);
+      expect(content.results[0]).toMatchObject({
+        matchKind: 'content',
+        session: { id: 'feishu-channel', companion: { role: 'channel', readOnly: true } },
+        contentHit: { messageId: 'channel-message', messageClientId: 'channel-client' },
+      });
+      const remoteContent = await searchConversations({ query: 'contentneedle' }, { remoteVisibleOnly: true });
+      expect(remoteContent.results).toEqual([]);
+      db.exec("UPDATE bot_profiles SET status = 'deleting'");
+      const deleting = await searchConversations({ query: 'needle' });
+      expect(deleting.results.some(item => ['channel', 'feishu-channel', 'old-channel'].includes(item.session.id))).toBe(false);
     } finally {
       clearCurrentDbClient(client);
       db.close();

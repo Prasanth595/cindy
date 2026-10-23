@@ -113,8 +113,11 @@ describe('Bot Profile runtime prompt', () => {
     expect(prompt).toContain('Use a `learned-` name only for a stable reusable working habit');
     expect(prompt).toContain('Respect the user’s memory switch');
     expect(prompt).toContain('without waiting for a request to remember');
-    expect(prompt).toContain('One verified reusable success is enough');
-    expect(prompt).toContain('the host also reviews the completed reply for missed learning');
+    expect(prompt).toContain('only when the user explicitly asks you to keep a method as a Skill');
+    expect(prompt).not.toContain('One verified reusable success is enough');
+    // 回复后复盘已于 2026-10-23 停用，提示词不得再承诺宿主会事后补漏。
+    expect(prompt).not.toContain('the host also reviews the completed reply for missed learning');
+    expect(prompt).toContain('nightly learning may later merge or tidy saved memories');
     expect(prompt).toContain('Do not launch a separate review task yourself');
     expect(prompt).toContain('never for a one-off conclusion');
   });

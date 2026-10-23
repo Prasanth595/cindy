@@ -346,11 +346,11 @@ describe('Chat Server result delivery and refresh', () => {
         buildBotGroupQuoteCard({ messageId: '70000000-0000-4000-8000-000000000009', authorName: 'Someone', authorKind: 'user',
           excerpt: 'nested quote', attachmentCount: 0, attachmentName: null, sequence: 3 }),
         { type: 'text', text: 'Original\n\nwords' }, { type: 'media', mediaId, caption: 'plan.pdf' }], ...overrides });
-    function quoteResponse(original: unknown) {
+    function quoteResponse(original: unknown, responseMode = 'all') {
       return (route: string, method: string) => {
         if (route === `/conversations/${roomId}/messages/${quotedId}`) return original ? { body: original } : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
         if (route.endsWith('/members')) return { body: [botMember] };
-        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [botMember], messages: [], cursor: '1' } };
+        if (route.endsWith('/snapshot')) return { body: { room: { ...room(roomId), response_mode: responseMode }, members: [botMember], messages: [], cursor: '1' } };
         if (route.endsWith('/messages') && method === 'POST') return { body: { id: 'saved-quote' } };
         return response(route);
       };
@@ -373,8 +373,11 @@ describe('Chat Server result delivery and refresh', () => {
       expect(body).not.toHaveProperty('replyToId');
     });
 
-    it.each([['quote', false], ['thread', false], ['quote', true], ['thread', true]] as const)('addresses the server-read bot author through %s (explicit=%s)', async (entry, explicit) => {
-      fixture.handle.mockImplementation(quoteResponse(quoted()));
+    it.each([
+      ['quote', false, 'all'], ['thread', false, 'all'], ['quote', true, 'all'], ['thread', true, 'all'],
+      ['quote', false, 'mentioned'], ['thread', false, 'mentioned'],
+    ] as const)('addresses the server-read bot author through %s (explicit=%s, mode=%s)', async (entry, explicit, responseMode) => {
+      fixture.handle.mockImplementation(quoteResponse(quoted(), responseMode));
       const input = { groupId: roomId, text: 'Please continue', clientId: `reply-author-${entry}`, mentions: { all: false, botIds: explicit ? [botId] : [] } };
       const result = entry === 'thread'
         ? await service.chatServer!.reply({ ...input, rootId: quotedId })
@@ -384,7 +387,7 @@ describe('Chat Server result delivery and refresh', () => {
     });
 
     it.each(['quote', 'thread'] as const)('does not infer a bot recipient from a human-authored %s', async entry => {
-      fixture.handle.mockImplementation(quoteResponse(quoted({ authorId: selfId, author: { kind: 'human', name: 'Bot' } })));
+      fixture.handle.mockImplementation(quoteResponse(quoted({ authorId: selfId, author: { kind: 'human', name: 'Bot' } }), 'mentioned'));
       const input = { groupId: roomId, text: 'Agreed', clientId: `reply-human-${entry}`, mentions: { all: false, botIds: [] } };
       expect(entry === 'thread'
         ? await service.chatServer!.reply({ ...input, rootId: quotedId })
@@ -1625,11 +1628,13 @@ describe('Chat Server result delivery and refresh', () => {
     it.each([
       ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
       ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
-    ] as const)('with an open queue %s', async (_label, status, route) => {
+      ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'mentioned'],
+    ] as const)('with an open queue %s', async (_label, status, route, responseMode: string = 'all') => {
       const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
         creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
-      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] } : undefined);
+      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] }
+        : route.endsWith('/snapshot') ? { body: { room: { ...room(roomId), response_mode: responseMode }, members: members(), messages: [], cursor: '1' } } : undefined);
       expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: `queue-${status}`, mentions: { all: false, botIds: [] } }))
         .toMatchObject({ ok: true });
       await vi.advanceTimersByTimeAsync(0);

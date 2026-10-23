@@ -1007,7 +1007,7 @@ function AskUserQuestionForm({
         {/* Question Row (header chip moved to top header bar above) */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <span className="min-w-0 break-words text-15 font-medium text-[var(--ask-header-text)]">
+            <span className="min-w-0 break-words whitespace-pre-wrap text-15 font-medium text-[var(--ask-header-text)]">
               <QuestionReferenceText text={currentQ?.question ?? ''} onPreviewOpenChange={setReferencePreviewOpen} />
             </span>
             {pageIndicator && (

@@ -53,7 +53,7 @@ vi.mock("@expo/ui/jetpack-compose", () => {
         {children}
       </button>
     ),
-    { Text: Slot, TrailingIcon: Slot },
+    { Text: Slot, TrailingIcon: Slot, LeadingIcon: Slot },
   );
   return {
     Box: () => null,
@@ -79,6 +79,8 @@ vi.mock("@/components/AppText", () => ({
 }));
 vi.mock("@/theme", () => ({
   fontWeight: {},
+  iconSize: {},
+  iconStroke: {},
   lineHeight: {},
   spacing: {},
   typeScale: {},
@@ -127,7 +129,9 @@ it("keeps groups, check states, disabled choices and repeated selections in the 
             ],
           },
           { id: "locked", title: "Locked", disabled: true },
-          { id: "delete", title: "Delete", destructive: true },
+          // 2026-10-23 排队菜单要求动作配图标；由真实菜单入口验证原生图标槽。
+          { id: "delete", title: "Delete", destructive: true,
+            icon: React.forwardRef(() => <i data-icon="delete" />) },
         ]}
       >
         <span>Open</span>
@@ -136,6 +140,7 @@ it("keeps groups, check states, disabled choices and repeated selections in the 
   );
   click("Open");
   expect(container.textContent).toContain("Order");
+  expect(container.querySelector('[data-icon="delete"]')).not.toBeNull();
   click("Time✓");
   click("Time✓");
   click("Locked");

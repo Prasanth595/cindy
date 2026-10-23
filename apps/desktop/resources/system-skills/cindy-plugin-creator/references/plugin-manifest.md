@@ -169,6 +169,7 @@ v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 `
 声明中的 `markRead` 只能省略或为字面量 `true`，`false`、字符串等其它值不合法。
 仅用户主动打开时传入，AI 读取和邻近预加载不传。成功读取后只标记当前邮件，不标记整个会话或草稿。
 Host 派发器会移除普通工具参数中的此标记，仅可信阅读器打开请求可注入；其它明确授权的已读操作工具不受影响。
+用户主动打开链接时，Host 还可注入 `openDraft:true`（普通工具参数不能自行设置）。识别为草稿后，插件解析服务商稳定的草稿 ID，复用已有公共草稿读取/展示流程，并在邮件结果中返回 `draftId`。Host 仅在核实当前任务、插件、邮箱账号与草稿一致后，给客户端返回 `draftCallId`，打开现有编辑器。插件不能自报卡片 ID；后台读取保持只读。旧 Host 不注入此标记，旧插件忽略它，继续支持只读展示。
 标记失败仍返回正文和 `markReadFailed:true`，由 Cindy 显示提示；新增 OAuth scope 不阻断已有授权的操作。
 适配器提供 providerName、draftStorage（server/local）、selectAccount、readDraft、writeDraft。
 通过 present 展示读回草稿，beforeTool 统一 get/send/update/delete，resolveDraft 获取最新位置。

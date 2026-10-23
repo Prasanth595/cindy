@@ -271,6 +271,8 @@ function parsePlan(value: unknown): BotGroupPlanView | null {
   return {
     id: planId,
     status,
+    kind: record.kind === 'talk' || record.kind === 'work' ? record.kind : undefined,
+    canAdd: typeof record.canAdd === 'boolean' ? record.canAdd : undefined,
     organizerBotId: id(record.organizerBotId) ?? '',
     organizerName: text(record.organizerName, MAX_NAME) ?? '',
     steps: steps as BotGroupPlanStepView[],
@@ -362,6 +364,7 @@ export function parseBotGroupChatData(value: unknown): BotGroupRemoteChatData | 
     id: groupId,
     name,
     serverBacked: record.serverBacked === true,
+    singleSpeaker: record.singleSpeaker === true,
     archived: record.archived === true,
     dissolvedAt: text(record.dissolvedAt, 64),
     supportsDissolve: record.supportsDissolve === true,

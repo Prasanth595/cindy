@@ -70,6 +70,8 @@ import {
   type RetransmitEstimate,
 } from './transport.js';
 import { PLUGIN_SYNC_CHANNEL } from './pluginSyncProtocol.js';
+import { DIRECT_LINK_CAPABILITY, DIRECT_LINK_SIGNAL, DirectLinkNegotiator, parseDirectSignal,
+  type DirectRuntime } from './directNegotiation.js';
 import { MAKER_EVENT_BATCH_CHANNEL } from './topics.js';
 import {
   DIRECT_PATH_HIGH_WATER_BYTES,
@@ -247,6 +249,8 @@ export interface DeviceLinkLogger {
 }
 
 export interface DeviceLinkClientOptions {
+  /** Host WebRTC adapter. Both peers must opt in; unavailable/old hosts keep using relay. */
+  directRuntime?: DirectRuntime;
   /** relay 的完整 ws(s) URL,如 wss://host/api/device-link/ws */
   getWsUrl(): string;
   /** 每次(重)连前取新鲜 token;null = 当前无登录态,跳过本轮并按退避重试 */
@@ -867,10 +871,30 @@ export class DeviceLinkClient {
    * 数据面帧；没有通道或通道失效时，同一批帧照常走 relay。
    */
   private readonly directPaths = new Map<string, DeviceLinkDirectChannel>();
+  private readonly directPeerSupport = new Set<string>();
+  private readonly directNegotiator?: DirectLinkNegotiator;
   private peerPathHandlers = new Set<(change: DeviceLinkPeerPathChanged) => void>();
 
   constructor(opts: DeviceLinkClientOptions) {
     this.opts = opts;
+    if (opts.directRuntime) this.directNegotiator = new DirectLinkNegotiator({
+      runtime: opts.directRuntime,
+      identity: () => this.selfDeviceId,
+      streams: (id) => {
+        const peer = this.peerTransport.get(id);
+        return !this.stopped && this.status === 'online' && !isScopedPeer(id)
+          && this.directPeerSupport.has(id) && peer?.reliable && peer.receiveReady
+          && this.isPeerSendReady(peer) && peer.remoteStreamId
+          ? { local: peer.streamId, remote: peer.remoteStreamId } : null;
+      },
+      id: createRequestId,
+      signal: (dst, payload) => {
+        // Signaling is a control plane: never put SDP or close notices onto the direct path.
+        this.sendBestEffortRoutedEnvelope({ v: PROTOCOL_VERSION, kind: 'push', dst,
+          payload: { channel: DIRECT_LINK_SIGNAL, payload } });
+      },
+      attach: (id, channel) => this.attachDirectPath(id, channel),
+    });
     this.invokeResultCache = new InvokeResultCache(opts.transferCodec);
     this.timing = { ...DEFAULT_TIMING, ...opts.timing };
     this.log = opts.logger ?? {
@@ -1636,6 +1660,7 @@ export class DeviceLinkClient {
           ? {
               capabilities: this.mergeCapabilities(payload?.capabilities, [
                 DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT,
+                ...(this.directNegotiator && !isScopedPeer(dst) ? [DIRECT_LINK_CAPABILITY] : []),
                 ...(peerSupportsLinkConfirm
                   ? [DEVICE_LINK_CAPABILITY_RELIABLE_LINK_CONFIRM]
                   : []),
@@ -3065,6 +3090,11 @@ export class DeviceLinkClient {
   private readonly inboundInvokeTransfer = new InboundInvokeTransferOptions();
 
   private emitFrame(env: Envelope): boolean | Promise<boolean> {
+    if (env.kind === 'push' && (env.payload as { channel?: string })?.channel === DIRECT_LINK_SIGNAL) {
+      const signal = parseDirectSignal((env.payload as { payload?: unknown }).payload);
+      if (signal && env.src && !isScopedPeer(env.src)) this.directNegotiator?.receive(env.src, signal);
+      return true;
+    }
     if (env.kind === 'invoke' && env.src && env.id && !isScopedPeer(env.src)) {
       this.inboundInvokeTransfer.record(env.src, env.id, env.payload);
     }
@@ -3502,6 +3532,9 @@ export class DeviceLinkClient {
    * relay、不重建链路、不影响其它设备的链路与在途请求。
    */
   private detachDirectPath(deviceId: string, reason: DeviceLinkDirectCloseReason): void {
+    if (reason === 'link-closed' || reason === 'peer-offline' || reason === 'stopped') {
+      this.directNegotiator?.forget(deviceId);
+    }
     const channel = this.directPaths.get(deviceId);
     if (!channel) return;
     this.directPaths.delete(deviceId);
@@ -3941,6 +3974,10 @@ export class DeviceLinkClient {
   }
 
   private markPeerLinkDown(peer: PeerTransportState): void {
+    for (const [id, state] of this.peerTransport) if (state === peer) {
+      this.detachDirectPath(id, 'link-closed');
+      break;
+    }
     peer.duplicateOpenRepair = null;
     peer.confirmedGapRepair = null;
     if (peer.pendingLinkConfirmation?.timer) {
@@ -4081,6 +4118,12 @@ export class DeviceLinkClient {
     source: 'inbound-open' | 'outbound-accept' = 'inbound-open',
   ): void {
     const peer = this.getPeerTransport(dst);
+    if (this.directNegotiator && !isScopedPeer(dst) && capabilities?.includes(DIRECT_LINK_CAPABILITY)) {
+      this.directPeerSupport.add(dst);
+    } else {
+      this.directPeerSupport.delete(dst);
+      this.directNegotiator?.forget(dst);
+    }
     const reliable = (
       Array.isArray(capabilities)
       && capabilities.includes(DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT)
@@ -4104,6 +4147,8 @@ export class DeviceLinkClient {
       ? remoteBaseSeq!
       : 1;
     if (peer.remoteStreamId !== nextRemoteStreamId) {
+      this.directNegotiator?.forget(dst);
+      this.detachDirectPath(dst, 'link-closed');
       peer.receive.clear();
       peer.duplicateOpenRepair = null;
       peer.confirmedGapRepair = null;
@@ -4137,6 +4182,7 @@ export class DeviceLinkClient {
         DEVICE_LINK_CAPABILITY_RELIABLE_LINK_CONFIRM,
         DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT,
         DEVICE_LINK_CAPABILITY_TRANSPORT_TIMEOUT_CLOSE,
+        ...(this.directNegotiator && !isScopedPeer(dst) ? [DIRECT_LINK_CAPABILITY] : []),
       ]),
       transportStreamId: typeof payload.transportStreamId === 'string'
         ? payload.transportStreamId
@@ -4905,6 +4951,8 @@ export class DeviceLinkClient {
     }
     peer.sendPhase = 'ready';
     peer.pendingLinkConfirmation = null;
+    // Defer until this handshake commits; negotiation never occupies the reliable FIFO.
+    void Promise.resolve().then(() => this.directNegotiator?.ready(dst));
     this.logRecoveryStage(dst, 'send-ready');
     this.cancelTimeoutCloseNotify(dst);
     if (resume.duplicateOpen) {
@@ -5251,6 +5299,9 @@ export class DeviceLinkClient {
   }
 
   private clearPeerTransport(): void {
+    this.directNegotiator?.clear();
+    this.directPeerSupport.clear();
+    this.opts.directRuntime?.suspend?.();
     for (const peer of this.peerTransport.values()) {
       if (peer.retryTimer) clearInterval(peer.retryTimer);
       if (peer.pendingLinkConfirmation?.timer) clearTimeout(peer.pendingLinkConfirmation.timer);

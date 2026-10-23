@@ -139,12 +139,20 @@ describe('plan follow-up and composer state', () => {
   });
 
   // bot-group-chat.md §4.0: only words that will reach the speaking teammate are promised to it.
+  // Legacy work plans still block a new division even when ordinary text stays quiet (unit).
+  it.each(['running', 'waiting'] as const)('keeps the %s work-plan gate without promising unmentioned delivery', status => {
+    const state = botGroupComposerPlanState(plan({ kind: 'work', status }), 'mentioned');
+    expect(state).toMatchObject({ kind: status, botName: '' });
+    expect(isBotGroupDivisionBlocked(state)).toBe(true);
+  });
+
   it.each([
-    ['who may add to it', 'running', true, { kind: 'running', botName: 'A', talk: true }],
-    ['who cannot add to it', 'running', false, null],
-    ['waiting for 继续', 'waiting', true, null],
-  ] as const)('gives a queue %s the matching composer state', (_label, status, canAdd, expected) => {
-    expect(botGroupComposerPlanState(plan({ kind: 'talk', status, canAdd }))).toEqual(expected);
+    ['who may add to it', 'running', true, 'all', { kind: 'running', botName: 'A', talk: true }],
+    ['who cannot add to it', 'running', false, 'all', null],
+    ['waiting for 继续', 'waiting', true, 'all', null],
+    ['requiring an explicit mention', 'running', true, 'mentioned', null],
+  ] as const)('gives a queue %s the matching composer state', (_label, status, canAdd, replyMode, expected) => {
+    expect(botGroupComposerPlanState(plan({ kind: 'talk', status, canAdd }), replyMode)).toEqual(expected);
   });
 });
 

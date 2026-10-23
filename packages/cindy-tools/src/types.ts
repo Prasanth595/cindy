@@ -273,12 +273,16 @@ export type CindyForgeInstallResult =
       name: string;
       version: string;
       enabled: boolean;
+      instanceId?: string;
+      namespace?: string | null;
       note: string;
     }
   | {
       ok: false;
       errorCode: CindyForgePackErrorCode | (string & {});
       message: string;
+      targets?: Array<{ instanceId: string; name: string; namespace: string | null; version: string; enabled: boolean }>;
+      copyNamespace?: string | null;
     };
 
 /** ghost_forge_publish 立即返回时的失败分类。传输开始后的失败走 status.errorCode。 */
@@ -492,7 +496,7 @@ export interface CindyGhostsMcpDeps {
    * 重新校验并打包源码目录，然后把这次产生的确切包安装或原位更新。
    * 只有显式调用本工具才安装；forgePack 本身始终保持纯打包。
    */
-  forgeInstall(request: { dir: string; iconSource?: string }): Promise<CindyForgeInstallResult>;
+  forgeInstall(request: { dir: string; iconSource?: string; targetInstanceId?: string; installCopy?: boolean; namespace?: string | null }): Promise<CindyForgeInstallResult>;
   /**
    * 消费 forgePack(intent=publish) 签发的一次性票据，把该次打包的确切字节
    * 提交到当前组织发布。立即返回 transferId / uploadId,传输在后台跑。

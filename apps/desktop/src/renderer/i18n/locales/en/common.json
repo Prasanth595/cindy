@@ -5,7 +5,9 @@
     "title": "Mail",
     "openMailbox": "Open in mailbox",
     "loading": "Loading email…",
-    "failed": "Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.",
+    "failed": "Could not load this email. Retry or open it in your mailbox.",
+    "unavailable": "No email plugin is available. You can open this email in your mailbox.",
+    "notReady": "The email plugin is not set up. Connect your mailbox or open the original link.",
     "retry": "Retry",
     "to": "To",
     "cc": "Cc",
@@ -20,7 +22,9 @@
     "collapseMessage": "Collapse email from {{from}}",
     "conversationFailed": "Other emails in this conversation could not be loaded.",
     "messageCount": "{{count}} emails",
-    "showMessages": "Show {{count}} emails"
+    "showMessages": "Show {{count}} emails",
+    "choosePlugin": "Choose a plugin to open this email.",
+    "personalPlugin": "Personal plugin"
   },
   "taskActionConfirmation": {
     "title": "Confirm session action",
@@ -978,6 +982,9 @@
     "handoffWindow": "Input handoff · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "This SSH task cannot switch Harness. Choose a model in its current Harness, or create a new SSH task with the Harness you need.",
+    "MODEL_SELECTION_UNAVAILABLE": "The selected model is no longer available from its provider. Check the connection in Settings or choose another available model.",
+    "HARNESS_SWITCH_NOT_READY": "The Harness switch is not ready. Check the error details and retry after the Harness is ready.",
     "DEVICE_LINK_BUSY": "The remote computer is busy. Please try again shortly.",
     "INVALID_PARAMS": "Invalid input. Please check and try again.",
     "PRECONDITION_FAILED": "This action is unavailable in the current state. Please try again.",
@@ -1784,6 +1791,16 @@
           "description": "Resize text only in code blocks, change comparisons, and editors. Inline code, status numbers, badges, and path labels keep their size.",
           "aria": "Adjust code font size"
         },
+        "terminalFamily": {
+          "label": "Terminal font",
+          "description": "Used only by the built-in terminal. A monospace font is recommended.",
+          "aria": "Select terminal font"
+        },
+        "terminalSize": {
+          "label": "Terminal font size",
+          "description": "Adjust the text size in the built-in terminal.",
+          "aria": "Adjust terminal font size"
+        },
         "presetsUi": {
           "default": "Inter (Default)",
           "codexStyle": "Codex style",
@@ -1793,8 +1810,12 @@
           "default": "Codex style (Default)",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "Monospace (Default)"
+        },
         "previewSamples": {
-          "ui": "The quick brown fox jumps over the lazy dog ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "The quick brown fox jumps over the lazy dog ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"Terminal font preview\"\nTerminal font preview\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
@@ -3375,6 +3396,7 @@
         "refreshingAria": "Refreshing model list…",
         "refreshDone": "Model list refreshed",
         "refreshAdded": "Found {{count}} new models",
+        "refreshSpeechAdded": "Models updated; added 1 suggested speech model",
         "refreshNoNew": "Model list is up to date — nothing new",
         "refreshFailed": "Model list couldn’t be refreshed — try again later",
         "refreshFetchDisabled": "Remote model catalog fetching is disabled — refresh skipped",
@@ -6666,7 +6688,7 @@
         "installMeta": "Version {{version}} · {{source}}",
         "updateMeta": "Version {{from}} → {{to}} · {{source}}",
         "installDescription": "Nothing is installed until you confirm. The plugin is enabled right after installing, and you can disable or uninstall it anytime on the Plugins page.",
-        "updateDescription": "The new version needs more permissions, so it won’t be installed until you confirm. The current version keeps working in the meantime.",
+        "updateDescription": "The update starts only after you confirm. The current version remains available until then.",
         "grantsTitle": "After installing it will have:",
         "noPermissions": "This plugin declares no additional permissions.",
         "addedTitle": "New or changed permissions:",
@@ -6683,7 +6705,11 @@
         "confirmInstall": "Install",
         "confirmUpdate": "Update",
         "cancel": "Cancel",
-        "updateNeedsConsent": "New permissions need confirmation"
+        "updateNeedsConsent": "New permissions need confirmation",
+        "targetIdentity": "Install for: {{name}}",
+        "personalTarget": "Personal",
+        "sourceChanged": "This update switches to a local source. Existing accounts and data are archived separately. Connect your accounts again after updating.",
+        "otherCopies": "There are {{count}} other copies of this plugin. They will stay installed and keep their current enabled state. A separate copy needs its own account connections."
       },
       "trust": {
         "official": "Official Cindy plugin",
@@ -8842,6 +8868,23 @@
       "preparingAria": "Preparing newer version, please wait",
       "confirmTitle": "A task is still running",
       "confirmBusyHint": "Restarting will interrupt it",
+      "confirmBusyActivities": "Restarting will interrupt {{activities}}.",
+      "activityJoiner": ", ",
+      "activityJoinerPair": " and ",
+      "activityJoinerLast": ", and ",
+      "activityNameJoiner": ", ",
+      "activityNameJoinerPair": " and ",
+      "activityNameJoinerLast": ", and ",
+      "activity": {
+        "companion": "a teammate's reply",
+        "companionOne": "{{names}}'s reply",
+        "companionOther": "{{names}}'s replies",
+        "conversation": "a chat in progress",
+        "backgroundCommand": "a background command",
+        "scheduledTask": "a scheduled task",
+        "generation": "a generation",
+        "subtask": "a subtask"
+      },
       "confirmButton": "Restart App Anyway",
       "cancel": "Cancel",
       "confirmTooltip": "A task is still running — restarting will interrupt it",
@@ -9790,7 +9833,8 @@
           "archived": "This group is archived. History is still available.",
           "noneHint": "Only the companion’s owner can ask it to respond in this group.",
           "companionPermissions": "Companion permissions",
-          "configureCapabilities": "Tools and access settings"
+          "configureCapabilities": "Tools and access settings",
+          "capabilityScope": "These are {{name}}’s own tools and access, not settings for this group only."
         }
       },
       "lifecycle": {
@@ -10266,7 +10310,6 @@
       "openSettings": "Voice settings",
       "startConversation": "Start voice conversation",
       "settingsHint": "Choose this companion’s speech model and voice, then start a voice conversation from the message composer.",
-      "incompleteSettings": "Choose a speech API and voice to save automatically.",
       "previewNeedsChat": "Start a conversation with this companion to preview a voice.",
       "voiceId": "Voice ID",
       "manualVoice": "Enter a voice ID",
@@ -11719,6 +11762,7 @@
       "imageCopied": "Image copied",
       "copyFailed": "Copy failed",
       "openFolderFailed": "Failed to open folder",
+      "longImagePreview": "Long image · Click to view full image",
       "copyImage": "Copy image",
       "revealImage": "Reveal image in folder",
       "revealImageSidebar": "Reveal in file browser",
@@ -12305,6 +12349,9 @@
       "daemonNotReady": "{{manager}} upgraded, but the remote daemon hasn't started yet — please resend your message manually"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "This SSH task cannot switch Harness. Choose a model in its current Harness, or create a new SSH task with the Harness you need.",
+      "MODEL_SELECTION_UNAVAILABLE": "The selected model is no longer available from its provider. Check the connection in Settings or choose another available model.",
+      "HARNESS_SWITCH_NOT_READY": "The Harness switch is not ready. Check the error details and retry after the Harness is ready.",
       "DEVICE_LINK_BUSY": "The remote computer is busy. Please try again shortly.",
       "REMOTE_DAEMON_CLOSED": "The remote connection dropped, possibly during an update. This turn has ended. Send the message again.",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "Local file/image attachments aren't accessible in remote sessions. Paste the content directly instead.",
@@ -12336,6 +12383,7 @@
       "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
       "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
       "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t granted you remote access to this provider or the selected model. Ask its owner to adjust access in Remote & Sharing, or pick another model.",
+      "REMOTE_AGENT_FORK_FAILED": "The computer running the Agent couldn’t start a new session from here. Try again, or try a different message.",
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
@@ -12893,10 +12941,10 @@
         "title": "Archive session",
         "description": "Archive this session? It will be removed from the list.",
         "dirtyWorktreeWarning": "This session's worktree has uncommitted changes; they will be saved as a git snapshot before archiving and can be restored from the session later.",
-        "scheduleWarning_one": "The automation {{names}} linked to this session will be paused after archiving.",
-        "scheduleWarning_other": "The automations {{names}} linked to this session will be paused after archiving.",
-        "scheduleWarningMany_one": "{{count}} of them has linked automations, which will be paused after archiving.",
-        "scheduleWarningMany_other": "{{count}} of them have linked automations, which will be paused after archiving.",
+        "scheduleWarning_one": "The linked automation {{names}} will keep running and restore this session.",
+        "scheduleWarning_other": "The linked automations {{names}} will keep running and restore this session.",
+        "scheduleWarningMany_one": "{{count}} of these sessions has linked automations that will restore it when they run.",
+        "scheduleWarningMany_other": "{{count}} of these sessions have linked automations that will restore them when they run.",
         "scheduleName": "“{{name}}”",
         "scheduleNameSeparator": ", ",
         "confirm": "Confirm",
@@ -12999,6 +13047,7 @@
         "moveToProjectRunningBlocked": "This session is running. Move it after it finishes.",
         "moveToProjectAttachedBlocked": "This session is being controlled remotely. Move it after control ends.",
         "moveToProjectRemoteUnsupported": "Moving remote sessions is not supported yet",
+        "moveToProjectWorktreeBlocked": "This task's working directory is a worktree, so it can't be moved to another project yet",
         "openInNewWindow": "Open in new window",
         "exportShare": "Export session…",
         "exportHtml": "Export to HTML…",
@@ -13739,7 +13788,7 @@
         "card": {
           "open": "Open session",
           "unbind": "Unbind",
-          "persistentNote": "Recreates and rebinds automatically if the session is archived",
+          "persistentNote": "If archived, the same session is restored on the next run",
           "deleted": "Bound session deleted",
           "deletedPersistentNote": "Creates and binds a new session on the next run",
           "fallbackTitle": "Session {{id}}"
@@ -15324,8 +15373,8 @@
       "unread": "Unread update",
       "worker": "Worker",
       "workersHeader": "Workers",
-      "workerCountSummary_one": "{{totalCount}} worker · {{activeCount}} active",
-      "workerCountSummary_other": "{{totalCount}} workers · {{activeCount}} active",
+      "workerCountSummary_one": "{{totalCount}} worker · {{activeCount}} running",
+      "workerCountSummary_other": "{{totalCount}} workers · {{activeCount}} running",
       "statusAria": "status {{status}}",
       "archiveWorkerAria": "Archive worker {{name}}",
       "createWorker": "Create new worker",
@@ -16086,6 +16135,61 @@
     "builtinTodoCheck": {
       "name": "Daily todo check (built-in)",
       "hint": "Looks for new todos in connected sources on weekdays at 9:00 and stays quiet when there is nothing new. Turned on or off from the glance; it can only be paused or resumed."
+    },
+    "builtinNightlyLearning": {
+      "name": "Nightly learning (built-in)",
+      "title": "Nightly learning",
+      "hint": "Every night at 3:30, reviews your conversations: tidies memories and saves approaches that keep coming up as skills. Skipped without calling a model when there’s nothing new.",
+      "hintWeekly": "Mondays at 3:30, reviews the week’s conversations: tidies memories and saves approaches that keep coming up as skills. Skipped without calling a model when there’s nothing new."
+    },
+    "nightly": {
+      "switchLabel": "Review on schedule",
+      "paused": "Paused. Conversations are still counted; reviews resume on schedule once you switch it back on.",
+      "running": "Reviewing…",
+      "memoryOff": "Memory is off, so only skills are reviewed.",
+      "pending": "To review",
+      "pendingTurns_one": "{{count}} exchange",
+      "pendingTurns_other": "{{count}} exchanges",
+      "pendingNone": "Nothing new; the next run will be skipped",
+      "last": "Last run",
+      "lastNever": "Not run yet",
+      "lastFailed": "Didn’t finish; it will try again next time",
+      "lastLearned_one": "{{count}} change",
+      "lastLearned_other": "{{count}} changes",
+      "nothing": "Nothing to change",
+      "viewHistory": "View history",
+      "notHere": "Nightly learning runs only on the teammate’s main computer.",
+      "switchHint": "Skipped without calling a model when there’s nothing new",
+      "frequency": "Frequency",
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "dailyHint": "Every day at 3:30",
+      "weeklyHint": "Mondays at 3:30",
+      "runNow": "Review now",
+      "history": "History",
+      "empty": "Nothing reviewed yet. Once there are new conversations, the first review runs on schedule.",
+      "manual": "Run by you",
+      "readTurns_one": "Read {{count}} exchange",
+      "readTurns_other": "Read {{count}} exchanges",
+      "undone": "Undone",
+      "undo": "Undo",
+      "redo": "Restore",
+      "watching": "Approaches being watched",
+      "watchingHint": "Approaches seen only once wait here and aren’t loaded. They become skills only if something similar comes up again.",
+      "promote": "Make it a skill",
+      "decline": "Don’t learn",
+      "changedSince": "This item was changed afterwards, so it can’t be undone",
+      "failed": "Couldn’t finish. Try again.",
+      "item": {
+        "memoryCreated": "Remembered “{{title}}”",
+        "memoryUpdated": "Tidied memory “{{title}}”",
+        "memoryDeleted": "Deleted memory “{{title}}”",
+        "memoryMerged": "Merged memory “{{title}}” into “{{into}}”",
+        "skillCreated": "Learned skill “{{title}}”",
+        "skillUpdated": "Updated skill “{{title}}”",
+        "skillDisabled": "Disabled skill “{{title}}”",
+        "skillMerged": "Merged skill “{{title}}” into “{{into}}” and disabled it"
+      }
     }
   },
   "cindyMakeDoctor": {
@@ -17097,6 +17201,10 @@
     "exitFullscreen": "Exit Fullscreen"
   },
   "richAnswer": {
+    "send": "Send Message",
+    "sending": "Sending…",
+    "sent": "Submitted",
+    "sendFailed": "The message was not submitted. Your entries are still here.",
     "playVideo": "Play video",
     "openVideoSource": "Open original video",
     "calculationUnavailable": "Unable to calculate this value.",
@@ -17110,5 +17218,12 @@
     "taskSource": "[Task source] A companion started this task.",
     "taskId": "Task ID:",
     "contextReferences": "Context references:"
+  },
+  "subscriptionFastPolicy": {
+    "label": "Allow Fast",
+    "providerHint": "When off, this subscription account uses standard speed for your own and shared tasks, including Ultrafast.",
+    "groupHint": "When off, all tasks routed through this group use standard speed, including Ultrafast.",
+    "pending": "Some computers have not confirmed the setting. Keep them connected and update group computers that do not support this setting.",
+    "saveFailed": "The setting may be saved, but some running tasks have not confirmed standard speed. Check the connection and retry."
   }
 }

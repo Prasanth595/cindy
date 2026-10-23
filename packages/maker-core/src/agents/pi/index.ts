@@ -892,6 +892,23 @@ function piMaxTokensFallback(contextWindow: number | undefined): number {
   return contextWindow && contextWindow > 0 ? Math.min(contextWindow, 65_536) : 65_536;
 }
 
+/**
+ * 从候选档位里挑第一个**当前模型支持**的；快照未声明（undefined）时按旧行为接受。
+ *
+ * 重新开启思考时不能直接用记忆档位：用户先在 `high` 关闭、再不带到档位切到不支持
+ * `high` 的模型后，记忆值仍会下发成不被支持的档，开启失败或继续对不上。
+ */
+export function pickSupportedEffort(
+  snapshot: readonly Effort[] | undefined,
+  ...candidates: readonly (Effort | null | undefined)[]
+): Effort | null {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (snapshot === undefined || snapshot.includes(candidate)) return candidate;
+  }
+  return null;
+}
+
 /** 从本次启动写入 models.json 的 native model 快照提取可用 effort。 */
 function startupEffortsOfNativeModel(model: PiNativeModelSpec | undefined): readonly Effort[] | undefined {
   if (!model) return undefined;
@@ -4146,6 +4163,10 @@ export class PiAgent extends BaseAgent {
     };
     let activeEffortSnapshot = initialEffortSnapshot;
     let mutableEffort: Effort | null = startupEffort ?? null;
+    // 用户明确关掉思考（setThinkingEnabled(false) / 切模显式 thinkingEnabled:false /
+    // 启动 opts.thinkingEnabled === false）的意图标记：无载体切模不得据此悄悄重新开启。
+    // 只跟随显式意图变化；目标不支持思考而下发 off 不算用户意图，不置位。
+    let thinkingExplicitlyOff = false;
     let currentAutoReviewIntent: AutoReviewUserIntent = '';
     let autoReviewIntentInitialized = false;
     const autoReviewActionContext = createAutoReviewActionContext();
@@ -4713,7 +4734,7 @@ export class PiAgent extends BaseAgent {
       }
       const requestId = `pi-subagent:${key}`;
       const turnPolicyForcePrompt = (() => {
-        if (!activeTurnPermissionPolicy) return false;
+        if (!activeTurnPermissionPolicy || permissionMode === 'bypassPermissions') return false;
         try {
           return activeTurnPermissionPolicy.forceConfirmToolCall(toolName, input) === true;
         } catch (error) {
@@ -4751,7 +4772,7 @@ export class PiAgent extends BaseAgent {
           unregister = registerPendingPrompt(requestId, {
             // control-plane writes must keep forcePrompt across a Full Access
             // hot-switch; otherwise dismissAllPendingPrompts would allow them.
-            forcePrompt: options.forcePrompt || adopted || turnPolicyForcePrompt,
+            forcePrompt: options.forcePrompt || adopted,
             ...(options.unavailableHandoff ? { unavailableHandoff: true } : {}),
             // Durable child: losing the surface parks the question.
             deferWhenSurfaceLost: true,
@@ -4822,7 +4843,7 @@ export class PiAgent extends BaseAgent {
         if (controlPlaneWrite) return requestUserDecision({ forcePrompt: true });
         if (adopted && permissionMode !== 'auto') return requestUserDecision({ forcePrompt: true });
         if (permissionMode === 'bypassPermissions') {
-          return turnPolicyForcePrompt ? 'system-deny' : 'allow';
+          return 'allow';
         }
         const mcpTarget = resolveMcpToolTarget(toolName, registeredMcpServerNames);
         const mcpPolicy = (() => {
@@ -4852,7 +4873,7 @@ export class PiAgent extends BaseAgent {
         const hostAutoApprove = mcpPolicy === 'auto-approve' && !turnPolicyForcePrompt && !adopted;
         const reviewPermissionMode = permissionMode;
         if (reviewPermissionMode !== 'auto' && !hostAutoApprove) {
-          return requestUserDecision({ forcePrompt: turnPolicyForcePrompt || mcpPolicy === 'prompt-each-time' });
+          return requestUserDecision({ forcePrompt: mcpPolicy === 'prompt-each-time' });
         }
         checkingAutomaticPermission = true;
         try {
@@ -6399,6 +6420,11 @@ export class PiAgent extends BaseAgent {
       }
 
       if (opts.thinkingEnabled === false) {
+        // 启动/恢复侧记录的是宿主带来的用户意图（本机偏好镜像），不是会被用户看到的交互
+        // 操作：这次下发即使被拒（只告警），标记也必须承认该意图——否则恢复失败一次就
+        // 永久丢失「明确关闭」，之后无载体切模会按会话档位重开（2026-10-06 Greptile P1）。
+        // 与之相反，setThinkingEnabled 是交互开关、失败会抛给用户，标记只在成功后更新。
+        thinkingExplicitlyOff = true;
         const resp = await proc.request({
           type: 'set_thinking_level',
           level: 'off',
@@ -7024,9 +7050,47 @@ export class PiAgent extends BaseAgent {
       pendingCurrentDescriptorRefresh = true;
       if (nextGateway) retainedLiveGatewayModel = nextDescriptor ?? previousGatewayModel;
     };
+    /**
+     * 应用思考开关（调用方必须已在 `runExclusivePiRpc` 队列内）。
+     *
+     * 打开时回到会话期望档位，但只限**当前模型支持的档**：用户先在 `high` 关闭思考、
+     * 再不带档位切到不支持 `high` 的模型时 `mutableEffort` 仍是 `high`，直接下发会被
+     * Pi 拒绕（开启失败）或与当前能力对不上。
+     */
+    const applyThinkingEnabled = async (enabled: boolean): Promise<void> => {
+      // 目标模型不支持思考（快照为空）时没有什么可开：下发 off 并**保留**用户原来的
+      // 档位记忆。否则同路由重选这类模型会发 xhigh、成功后还把 mutableEffort 改成
+      // xhigh，用户之后切回支持 xhigh 的模型就被静默改了档。
+      const thinkingUnsupported = activeEffortSnapshot !== undefined && activeEffortSnapshot.length === 0;
+      const wanted = enabled && !thinkingUnsupported;
+      const remembered = pickSupportedEffort(activeEffortSnapshot, mutableEffort, startupEffort);
+      // 打开时回到会话当前的期望档位，而不是固定 xhigh：显式开关不该把用户选好的
+      // max/medium 抹平——否则紧随其后的切模按 mutableEffort 归一化时又会把它降档。
+      // 没有可用期望档位时才回到历史默认 xhigh。
+      const targetEffort = wanted ? remembered : null;
+      const level = targetEffort
+        ? effortToPiThinkingLevel(targetEffort)
+        : wanted
+          ? 'xhigh'
+          : 'off';
+      const resp = await proc.request({
+        type: 'set_thinking_level',
+        level,
+      });
+      if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
+      // 意图标记只在 RPC 成功后更新：失败时 Pi 仍是旧状态，提前改标记会让之后的
+      // 无载体切模误判（2026-10-06 Greptile P1：已报错的操作在之后意外生效）。
+      // 标记跟随**用户意图**（enabled）而非实际下发的档位：目标模型不支持思考时确实
+      // 发了 off，但那是能力所致，不能被记成「用户主动关闭」——否则之后不带档位切回
+      // 推理模型会跳过档位恢复，思考再也打不开。
+      thinkingExplicitlyOff = !enabled;
+      // 只在真的打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
+      // 再打开应回到原档位，而不是回落到启动时的档位。
+      if (wanted) mutableEffort = targetEffort ?? 'xhigh';
+    };
     const switchModel = async (
       model: string,
-      setOpts?: { providerId?: string | null; effort?: Effort },
+      setOpts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean },
     ): Promise<void> => {
       const requestedProviderId = setOpts && Object.hasOwn(setOpts, 'providerId')
         ? setOpts.providerId
@@ -7096,6 +7160,12 @@ export class PiAgent extends BaseAgent {
       if (routeUnchanged && preview.action === 'hot' && !pendingCurrentDescriptorRefresh) {
         if (!(await writeSubagentRuntimeFile({ model: wireModel, provider }))) {
           deps.logger.warn('pi: same-route setModel could not refresh subagent snapshot', { model, provider });
+        }
+        // 同路由也可能带显式的思考开关（会话当前关思考、调用方重选同一模型并传
+        // thinkingEnabled:true）：这里直接返回会让调用方以为开启成功，Pi 实际仍关闭，
+        // 发送结算随后还会把这份选择清掉。
+        if (typeof setOpts?.thinkingEnabled === 'boolean') {
+          await applyThinkingEnabled(setOpts.thinkingEnabled);
         }
         return;
       }
@@ -7217,6 +7287,18 @@ export class PiAgent extends BaseAgent {
       mutablePiProviderId = provider;
       activeEffortSnapshot = nextEffortSnapshot;
       mutableProviderId = effectiveProviderId;
+      const explicitThinking =
+        setOpts && typeof setOpts.thinkingEnabled === 'boolean' ? setOpts.thinkingEnabled : undefined;
+      // 用户最新显式意图是「关」（本次载体，或此前成功关掉的标记/启动声明）：
+      // 下面 #5733 的档位恢复不得运行——它会把用户已关掉的思考复活，
+      // 正是 "keeps thinking off after a carrier-less switch" 系列用例守的回归。
+      const keepThinkingOff = explicitThinking === false
+        || (explicitThinking === undefined && thinkingExplicitlyOff);
+      // 思考被关（本次载体或既有标记）时档位不下发——发了会把思考重新打开——但用户
+      // 本次 selection 里显式选的档位是独立决定，仍要记入期望档位：之后再打开思考时
+      // setThinkingEnabled(true) 应回到用户选的档位，而不是更早的旧值
+      // （2026-10-18 Greptile P1：high + 载体 low/off → 重开后应发 low 而非 high）。
+      if (setOpts?.effort && keepThinkingOff) mutableEffort = setOpts.effort;
       // pi CLI 在 set_model 后会把思考档位重置成新模型自己的默认（转录实证：声明了档位的
       // 模型落到 defaultEffort 如 high，未声明的落到 low/medium），而本函数原本只在
       // setOpts.effort 上做校验、从不下发。不在这里把目标档位重新下发的话，每次切模型
@@ -7224,6 +7306,7 @@ export class PiAgent extends BaseAgent {
       // （mutableEffort）；新模型不支持（含未声明档位）时保持 pi 默认，与能力收敛一致。
       const restoredEffort = setOpts?.effort ?? mutableEffort;
       if (
+        !keepThinkingOff &&
         restoredEffort &&
         nextEffortSnapshot && nextEffortSnapshot.length > 0 &&
         nextEffortSnapshot.includes(restoredEffort)
@@ -7266,6 +7349,131 @@ export class PiAgent extends BaseAgent {
           'pi: model switch confirmed but the subagent routing snapshot stayed pending; ' +
             'subagent delegation stays disabled for this session (fail-closed)',
         );
+      }
+      // Pi 的 set_model 不会重置 thinking level：上一个模型留下的 off / 旧档位会原样
+      // 继承给目标模型（典型：从不支持思考的模型切到推理模型后，模型只能把推理写进
+      // 正文）。桌面端在 selection 里携带目标模型的思考开关意图；这里在路由已确认后
+      // 按目标模型的启动快照把档位归一化下发一次，不再让档位跨模型漂移。
+      //
+      // 目标是否支持思考由启动快照判定（models.json 生成口径：gateway 看 efforts
+      // 非空、native 看 reasoning），空档位 ⟺ 不思考——这类模型明确发 off，避免把
+      // 上一个模型的档位带过去（Pi 会把 thinkingLevelMap 里的 null 当成关闭
+      // reasoning）。快照未知时不猜、不动 Pi 现有档位。
+      //
+      // 载体缺失（scheduler / IM 回滚 / 插件任务 / 会话恢复等旁路入口不带
+      // thinkingEnabled）同样必须收敛：目标支持思考时按会话档位重新下发一次。历史上
+      // 「没有意图就不动」把这类切换留成了静默失效——2026-10-06 实报的 Orca lead 切到
+      // commandcode/deepseek-v4.1-flash 后 usage.reasoning 归零、推理整段写进正文，直到
+      // 用户手动改一次档位才恢复；Pi 侧没有任何 set_thinking_level 记录。载体缺失只影响
+      // 「开」：目标空档位时保持不动（Pi 会把 null 档位当关闭），显式 false 仍明确发 off。
+      //
+      // 失败只告警、不抛：模型切换已经成功，抛出会让上层回滚 route / 终止会话，反而
+      // 制造「Pi 已切模、宿主认为没切」的分裂。用户可在 UI 上重新选择。
+      {
+        const requestedEffort = setOpts?.effort ?? mutableEffort ?? startupEffort ?? null;
+        const nativeTarget = provider !== PI_PROVIDER_ID
+          ? nativeProviderById.get(provider)?.models.find(
+              (candidate) => candidate.id === resolveNativeModelId(provider, model),
+            )
+          : undefined;
+        const targetReasoning = provider !== PI_PROVIDER_ID
+          ? nativeTarget?.reasoning === true
+          : nextEffortSnapshot === undefined
+            ? undefined
+            : nextEffortSnapshot.length > 0;
+        let level: string | null = null;
+        let appliedEffort: Effort | null = null;
+        if (explicitThinking === false || (explicitThinking === true && targetReasoning === false)) {
+          level = 'off';
+        } else if (explicitThinking === undefined && thinkingExplicitlyOff) {
+          // 用户明确关过思考：无载体切换保留这个关闭状态，不得悄悄重新开启（即使只是
+          // 重下发同一模型路由）。有能力的旁路入口应补 thinking 载体；这里只保证不违背
+          // 用户意图，与 2026-10-06 Greptile P1 同口径。
+          deps.logger.info('pi: thinking kept off after a model switch without an intent carrier', {
+            model,
+            provider,
+          });
+        } else if (targetReasoning === true) {
+          const usable = nextEffortSnapshot && nextEffortSnapshot.length > 0
+            ? nextEffortSnapshot
+            : undefined;
+          // 用户明确要开思考、目标也支持：即使这次 selection 没带档位（BYOM/无 effort
+          // 目录的会话），也要按启动快照收敛——不能什么都不发，否则上一个模型的 off 会
+          // 原样留下。口径与 reconcilePiStartupEffort 一致：优先目录默认档，否则首档。
+          if (usable) {
+            const preferredDefault =
+              this.deps.resolvePiRuntimeModelDescriptor?.(mutableProviderId ?? null, model)
+                ?.defaultEffort ?? null;
+            const reconciled =
+              requestedEffort && usable.includes(requestedEffort)
+                ? requestedEffort
+                : preferredDefault && usable.includes(preferredDefault)
+                  ? preferredDefault
+                  : usable[0];
+            if (requestedEffort && !usable.includes(requestedEffort)) {
+              // 启动快照（本次 spawn 冻结）与活跃目录可能漂移：此时 Pi 实际跑的档位与
+              // main 持久化/UI 显示的档位不一致，留一条日志便于排障。
+              deps.logger.warn('pi: thinking effort reconciled after model switch', {
+                model,
+                provider,
+                requestedEffort,
+                appliedEffort: reconciled,
+              });
+            } else if (!requestedEffort) {
+              // 会话本来就没期望档位（BYOM/无 effort 目录）：同样要留下观察点，
+              // 否则 DB/投影显示 null 而 Pi 实跑默认档，漂移无从发现。
+              deps.logger.info('pi: thinking level defaulted to the target snapshot after model switch', {
+                model,
+                provider,
+                appliedEffort: reconciled,
+              });
+            } else if (explicitThinking === undefined) {
+              // 旁路入口（无 intent 载体）也要留痕：这类收敛是新补的能力，出现异常时
+              // 需要能把「谁把档位改回来了」和用户主动切档位区分开。
+              deps.logger.info('pi: thinking level re-applied after a model switch without an intent carrier', {
+                model,
+                provider,
+                appliedEffort: reconciled,
+              });
+            }
+            appliedEffort = reconciled;
+            level = effortToPiThinkingLevel(reconciled);
+          }
+        }
+        if (level) {
+          // 拒绝可能是瞬时（例如 Pi 正在处理前一条档位请求）：重试一次再放弃。
+          // 仍失败只告警：模型路由已经确认，抛出会让上层回滚它。
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              const resp = await proc.request({ type: 'set_thinking_level', level });
+              if (resp.success) {
+                if (appliedEffort) mutableEffort = appliedEffort;
+                // 意图标记只在 RPC 成功后更新：显式意图才算用户意图（显式 true+目标
+                // 不支持思考而下发的 off 不是用户意图，标记仍为开）；失败沿用原标记。
+                if (explicitThinking === true) thinkingExplicitlyOff = false;
+                else if (explicitThinking === false) thinkingExplicitlyOff = true;
+                break;
+              }
+              if (attempt === 1) {
+                deps.logger.warn('pi: set_thinking_level rejected after model switch', {
+                  model,
+                  provider,
+                  level,
+                  error: resp.error,
+                });
+              }
+            } catch (err) {
+              if (attempt === 1) {
+                deps.logger.warn('pi: set_thinking_level failed after model switch', {
+                  model,
+                  provider,
+                  level,
+                  message: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+          }
+        }
       }
     };
 
@@ -7980,7 +8188,7 @@ export class PiAgent extends BaseAgent {
         return (window ?? undefined) !== ctx.workingContextWindow;
       },
 
-      async setModel(model: string, setOpts?: { providerId?: string | null; effort?: Effort }): Promise<void> {
+      async setModel(model: string, setOpts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean }): Promise<void> {
         if (reviewMode) return;
         // 会话级串行闸:整段"写待切换快照 → set_model RPC → 落定/回滚"必须是一个临界区。
         // 并发或连点切换(本地 + 远程控制端同时切)若交错,A 写 pending、B 写 pending、A 落定 B 的
@@ -7996,7 +8204,8 @@ export class PiAgent extends BaseAgent {
       },
 
       async setFastMode(enabled: boolean | 'ultrafast'): Promise<void> {
-        if (reviewMode) return;
+        if (reviewMode && opts.fastModePolicy?.isAllowed() !== false) return;
+        if (opts.fastModePolicy?.isAllowed() === false) enabled = false;
         if (enabled === 'ultrafast') throw new Error('Ultrafast requires the Codex runtime');
         updateRequestPrefs(enabled);
       },
@@ -8019,11 +8228,11 @@ export class PiAgent extends BaseAgent {
 
       async setThinkingEnabled(enabled: boolean): Promise<void> {
         if (reviewMode) return;
-        const resp = await proc.request({
-          type: 'set_thinking_level',
-          level: enabled ? 'xhigh' : 'off',
-        });
-        if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
+        // 整个操作（读档位、RPC、标记与档位记忆更新）必须与 setModel 同队列串行：
+        // 切模进行中用户关闭思考时，若这里不排队直接发，切模收尾仍会按更早的
+        // thinkingEnabled:true 载体重新下发开启并清掉关闭标记——用户看到关闭成功、
+        // 实际被覆盖（2026-10-17 Greptile P1）。串行后意图按时间序线性化，后发者胜。
+        await runExclusivePiRpc(() => applyThinkingEnabled(enabled));
       },
 
       async setPermissionMode(mode): Promise<void> {
@@ -8840,6 +9049,7 @@ export class PiAgent extends BaseAgent {
           const toolName = payload.args === undefined ? 'cindy_pi_extension' : 'cindy_pi_command';
           const toolInput = payload.args === undefined ? { action: payload.action, source } : { args: payload.args };
           const forcePrompt = (() => {
+            if (context.permissionMode === 'bypassPermissions') return false;
             try { return context.turnPermissionPolicy?.forceConfirmToolCall(toolName, toolInput) === true; }
             catch { return true; }
           })();
@@ -8873,7 +9083,7 @@ export class PiAgent extends BaseAgent {
             return;
           }
           if (autoDecision?.unavailable) context.notifyAutoReviewUnavailable();
-          const approved = (!forcePrompt && getPermissionCtx().permissionMode === 'bypassPermissions')
+          const approved = getPermissionCtx().permissionMode === 'bypassPermissions'
             || (!forcePrompt && autoDecision?.verdict === 'allow' && getPermissionCtx().permissionMode === 'auto')
             || await new Promise<boolean>((resolve) => {
             if (!context.resolver) {
@@ -8894,7 +9104,7 @@ export class PiAgent extends BaseAgent {
               resolve(value);
             };
             unregister = context.registerPendingPrompt(`${id}:pi-extension-mutation`, {
-              forcePrompt,
+              forcePrompt: false,
               unavailableHandoff: autoDecision?.unavailable,
               settle: (resolveAs, reason) => {
                 if (settled) return;
@@ -9167,7 +9377,7 @@ export class PiAgent extends BaseAgent {
        * 代码:同步抛错不能变成放行,按"必须询问" fail-closed(与 CC/Codex 同口径)。
        */
       const turnPolicyForcePrompt = ((): boolean => {
-        if (!turnPermissionPolicy) return false;
+        if (!turnPermissionPolicy || permissionMode === 'bypassPermissions') return false;
         try {
           return turnPermissionPolicy.forceConfirmToolCall(toolName, input) === true;
         } catch (err) {
@@ -9270,8 +9480,8 @@ export class PiAgent extends BaseAgent {
        */
       const isFullAccessNow = (): boolean => getPermissionCtx().permissionMode === 'bypassPermissions';
       /**
-       * MCP 逐次确认和 AI ask 不覆盖 Full access；来源/本轮范围约束与需要用户输入的
-       * 交互仍保留。是否允许持久化决定，不等于是否继承会话权限。
+       * MCP 逐次确认、AI ask 和 IM 策略不覆盖主人当前选择的 Full access；
+       * 需要用户输入或明确确认的控制面操作仍保留。
        */
       const requestUserConfirmation = async (
         opts?: {
@@ -9281,19 +9491,17 @@ export class PiAgent extends BaseAgent {
         },
       ): Promise<PiPermissionResolution> => {
         // 发起确认前:已切到 Full access 就不该再弹卡。
-        // 本轮范围仍由 policy 约束，不能把 MCP 风险标记当成第二份会话权限。
         if (isFullAccessNow() && opts?.requireExplicitDecision !== true) {
-          return turnPolicyForcePrompt ? 'system-deny' : 'allow';
+          return 'allow';
         }
         const outcome = await requestUserDecision({
-          forcePrompt: turnPolicyForcePrompt || opts?.requireExplicitDecision === true,
+          forcePrompt: opts?.requireExplicitDecision === true,
           ...(opts?.unavailableHandoff ? { unavailableHandoff: true } : {}),
         });
         // 已有决策(用户明确表态,或切档时代为 settle)→ 以它为准,不再被档位二次翻转。
         if (outcome.decided) return outcome.resolution;
         // 拿不到决策:Full access 下按 bypass 语义放行,其余一律 fail-closed。
-        return turnPolicyForcePrompt
-          || opts?.requireExplicitDecision === true
+        return opts?.requireExplicitDecision === true
           || !isFullAccessNow()
           ? outcome.resolution
           : 'allow';
@@ -9303,9 +9511,7 @@ export class PiAgent extends BaseAgent {
         // 已把普通 bypass 拦在冒泡之前,但档位是热切换的:confirm 冒泡之后用户仍可能切到 Full access。此时
         // MCP 策略 / 灰区审阅 / 弹窗都不该再改变「全放行」语义,也不该因为没有 resolver 就
         // 拒掉工具调用(与 auto 分支既有的 modeAfterReview bypass 收口同口径)。
-        // 本轮策略命中时不吃 Full Access 短路:policy + bypassPermissions 已在 send 预检
-        // 拒绝、且 policy turn 持 host lease 堵死热切到 bypass,故此处 turnPolicyForcePrompt
-        // 为真本不可达;仍显式 fail-closed,避免任一上游闸门被绕过就静默放行破坏性调用。
+        // IM 任务中主人显式切档与普通任务一致，不再由本轮旧策略阻塞。
         if (controlPlaneWrite) {
           sendPermissionResolution(await requestUserConfirmation({
             forcePrompt: true,
@@ -9313,7 +9519,7 @@ export class PiAgent extends BaseAgent {
           }));
           return;
         }
-        if (isFullAccessNow() && !turnPolicyForcePrompt) {
+        if (isFullAccessNow()) {
           sendPermissionResolution('allow');
           return;
         }
@@ -9380,7 +9586,7 @@ export class PiAgent extends BaseAgent {
           //   - 仍是 auto → 按本次审查 verdict 收口(下方原逻辑)。
           const modeAfterReview = getPermissionCtx().permissionMode;
           if (modeAfterReview === 'bypassPermissions') {
-            sendPermissionResolution(turnPolicyForcePrompt ? 'system-deny' : 'allow');
+            sendPermissionResolution('allow');
             return;
           }
           if (modeAfterReview !== permissionMode) {

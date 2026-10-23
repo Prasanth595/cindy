@@ -281,6 +281,7 @@ import { RendererBootGuard } from './renderer-boot-guard';
 import yaml from 'js-yaml';
 import matter from 'gray-matter';
 import type { Maker } from '@cindy/maker-core';
+import { shouldPruneSkillScanDirectory } from '@cindy/maker-core/skill-scan-limits';
 import {
   im,
   feishuIm,
@@ -539,6 +540,8 @@ import {
 
 import { onQuit, installQuitHandler } from './lifecycle';
 import { initStartupDiagnostics } from './startup-diagnostics';
+import { createStartupGateStallReporter } from './startupGateStallReport';
+import { STARTUP_GATE_STALL_CHANNEL } from '../shared/startupGateStall';
 import {
   installPowerEventDiagnostics,
   installWindowResponsivenessDiagnostics,
@@ -639,6 +642,7 @@ import {
   registerWorktreeIpc,
   WorktreePool,
   reconcilePendingSafeDirectoryCleanups,
+  worktreeStore,
 } from './worktree';
 // shadow savepoint 链的启动期对账(孤儿 refs/cindy/savepoints/* 清理)
 import { reconcileSavepointRefsForDeletedSessions } from './git-snapshot/savepointCleanup';
@@ -768,6 +772,7 @@ import {
 import {
   anySessionInTurn,
   allowBotWorkbenchPendingPermission,
+  listInTurnSessionIds,
   applyCodexSpawnConfigChangeWithRestart,
   clearDeferredCodexRestartForOwnerBoundary,
   restoreUsageLimitWaits,
@@ -1135,6 +1140,7 @@ import { configureMailAttachmentHost } from './cindy-brain/mailAttachmentUpload.
 import { writeTempFile, materializeDirectSendOssAttachments } from './maker-ipc/normalizeAttachments.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
+import { describeRelaunchTurns } from './relaunchTurnFacts.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import { registerPluginMarketIpc, syncDefaultMarketPlugins, refreshForegroundMarketPlugins } from './plugin-market/registerIpc.js';
@@ -4134,6 +4140,8 @@ const createWindow = () => {
     refreshWindowsAppBadge();
     if (!app.isPackaged || isCindyVersionLaunchPending())
       markDesktopDevWindowReady(mainWindow.webContents.getOSProcessId());
+    worktreeMaintenanceReadyWindows.add(mainWindow);
+    startReadyWorktreeMaintenance();
     void runComputerUseSmokeIfRequested();
     // 资源用量窗口不应与主窗口首帧争 CPU。主窗口可见后再后台完成 BrowserWindow、
     // renderer 和首份进程快照预热；回调绑定当代主窗口，重建/退出后不会创建孤儿窗。
@@ -4717,6 +4725,20 @@ const registerIpcHandlers = () => {
   ipcMain.on('get-app-display-version-info', (event) => {
     event.returnValue = getAppDisplayVersionInfo();
   });
+
+  // 开屏卡住诊断:renderer 的 r: 日志不进上传,这条快照由 main 校验后写进 renderer-guard。
+  // 只在本机使用,不进 device-link 白名单。
+  ipcMain.on(
+    STARTUP_GATE_STALL_CHANNEL,
+    createStartupGateStallReporter({
+      isMainWindowTopFrame: (event) => {
+        const { sender, senderFrame } = event as Electron.IpcMainEvent;
+        const main = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
+        return main !== null && sender === main.webContents && senderFrame === sender.mainFrame;
+      },
+      warn: (message) => rendererGuardLog.warn(message),
+    }),
+  );
 
   // Renderer → main 日志转发:走 unified logger 的 writeFromRenderer,
   // 让 main 的 level filter 生效(scope 加 r: 前缀以区分来源)。
@@ -6301,7 +6323,9 @@ const registerIpcHandlers = () => {
       //
       // 不进 device-link allowlist:updater 类 channel 按 allowlist 顶部注释属「永不放行」,
       // 且远程控制端不会代替用户点被控端的更新重启。
-      registerRelaunchBusyActivityIpc(readRelaunchActivitySources);
+      registerRelaunchBusyActivityIpc(readRelaunchActivitySources, {
+        describeTurns: () => describeRelaunchTurns(() => listInTurnSessionIds(getMakerIfReady())),
+      });
       // getMakerCore() 首次调用触发 Maker 构造，同时发起自定义 MCP 初始加载。
       // await 确保第一个会话的 mcpProviders 数组已填入已保存的自定义 MCP（P2 冷启动竞态修复）。
       getMakerCore();
@@ -6879,7 +6903,8 @@ const registerIpcHandlers = () => {
 
   // Scans `{workingDir}/.claude/commands/*.md` and `.claude/skills/*.md` for
   // user-defined slash commands / skills (command-palette F1).
-  // Returns [] if dirs don't exist. No recursion.
+  // Returns [] if dirs don't exist. Skills may have one namespace level;
+  // deeper directories are not scanned.
   ipcMain.handle(
     'workspace:scan-slash-commands',
     async (
@@ -6957,17 +6982,32 @@ const registerIpcHandlers = () => {
           dirPath: string,
         ): Array<{ name: string; description?: string; source: 'user' | 'skill' }> => {
           if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return [];
-          const entries = fs.readdirSync(dirPath, { withFileTypes: true });
           const results: Array<{ name: string; description?: string; source: 'user' | 'skill' }> =
             [];
-          for (const ent of entries) {
-            if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
-            // Look for SKILL.md or skill.md inside the subdirectory
-            const subDir = path.join(dirPath, ent.name);
-            const skillFile = ['SKILL.md', 'skill.md'].find((f) =>
-              fs.existsSync(path.join(subDir, f)),
-            );
-            if (!skillFile) continue;
+          const isSymlinkDirectory = (target: string): boolean => {
+            try {
+              return fs.lstatSync(target).isSymbolicLink();
+            } catch {
+              return false;
+            }
+          };
+          const readEntries = (dir: string): fs.Dirent[] => {
+            try {
+              return fs.readdirSync(dir, { withFileTypes: true })
+                .sort((a, b) => a.name.localeCompare(b.name));
+            } catch {
+              return [];
+            }
+          };
+          const findSkillFile = (dir: string): string | null =>
+            ['SKILL.md', 'skill.md'].find((f) => {
+              try {
+                return fs.statSync(path.join(dir, f)).isFile();
+              } catch {
+                return false;
+              }
+            }) ?? null;
+          const addSkill = (subDir: string, name: string, skillFile: string): void => {
             let description: string | undefined;
             try {
               const raw = fs.readFileSync(path.join(subDir, skillFile), 'utf-8');
@@ -6975,7 +7015,44 @@ const registerIpcHandlers = () => {
             } catch {
               /* non-fatal */
             }
-            results.push({ name: ent.name, description, source: 'skill' });
+            results.push({ name, description, source: 'skill' });
+          };
+
+          const namespaces: Array<{ name: string; path: string }> = [];
+          for (const ent of readEntries(dirPath)) {
+            if (ent.name.startsWith('.') || /\.bak\.\d+$/.test(ent.name)) continue;
+            const subDir = path.join(dirPath, ent.name);
+            let stat: fs.Stats;
+            try {
+              stat = fs.statSync(subDir);
+            } catch {
+              continue;
+            }
+            if (!stat.isDirectory()) continue;
+            // Dirent can report a Windows junction as a directory; lstat keeps
+            // the no-recursive-symlink guarantee consistent across platforms.
+            const isSymlink = ent.isSymbolicLink() || isSymlinkDirectory(subDir);
+            const skillFile = findSkillFile(subDir);
+            if (skillFile) {
+              addSkill(subDir, ent.name, skillFile);
+              continue;
+            }
+            // Direct symlinked Skills are handled above; do not walk a symlinked namespace.
+            if (isSymlink || shouldPruneSkillScanDirectory(ent.name)) continue;
+            namespaces.push({ name: ent.name, path: subDir });
+          }
+
+          // At most one namespace/author level: <root>/<namespace>/<skill>.
+          // Direct Skills win over a same-name nested Skill regardless of
+          // namespace ordering.
+          for (const namespace of namespaces) {
+            for (const nested of readEntries(namespace.path)) {
+              if (nested.name.startsWith('.') || /\.bak\.\d+$/.test(nested.name)) continue;
+              if (results.some((result) => result.name === nested.name)) continue;
+              const nestedDir = path.join(namespace.path, nested.name);
+              const nestedSkillFile = findSkillFile(nestedDir);
+              if (nestedSkillFile) addSkill(nestedDir, nested.name, nestedSkillFile);
+            }
           }
           return results;
         };
@@ -9224,6 +9301,7 @@ app.on('ready', async () => {
     readHistoryLiveMessages: getSessionThinkingSnapshots,
     resolveContextWindow: (session) => resolveSessionContextWindow(getActiveCatalog(), session),
     requestWorktreeRecycle,
+    lookupSessionWorktreeBinding: (sessionId) => worktreeStore.get(sessionId)?.path ?? null,
     closeIdleSessionForMove: async (sessionId) => {
       const maker = getMakerIfReady();
       if (maker?.getSession(sessionId)?.isTurnRunning()) return false;
@@ -10595,26 +10673,33 @@ if (
 
 let worktreeRuntimeCloseReady = false;
 let lastWorktreeMaintenanceDb: ReturnType<typeof tryGetDbClient> = null;
+const worktreeMaintenanceReadyWindows = new WeakSet<BrowserWindow>();
 
-/** Worktree maintenance needs both storage and runtime-close services. */
+/** Never let optional disk cleanup compete with the main window's first frame. */
 function startReadyWorktreeMaintenance(): void {
+  const isReady = () => !isQuitting && mainWindowRef !== null && !mainWindowRef.isDestroyed()
+    && worktreeMaintenanceReadyWindows.has(mainWindowRef)
+    && worktreeRuntimeCloseReady && getMakerIfReady() !== null && tryGetDbClient() !== null;
+  if (!isReady()) return;
   startWorktreeRecycleMaintenance({
-    isReady: () =>
-      worktreeRuntimeCloseReady && getMakerIfReady() !== null && tryGetDbClient() !== null,
+    isReady,
+    // Runs only after the maintenance startup grace, not from the DB-ready hook.
+    onReady: async () => {
+      const db = tryGetDbClient();
+      if (!db || db === lastWorktreeMaintenanceDb) return;
+      await auditRegisteredWorktrees().catch((error) =>
+        dbClientLog.warn('worktree audit postponed', error),
+      );
+      if (!isReady() || tryGetDbClient() !== db) return;
+      await WorktreePool.recoverPool().catch((error) =>
+        dbClientLog.warn('worktree pool recovery postponed', error),
+      );
+      if (tryGetDbClient() === db) lastWorktreeMaintenanceDb = db;
+    },
     recycleCurrentSession: (sessionId, status) =>
       recycleSessionWorktreeForStatusChange(sessionId, status),
     onAttemptComplete: auditRegisteredWorktrees,
   });
-  const db = tryGetDbClient();
-  if (worktreeRuntimeCloseReady && getMakerIfReady() && db && db !== lastWorktreeMaintenanceDb) {
-    lastWorktreeMaintenanceDb = db;
-    void auditRegisteredWorktrees().catch((error) =>
-      dbClientLog.warn('worktree audit postponed', error),
-    );
-    void WorktreePool.recoverPool().catch((error) =>
-      dbClientLog.warn('worktree pool recovery postponed', error),
-    );
-  }
 }
 
 onQuit('remote-desktop-viewer', () => remoteDesktopViewerWindows.reset(), 'sync');

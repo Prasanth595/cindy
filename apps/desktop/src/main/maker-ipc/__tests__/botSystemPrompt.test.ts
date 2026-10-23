@@ -122,7 +122,9 @@ describe('稳定层:能力必须写进提示词', () => {
     expect(all).toContain('你记得住事');
     expect(all).toContain('第一次明确说出一条稳定偏好');
     expect(all).toContain('save_teammate_skill');
-    expect(all).toContain('第一次验证完就');
+    // 2026-10-23 主人裁决：对话中只在主人明确要求时新建技能，其余交给夜间学习。
+    expect(all).toContain('用户明确要你把一套做法记成技能时');
+    expect(all).not.toContain('第一次验证完就');
     expect(all).toContain('开后台任务，也可以给伙伴发消息');
     expect(all).toContain('start_session_task');
     expect(all).toContain('check_session_task');

@@ -26,7 +26,15 @@ import {
   buildPullDownMenuSections,
   resolvePullDownSubmenu,
 } from "./pullDownMenuModel";
-import { fontWeight, lineHeight, spacing, typeScale, useTheme } from "@/theme";
+import {
+  fontWeight,
+  iconSize,
+  iconStroke,
+  lineHeight,
+  spacing,
+  typeScale,
+  useTheme,
+} from "@/theme";
 import { Text as AppText } from "@/components/AppText";
 import type { NativePullDownAction } from "./NativePullDownMenu";
 
@@ -271,6 +279,21 @@ export function AnchoredPullDownMenu({
                           }}
                           onClick={() => choose(action)}
                         >
+                          {action.icon ? (
+                            <DropdownMenuItem.LeadingIcon>
+                              <RNHostView matchContents>
+                                <action.icon
+                                  color={action.disabled
+                                    ? colors.textTertiary
+                                    : action.destructive
+                                      ? colors.destructive
+                                      : colors.textPrimary}
+                                  size={iconSize.md}
+                                  strokeWidth={iconStroke.regular}
+                                />
+                              </RNHostView>
+                            </DropdownMenuItem.LeadingIcon>
+                          ) : null}
                           <DropdownMenuItem.Text>
                             <Column>
                               <Text

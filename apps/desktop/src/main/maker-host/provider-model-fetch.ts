@@ -106,7 +106,12 @@ export async function fetchSavedOAuthProviderModels(
     apiKey: token,
     headers,
     redirect: 'error',
-  }, fetchImpl);
+  }, async (url, init) => {
+    // Pagination and the separate speech catalog may run after the first reply.
+    // Revoke the captured credentials before another request if ownership changed.
+    if (!isCurrent()) throw new Error('Provider model refresh is no longer current');
+    return fetchImpl(url, init);
+  });
   return isCurrent() ? result : { ok: false, code: 'AUTH_INVALID' };
 }
 

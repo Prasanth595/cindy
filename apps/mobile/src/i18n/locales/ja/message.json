@@ -234,6 +234,9 @@
     "cancel": "キャンセル",
     "edit": "編集",
     "steer": "割り込み",
+    "moveUp": "1つ前へ",
+    "moveDown": "1つ後ろへ",
+    "cancelSend": "送信をキャンセル",
     "collapseQueued": "キュー内メッセージを折りたたむ",
     "expandRemainingQueued": "残り {{n}} 件のキュー内メッセージを展開",
     "collapse": "折りたたむ",
@@ -407,6 +410,10 @@
     "skillUpdated": "スキルを更新：{{title}}"
   },
   "richAnswer": {
+    "send": "メッセージを送信",
+    "sending": "送信中…",
+    "sent": "送信済み",
+    "sendFailed": "メッセージを送信できませんでした。入力内容は保持されています。",
     "playVideo": "動画を再生",
     "openVideoSource": "元の動画を開く",
     "calculationUnavailable": "この値を計算できません。",

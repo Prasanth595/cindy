@@ -22,7 +22,7 @@ function readBotChatIdentity(bot: unknown, botId: string): BotChatIdentity | nul
   };
 }
 
-/** Historical Bot transcripts are reviewable but never writable from the history route. */
+/** History and hidden IM transcripts share the main-window read-only task view. */
 export function BotHistorySessionView() {
   const { botId, sessionId, deviceId } = useParams();
   return <BotHistorySessionGateView key={JSON.stringify([deviceId, botId, sessionId])} />;
@@ -62,7 +62,8 @@ function BotHistorySessionGateView() {
     const personalLink = (bot: unknown) => {
       const rows = (bot as { sessions?: Array<{ id: string; role?: string; status?: string }> } | null)?.sessions;
       return rows?.some(row => row.id === sessionId && row.status !== 'deleted'
-        && (row.role === 'history' || row.role === 'canonical')) ?? false;
+        && (row.role === 'history' || row.role === 'canonical'
+          || (!deviceId && row.role === 'channel'))) ?? false;
     };
     const history = deviceId
       ? profile.then(bot => personalLink(bot) ? [{ id: sessionId }] : [])

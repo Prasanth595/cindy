@@ -234,6 +234,9 @@
     "cancel": "Cancel",
     "edit": "Edit",
     "steer": "Interject",
+    "moveUp": "Move earlier",
+    "moveDown": "Move later",
+    "cancelSend": "Cancel send",
     "collapseQueued": "Collapse queued messages",
     "expandRemainingQueued": "Expand {{n}} more queued messages",
     "collapse": "Collapse",
@@ -407,6 +410,10 @@
     "skillUpdated": "Updated skill: {{title}}"
   },
   "richAnswer": {
+    "send": "Send Message",
+    "sending": "Sending…",
+    "sent": "Submitted",
+    "sendFailed": "The message was not submitted. Your entries are still here.",
     "playVideo": "Play video",
     "openVideoSource": "Open original video",
     "calculationUnavailable": "Unable to calculate this value.",

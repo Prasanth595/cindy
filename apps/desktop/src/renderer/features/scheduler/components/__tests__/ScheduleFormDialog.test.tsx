@@ -11,6 +11,7 @@ import type { Schedule } from '@cindy/maker-scheduler';
 // Standalone Windows run: 3.14s Vitest / 4.21s process wall time (5 cases).
 const state = vi.hoisted(() => ({
   warning: vi.fn(),
+  error: vi.fn(),
   references: new Map<string, unknown>(),
   loading: false,
   localModels: [{ id: 'shared', efforts: ['low'], supportsFastMode: false }],
@@ -20,8 +21,8 @@ const state = vi.hoisted(() => ({
   ],
 }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock('@/lib/toast', () => ({ toast: { warning: state.warning, success: vi.fn(), error: vi.fn() } }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { exists: () => true } }) }));
+vi.mock('@/lib/toast', () => ({ toast: { warning: state.warning, success: vi.fn(), error: state.error } }));
 vi.mock('@/hooks/useAgentCapabilities', () => ({
   getCachedCapabilities: () => null,
   useAgentCapabilities: (_agent: string, device?: string) => ({
@@ -73,6 +74,26 @@ function mount(initial: Schedule) {
   return { onSubmit, refresh: () => view.rerender(element()),
     save: () => fireEvent.click(screen.getByRole('button', { name: 'scheduler.editor.promptDialog.saveAria' })) };
 }
+
+// Saving an SSH override used to expose an English exception in a transient toast.
+// Exercise the real submit rejection: curated guidance stays visible, diagnostic
+// details are available on demand and the form remains editable. Unit/jsdom tier.
+it('keeps localized switch guidance and redacted diagnostics after a rejected save', async () => {
+  const h = mount(schedule());
+  h.onSubmit.mockRejectedValueOnce(new Error('[SSH_HARNESS_SWITCH_UNSUPPORTED] technical diagnostic api_key=private-value'));
+  h.save();
+  await waitFor(() => expect(screen.getByText('chat.remoteError.SSH_HARNESS_SWITCH_UNSUPPORTED')).toBeTruthy());
+  // The notice can be above the viewport when saving a long form. Keep the
+  // shared alert toast, with curated copy rather than the diagnostic/secret.
+  expect(state.error).toHaveBeenCalledExactlyOnceWith('chat.remoteError.SSH_HARNESS_SWITCH_UNSUPPORTED');
+  expect(screen.queryByText(/technical diagnostic/)).toBeNull();
+  fireEvent.click(screen.getByText('chat.errorBanner.networkShowRaw'));
+  expect(screen.getByText(/technical diagnostic/).textContent).toContain('[REDACTED]');
+  expect(screen.queryByText(/private-value/)).toBeNull();
+  h.save();
+  await waitFor(() => expect(h.onSubmit).toHaveBeenCalledTimes(2));
+  expect(screen.queryByText('chat.remoteError.SSH_HARNESS_SWITCH_UNSUPPORTED')).toBeNull();
+});
 beforeEach(() => {
   vi.clearAllMocks();
   state.references.clear();

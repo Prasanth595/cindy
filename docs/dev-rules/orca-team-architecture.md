@@ -109,11 +109,11 @@ PR #101 之后，Orca 的 main 侧业务由独立 service 承接，`register.ts`
 1. `start_team`
 2. `end_team`
 3. `create_worker`
-4. `create_workers`（批量创建；顺序执行、hard limit 后停止并返回逐项汇总）
+4. `create_workers`（批量创建；顺序执行、hard limit 后停止并返回逐项汇总；每项支持可选 `images` 随 `initial_task` 发本机图片）
 5. `list_workers`
 6. `switch_focus`
-7. `send_to_worker`
-8. `interrupt_worker`（原子预留下一条输入并优雅停止当前 turn）
+7. `send_to_worker`（支持可选 `images`：本机图片绝对路径，随消息发给本机 worker；SSH 远端 worker 拒绝）
+8. `interrupt_worker`（原子预留下一条输入并优雅停止当前 turn；不支持图片）
 9. `get_worker_queue_status`（工作态与完整队列）
 10. `update_queued_message`（排队消息控制）
 11. `cancel_queued_message`（排队消息控制）
@@ -364,6 +364,22 @@ Git worktree，不改变供应商、模型与 Worker 创建权限偏好。
 1a. **空闲 live 直发前必须先做换窗预检（状态：不变量）**<br>
 目标空闲且已有 live session 时，dispatcher 仍走 `session.send()`，不经过 `sendToSessionInternal()`。这条直发必须先调用与用户发送相同的 `prepareUnhealthySession`：满窗或当前进程内 `needsRollover` 锁存时关闭旧原生窗口，再 `getLiveSession`。不能把 inter-agent 消息打进应被丢弃的旧窗口。prepare → 重新取 live → send 整段必须复用 `sendToSessionInternal` 的 per-session 锁；锁已被占用时先排队，不要把 in-flight prepare 当成健康状态继续直发。没有 live 后释放锁再走 `sendToSessionInternal`，避免自己把自己排队。实现指针：`orcaInterAgentDispatcher.ts` 的 live 分支，以及 `register.ts` 注入的 `prepareUnhealthySession` / `withSendToSessionLock`。
 
+1c. **图片附件仅限本机目标，走既有附件通道（状态：不变量）**<br>
+   `send_to_worker` 与 `create_worker` / `create_workers` 的 `images` 参数接受两类地址：
+   用户在会话里贴的图用受管地址（`cindy-media://blobs/` / `xdt-image://`，即上下文
+   `<cindy-host-image-references>` 的 uri），Lead 自己落盘的文件用本机绝对路径；
+   经 `resolveOrcaImageAttachmentInput` 归一为可读图片文件（非图片一律拒）。张数上限 8，
+   目标 session 的 DB 快照带 `remoteHostId` 时必须拒绝，
+   不降级为纯文本（静默丢图是产品错误）。dispatcher 入口经 host 注入的
+   `validateImageAttachments` 做校验；直发时 image block 跟在格式化文本后，
+   排队/插话时文件挂在 entry `files`，drain 由 `buildMakerUserMessage` 还原成同样的
+   block 序列；`update_queued_message` 重建只改文本字段，files 随 `...entry` 保留；
+   `merge_queued_messages` 把其余被合并条目的图片按队列顺序并入保留条目。带图消息的
+   `persistedContent`（DB/展示）仍是纯文本协议，
+   队列气泡不预览图片（已知边界）。实现指针：`orcaInterAgentDispatcher.ts` 的
+   `imageFiles` / `agentMessageTextWithImages`、`orcaImageAttachments.ts` 与 `register.ts` 的
+   `validateImageAttachments`。
+
 2. **accepted 才能产生运行副作用（状态：不变量）**<br>
    只有底层 send accepted 后，才能把 worker 标成 `running`、建立 auto-bridge pending 并广播 UI；dispatch 失败必须 rollback 到 accepted 前状态，且 rollback 不得覆盖已有终态。实现指针：`orcaTeamService.ts` 的 `dispatchResolvedWorker` 与 `rollbackAcceptedDispatchState`。
 
@@ -427,11 +443,23 @@ Worker turn 被 vendor 报终止型 error，但 interrupted-turn auto-resume 仍
 3. **idle worker 恢复必须保留 extraDirs（状态：不变量）**<br>
    idle worker 被 `switch_focus` 或 `send_to_worker` 唤醒时，要从 DB 读取 `extra_dirs` 并带回 `bootstrapSession`，否则恢复后的 worker 会丢附加目录上下文。实现指针：`register.ts` 的 idle worker resume helper。
 
+3a. **focus 切换不等待 worker 冷启动（状态：不变量）**<br>
+   `switch_focus` 是纯 UI focus 操作：`setWorkerFocus` 成功并广播 `ORCA_WORKER_CHANGED` 后必须立即返回，不得同步 `await` 冷会话的 resume / `bootstrapSession`（Pi 冷启实测 2~3s，会阻塞面板切换）。idle worker 的 runtime 预热转后台，并与发送/派活路径共享同一套 per-session 去重 + `sendToSession` 锁：并发 focus / 派活只 bootstrap 一次；发送先取得锁完成懒恢复时，后台 resume 在锁内重查 live 并跳过；预热失败只告警，不改变 `switch_focus` 结果。worker 历史来自 DB，展示不需要 live runtime。后台预热必须可取消：关闭协同 / 归档 / 显式 idle 在释放 runtime 前先取消未落地的唤醒；冷启动前与 `bootstrapSession` 返回后都要复核会话仍为 active，失效则关掉刚拉起的 runtime，不得把已归档 worker 留在运行态。实现指针：`register.ts` 的 `resumeOrcaWorkerSessionIfMissing` / `disableOrcaInternal` / `orcaWorkerResumeScheduler.ts`、`orcaTeamService.ts` 的 `cancelWorkerResume`。
+
 4. **worker 状态变更必须广播给 renderer（状态：不变量）**
    创建 worker、`enableOrca` 创建首个 worker、任意真实 worker turn 开始后的 running、idle、archive、terminal done/error 都必须广播 `ORCA_WORKER_CHANGED`。worker DB `status` 跟随真实 turn 生命周期：Lead 派活或用户直接对话 worker 时，只有真实 turn 开始才置 `running`，**产品** terminal 才置 `done/error`（auto-resume 仍 pending/deferred 的 vendor 终态不是产品终态，见消息派发与 auto-bridge 5a）；`switch_focus` / resume / restore 只能恢复可访问性，不能凭空置 `running`。实现指针：`orcaLifecycleService.ts` 的 `createWorker` / `enableTeam`、`orcaWorkerCreationService.ts` 的 `createWorkerInTeam`、`orcaTeamService.ts` 的 `dispatchWorkerTask` / `handleWorkerTurnStarted` / `handleWorkerTerminalTurn`、`register.ts` 的 status event adapter、`useWorkers.ts` 的 `useWorkers`。
 
 5. **切换 session 不重置 worker 未读状态（状态：不变量）**
-   worker done 的红点由 renderer 进程级 edge-trigger attention store 维护，而不是跟随组件切换重置的局部 state。worker 状态跳变进 `done` 才标 attention；正在查看该 worker 时清除 attention；只切走 / 切回不应让同一轮 done 重新变未读。协同 tab 图标另外显示 Worker 的出错（红）与等待确认（蓝），取自 Worker 自己在 `sessionAttentionStore` 的 attention；多个 Worker 时按 红 > 蓝 > 绿（完成未读）取最高一档，红 / 蓝在 tab 激活时也显示，绿点仍是激活即视为看到。实现指针：`useOrcaWorkerAttentionWatcher.ts` 的 `computeWorkerAttentionUpdates`，`RolePillDropdown.tsx` 的 selected worker clear effect，`workerAttentionStore.ts` 的 `attentionWorkerIds`，`OrcaWorkersAttentionIcon.tsx` 的 `resolveOrcaWorkersTabTone`。
+   worker done 的绿点由 renderer 进程级 edge-trigger attention store 维护，而不是跟随组件切换重置的局部 state。worker 状态跳变进 `done` 才标 attention；正在查看该 worker 时清除 attention；只切走 / 切回不应让同一轮 done 重新变未读。协同 tab 图标另外显示 Worker 的出错（红）与等待确认（蓝），取自 Worker 自己在 `sessionAttentionStore` 的 attention；多个 Worker 时按 红 > 蓝 > 绿（完成未读）取最高一档，红 / 蓝在 tab 激活时也显示，绿点仍是激活即视为看到。实现指针：`useOrcaWorkerAttentionWatcher.ts` 的 `computeWorkerAttentionUpdates`，`RolePillDropdown.tsx` 的 selected worker clear effect，`workerAttentionStore.ts` 的 `attentionWorkerIds`，`OrcaWorkersAttentionIcon.tsx` 的 `resolveOrcaWorkersTabTone`。
+
+   Worker 列表（`RolePillDropdown.tsx` 的下拉行、平铺 tab、折叠入口）同样读取本机 Worker
+   自己的任务提醒：任务为 `error` 或运行状态为 `error` 时沿用红色描边与 ERR 徽章；没有错误时，
+   `awaiting` 在头像右上显示蓝点，选中也保留；完成未读绿点仍只在未选中时显示。优先级为
+   出错 > 等待确认 > 完成未读。折叠入口也提示被隐藏 Worker 的错误或等待确认，不汇总完成。
+   「运行设备」Worker 不读取本机任务提醒，保留运行状态为 `error` 的既有表达。判定统一为
+   `resolveWorkerListAttention`，订阅使用 `useSessionsAttentionKindMap` 的本列表子映射，
+   不写回任何提醒状态，不改变 Worker 的运行状态。列表标题的「运行中」仅按
+   `isRunningWorkerStatus` 计数；创建 Worker 的软、硬上限仍使用未归档的占槽数 `activeWorkerCount`。
 
 6. **重启后对 known worker 懒登记（状态：不变量）**
    app 重启后内存里的 known worker / vendorOptions 都会丢。恢复时不能只信内存 cache，必须通过 DB 的 `sessions.orca_role`、`orca_workers`、`orca_teams` 懒合成 Orca vendorOptions / worker link，保证手动 stop、terminal turn、worker 列表仍能识别已存在 worker；手动中断跟踪只能作为运行时优化，不能作为唯一事实源。刚开启协同但 worker 尚未对话时，也必须先写出可恢复的 agent 侧历史；当前通过 ready placeholder 触发 worker 首次 send，避免 Codex worker 因 rollout 缺失在重启后无法 resume。实现指针：`register.ts` 的 `synthesizeOrcaVendorOptionsFromDb`、`sessionCreateHandler.ts` 的 `sendWorkerReadyMessage`、`orcaLifecycleService.ts` 的 `enableTeam` / `sendWorkerReadyPlaceholder` 依赖、`orcaTeamStore.ts` 的 `listWorkersByLead` / `getWorkerLink`、`orcaManualInterrupt.ts` 的 known worker / manual interrupt store。

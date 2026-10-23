@@ -2419,8 +2419,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // A single-speaker server arranges turns itself (several named teammates, or everyone when
     // nobody is named); the send no longer asks a helper model whether to divide the work first.
     if (i.division && openPlan && !proposed && !singleSpeaker) throw new Error('PLAN_OPEN');
-    // A single-speaker server has no reply modes: every request is answered, named or not (§4.0).
-    const canTrigger = singleSpeaker || i.division || s.room.response_mode !== 'mentioned' || !namesNobody(i.mentions);
+    // Reply mode decides whether a message triggers work; single-speaker only decides its order.
+    const canTrigger = (!singleSpeaker && i.division) || s.room.response_mode !== 'mentioned' || !namesNobody(i.mentions);
     // A queue waiting for 继续 gives way to a new request; only a turn under way takes additions (§4.0).
     const commentPlan = canTrigger && openPlan && openPlan.status !== 'proposed' && !(singleSpeaker && openPlan.kind === 'talk' && openPlan.status === 'waiting') && !i.mentions.botIds.length && !i.mentions.all && (openPlan.creator_id === selfId || s.members.some(m => m.id === selfId && ['owner','admin'].includes(m.role))) ? openPlan : undefined;
     const shouldPlan = canTrigger && !singleSpeaker && !!deps.decidePlan && (i.division || (!i.mentions.botIds.length && (!proposed || !i.mentions.all)))

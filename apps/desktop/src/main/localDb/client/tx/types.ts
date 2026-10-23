@@ -56,6 +56,7 @@ export type DbTxName =
   | 'bots.archiveLifecycle'
   | 'bots.deleteProfile'
   | 'bots.prepareProfileDeletion'
+  | 'bots.reconcileLanePermission'
   | 'bots.persistSessionPermission'
   | 'bots.createGroupLane'
   | 'bots.createChannelLane'
@@ -668,6 +669,8 @@ export interface BotsCreateProfileArgs {
 
 export interface BotsUpdateProfileArgs {
   id: string;
+  /** A saved model choice supersedes automation restores in the same commit. */
+  clearScheduledModelBaseline?: boolean;
   /** Explicit settings changes also update the permanent chat in this transaction. */
   canonicalPermissionMode?: 'ask' | 'auto' | 'bypassPermissions';
   displayName?: string;
@@ -837,6 +840,8 @@ export interface BotGroupsCreateLaneArgs {
 export interface BotGroupsCreateLaneResult {
   sessionId: string;
   created: boolean;
+  /** Existing runtimes must follow a canonical permission repaired during creation. */
+  permissionRepairCanonicalSessionId?: string;
 }
 
 /** 伙伴接管的个人 IM 群 / 话题专线(`role = 'channel'`)。 */
@@ -1435,6 +1440,7 @@ export type DbTxArgsByName = {
   'bots.archiveLifecycle': BotsArchiveLifecycleArgs;
   'bots.deleteProfile': BotsDeleteProfileArgs;
   'bots.prepareProfileDeletion': { botId: string };
+  'bots.reconcileLanePermission': { sessionId: string };
   'bots.persistSessionPermission': { sessionId: string; mode: string };
   'bots.createGroupLane': BotGroupsCreateLaneArgs;
   'bots.createChannelLane': BotsCreateChannelLaneArgs;
@@ -1534,6 +1540,7 @@ export type DbTxResultByName = {
   'bots.archiveLifecycle': { sessions: number };
   'bots.deleteProfile': { sessionIds: string[]; status: 'archived' | 'deleted' };
   'bots.prepareProfileDeletion': undefined;
+  'bots.reconcileLanePermission': { mode: string | null; changed: boolean; canonicalSessionId?: string };
   'bots.persistSessionPermission': { updated: boolean };
   'bots.createGroupLane': BotGroupsCreateLaneResult;
   'bots.createChannelLane': BotGroupsCreateLaneResult;
