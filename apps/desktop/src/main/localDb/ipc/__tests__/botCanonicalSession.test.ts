@@ -792,6 +792,22 @@ describe('Bot canonical Session lifecycle', () => {
     } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
   });
 
+  it('validates a legacy location-only selection before persisting settings', async () => {
+    const route = { harness: 'codex', model: 'gpt-6-astra', providerId: 'openai', effort: 'high', fastMode: false };
+    h.sqlite!.prepare('UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = ? AND version = 1')
+      .run(JSON.stringify(route), 'bot-1');
+    const before = h.sqlite!.prepare("SELECT * FROM bot_profile_versions WHERE bot_id = 'bot-1'").all();
+    const control = await import('../../../maker-ipc/appDefaultModelControl.js');
+    vi.mocked(control.validateTaskModel).mockClear().mockResolvedValue(false);
+    try {
+      await expect(invoke('local-db:bots:update', {
+        id: 'bot-1', capabilities: { agentDeviceId: 'share:unavailable-location' },
+      })).rejects.toThrow('Model route unavailable');
+      expect(control.validateTaskModel).toHaveBeenCalledWith({ ...route, agentDeviceId: 'share:unavailable-location' });
+      expect(h.sqlite!.prepare("SELECT * FROM bot_profile_versions WHERE bot_id = 'bot-1'").all()).toEqual(before);
+    } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
+  });
+
   it.each(['rename', 'skills'])('allows legacy chain-only profile maintenance with an unavailable provider: %s', async edit => {
     const id = 'legacy-chain-only';
     await invoke('local-db:bots:create', { id, name: 'Legacy' });

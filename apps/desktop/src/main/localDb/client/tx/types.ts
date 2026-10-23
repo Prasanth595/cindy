@@ -25,6 +25,7 @@ export type DbTxName =
   | 'orca.archiveWorkersByTeam'
   | 'orca.reconcileInactiveTeamWorkersForLead'
   | 'sessions.renameTitles'
+  | 'sessions.createScheduledModelBaseline'
   | 'sessions.setStatus'
   | 'sessions.setTerminalStatus'
   | 'recentWorkdirs.mergeWindowsIdentity'
@@ -1405,6 +1406,7 @@ export type DbTxArgsByName = {
   'orca.archiveWorkersByTeam': OrcaArchiveWorkersByTeamArgs;
   'orca.reconcileInactiveTeamWorkersForLead': OrcaReconcileInactiveTeamWorkersForLeadArgs;
   'sessions.renameTitles': SessionsRenameTitlesArgs;
+  'sessions.createScheduledModelBaseline': { sessionId: string; baseline: string; expectedBaseline: string | null };
   'sessions.setStatus': SessionsSetStatusArgs;
   'sessions.setTerminalStatus': SessionsSetTerminalStatusArgs;
   'recentWorkdirs.mergeWindowsIdentity': RecentWorkdirsMergeWindowsIdentityArgs;
@@ -1501,6 +1503,7 @@ export type DbTxResultByName = {
   'orca.archiveWorkersByTeam': string[];
   'orca.reconcileInactiveTeamWorkersForLead': string[];
   'sessions.renameTitles': SessionsRenameTitleResult[];
+  'sessions.createScheduledModelBaseline': boolean;
   'sessions.setStatus': SessionsSetStatusResultItem[];
   'sessions.setTerminalStatus': SessionsSetTerminalStatusResult;
   'recentWorkdirs.mergeWindowsIdentity': undefined;

@@ -1,9 +1,12 @@
-import { fastModeToStorage } from '@cindy/maker-shared';
+import { fastModeFromStorage, fastModeToStorage } from '@cindy/maker-shared';
 import { runPluginUsageTransaction } from './pluginUsageTx.js';
 import { runTaskTagsTransaction } from './taskTagsTx.js';
 import { recordMediaSpend } from './mediaSpendTx.js';
 import { batchAutoReviewProjection, readAutoReviewProjectionTransaction } from '../../autoReviewProjection.js';
 import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../../sharedTaskClosureSql.js';
+import { botProfileModelSelectionChanged } from '../../../../shared/botModelChain.js';
+import { dbToMakerAgentKind } from '../../../../shared/agentKindConversion.js';
+import { parseScheduledModelBaseline } from '../../../../shared/scheduledModelBaseline.js';
 import { normalizeBotName } from '../../../../shared/botCreation.js';
 import { inferBotTemplatePresetId } from '../../../../shared/botTemplatePreset.js';
 // inproc 回滚口：仅在 XDT_DB_INPROC=true 时使用。
@@ -109,6 +112,8 @@ function dispatchTransaction(db: Database.Database, args: unknown): unknown {
       return orcaReconcileInactiveTeamWorkersForLead(db, txArgs);
     case 'sessions.renameTitles':
       return sessionsRenameTitles(db, txArgs);
+    case 'sessions.createScheduledModelBaseline':
+      return sessionsCreateScheduledModelBaseline(db, txArgs);
     case 'sessions.setStatus':
       return sessionsSetStatus(db, txArgs);
     case 'sessions.setTerminalStatus':
@@ -357,6 +362,17 @@ function botsCreateProfile(db: Database.Database, args: unknown): void {
   })();
 }
 
+/** Atomic with Profile saves: a delayed begin cannot overwrite their pending marker. */
+function sessionsCreateScheduledModelBaseline(db: Database.Database, args: unknown): boolean {
+  const p = asRecord(args, 'sessions.createScheduledModelBaseline args');
+  const sessionId = expectString(p.sessionId, 'sessionId');
+  const baseline = expectString(p.baseline, 'baseline');
+  const expected = p.expectedBaseline === null ? null : expectString(p.expectedBaseline, 'expectedBaseline');
+  return db.prepare(`UPDATE sessions SET scheduled_model_baseline = ?
+    WHERE id = ? AND status = 'active' AND scheduled_model_baseline IS ?`)
+    .run(baseline, sessionId, expected).changes > 0;
+}
+
 function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersion: number } {
   const p = asRecord(args, 'bots.updateProfile args');
   const id = expectString(p.id, 'id');
@@ -464,6 +480,30 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
         VALUES (?, ?, ?, ?, ?, ?)`)
         .run(`${id}:v${nextVersion}`, id, nextVersion, p.identitySource === undefined ? latest!.identity : expectString(p.identitySource, 'identitySource'),
           JSON.stringify(nextConfig), now);
+      if (botProfileModelSelectionChanged(latestConfig ?? {}, nextConfig ?? {})) {
+        // Save the pending choice in the same transaction as the profile. A
+        // paused runtime may not receive its refresh before restart/account exit.
+        const targets = db.prepare(`SELECT id, scheduled_model_baseline AS baseline,
+          agent_kind AS agentKind, model, provider_id AS providerId, effort, fast_mode AS fastMode
+          FROM sessions WHERE id IN
+          (SELECT session_id FROM bot_session_links WHERE bot_id = ?
+            AND role IN ('canonical', 'group', 'channel', 'thread') AND archived_at IS NULL)`)
+          .all(id) as Array<{ id: string; baseline: string | null; agentKind: string; model: string;
+            providerId: string | null; effort: string; fastMode: number | string }>;
+
+        const update = db.prepare('UPDATE sessions SET scheduled_model_baseline = ? WHERE id = ?');
+        for (const target of targets) {
+          // A save must also fence a begin that read a null baseline, or begins
+          // before the async profile refresh. This record is never restored:
+          // only acceptance of this permanent choice may consume it.
+          const baseline = parseScheduledModelBaseline(target.baseline) ?? parseScheduledModelBaseline(JSON.stringify({
+            scopeId: `${target.id}:profile:${nextVersion}`, agentKind: dbToMakerAgentKind(target.agentKind),
+            model: target.model, providerId: target.providerId, effort: target.effort,
+            fastMode: fastModeFromStorage(target.fastMode),
+          }));
+          if (baseline) update.run(JSON.stringify({ ...baseline, pendingBotProfileVersion: nextVersion }), target.id);
+        }
+      }
       // Hermes capability epoch: the permanent canonical Chat, the Bot's
       // group-chat lanes and its IM channel lanes follow the latest Profile on
       // their next runtime bootstrap. Route/worker links remain pinned to their

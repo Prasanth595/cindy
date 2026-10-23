@@ -1,5 +1,5 @@
 import type { AgentKind, Effort } from '@cindy/maker-core';
-import { effectiveSourceIdForModel, findCatalogModel, type ProviderView } from '@cindy/model-providers';
+import { connectedProvidersForAgent, effectiveSourceIdForModel, findCatalogModel, isModelSelectableForNewRoute, type ProviderView } from '@cindy/model-providers';
 import { resolveCompatibleSessionRuntimeEffort } from './sessionRuntimeControl';
 import { parseScheduledModelBaseline, type ScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
 import { throwIpcError } from '../utils/ipcValidate';
@@ -26,7 +26,7 @@ export function createScheduledModelScope(deps: {
     };
     baseline: string | null;
   } | null>;
-  write: (sessionId: string, baseline: ScheduledModelBaseline | null) => Promise<void>;
+  write: (sessionId: string, baseline: ScheduledModelBaseline | null, expectedBaseline: string | null) => Promise<void | boolean>;
   isBusy: (sessionId: string) => boolean;
   apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
   createId: () => string;
@@ -44,7 +44,9 @@ export function createScheduledModelScope(deps: {
       const existing = parseScheduledModelBaseline(row.baseline);
       if (existing) return existing.scopeId;
       const scopeId = deps.createId();
-      await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
+      const written = await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId }, row.baseline);
+      assertOwner(owner);
+      if (written === false) throw new ScheduledModelSelectionBusyError('Scheduled model selection changed before scope creation');
       return scopeId;
     },
     async restore(sessionId: string, expectedScopeId?: string): Promise<void> {
@@ -54,10 +56,15 @@ export function createScheduledModelScope(deps: {
       assertOwner(owner);
       const baseline = parseScheduledModelBaseline(row?.baseline);
       if (!baseline || (expectedScopeId && baseline.scopeId !== expectedScopeId)) return;
+      // A permanent save owns the next selection, including across restart.
+      // Keep its old baseline for retries until reconciliation accepts the save.
+      if (baseline.pendingBotProfileVersion) return;
       // Keep the saved choice on failure so the next input retries before dispatch.
       await deps.apply(sessionId, baseline);
       assertOwner(owner);
-      await deps.write(sessionId, null);
+      const written = await deps.write(sessionId, null, row!.baseline);
+      assertOwner(owner);
+      if (written === false) throw new ScheduledModelSelectionBusyError('Scheduled model selection changed before scope cleanup');
     },
   };
 }
@@ -68,6 +75,7 @@ interface ScheduledModelTarget {
   agentKind: AgentKind;
   status: string;
   remoteHostId?: string | null;
+  agentDeviceId?: string | null;
   orcaRole?: string | null;
 }
 
@@ -91,9 +99,11 @@ export function resolveScheduledModelSelection(
 ): ScheduledModelSelection {
   const providerId = selection.providerId ??
     effectiveSourceIdForModel(providers, null, selection.model, selection.agentKind);
-  const provider = providers.find((candidate) => candidate.id === providerId);
+  const provider = connectedProvidersForAgent(providers, selection.agentKind)
+    .find((candidate) => candidate.id === providerId);
   const model = findCatalogModel(provider, selection.model, selection.agentKind, { exact: true });
-  if (!provider?.connected || !model) {
+  if (!provider || !model ||
+    !isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) {
     throwIpcError('MODEL_SELECTION_UNAVAILABLE', `Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
   }
   return {
@@ -104,13 +114,29 @@ export function resolveScheduledModelSelection(
   };
 }
 
+/** Resolve against the bound execution computer; the runner owns inactive-target recovery. */
+export function createScheduledModelSelectionResolver(deps: {
+  readRemoteProviders: (deviceId: string, agent: AgentKind, model: string, providerId: string | null) => Promise<ProviderView[]>;
+  resolveLocalSelection: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
+}) {
+  return async (selection: ScheduledModelSelection, target?: ScheduledModelTarget | null): Promise<ScheduledModelSelection> => {
+    if (target?.agentDeviceId && !target.remoteHostId) {
+      const providers = await deps.readRemoteProviders(
+        target.agentDeviceId, selection.agentKind, selection.model, selection.providerId,
+      );
+      return resolveScheduledModelSelection(selection, providers);
+    }
+    return deps.resolveLocalSelection(selection);
+  };
+}
+
 /** Reuse the ordinary history handoff; never stage an automation intent on a busy task. */
 export async function applyScheduledModelSelection(
   selection: ScheduledModelSelection,
   deps: {
     getTarget: () => Promise<ScheduledModelTarget | null>;
     isBusy: () => boolean;
-    resolveSelection: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
+    resolveSelection: (selection: ScheduledModelSelection, target?: ScheduledModelTarget | null) => Promise<ScheduledModelSelection>;
     switchHarness: (selection: ScheduledModelSelection) => Promise<{ engineReady: boolean; retryPending?: boolean }>;
     applyModel: (selection: ScheduledModelSelection) => Promise<void>;
   },
@@ -125,7 +151,9 @@ export async function applyScheduledModelSelection(
   }
   if (deps.isBusy()) throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the current turn');
   assertScheduledHarnessSupported(target, selection.agentKind);
-  const resolved = await deps.resolveSelection(selection);
+  // Automation changes model preferences within the bound task's execution location.
+  // Persisted baselines from older clients have no location of their own.
+  const resolved = await deps.resolveSelection(selection, target);
   if (target.agentKind !== resolved.agentKind) {
     const result = await deps.switchHarness(resolved);
     if (!result.engineReady || result.retryPending) throwIpcError('HARNESS_SWITCH_NOT_READY', 'Scheduled Harness switch did not become ready');
