@@ -119,19 +119,11 @@ describe('useDeviceLinkSettings deletion', () => {
     unmount();
   });
 
-  // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)时，先刷新列表再选提示，提示要跟此刻
-  // 界面上的列表一致：仍显示离线的设备不能再提示「尚不支持移除在线设备」；点删除时与刷新后
-  // 状态不同，以刷新后的为准。刷新一直不返回时界面仍是原列表，按原列表选提示；刷新失败时
-  // 界面换成错误块，沿用原提示。没有截止时间的请求也不能让删除一直不返回。
-  it.each([
-    [false, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
-    [true, 'online', 'settings.devices.toast.deleteOnline'],
-    [false, 'online', 'settings.devices.toast.deleteOnline'],
-    [true, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
-    [false, 'fails', 'settings.devices.toast.deleteOnline'],
-    [false, 'never returns', 'settings.devices.toast.deleteRejectedWhileOffline'],
-    [true, 'never returns', 'settings.devices.toast.deleteOnline'],
-  ] as const)('explains an online rejection by the refreshed list (online before: %s, refresh: %s)', async (onlineBefore, refreshed, message) => {
+  // 服务端以「在线」拒绝删除(409 → ALREADY_EXISTS)：列出 target 后点删除，返回 remove() 的结果。
+  async function removeAfterOnlineRejection(
+    onlineBefore: boolean,
+    refreshed: 'offline' | 'online' | 'gone' | 'fails' | 'never returns',
+  ) {
     const off = vi.fn();
     const subscribe = vi.fn(() => off);
     const listed = (online: boolean) => ({
@@ -141,6 +133,7 @@ describe('useDeviceLinkSettings deletion', () => {
     const listDevices = vi.fn().mockResolvedValueOnce(listed(onlineBefore));
     if (refreshed === 'fails') listDevices.mockRejectedValue(new Error('[INTERNAL] list failed'));
     else if (refreshed === 'never returns') listDevices.mockReturnValue(new Promise<never>(() => {}));
+    else if (refreshed === 'gone') listDevices.mockResolvedValue({ devices: [] });
     else listDevices.mockResolvedValue(listed(refreshed === 'online'));
     const api = {
       getState: vi.fn(() => new Promise<never>(() => {})),
@@ -158,21 +151,46 @@ describe('useDeviceLinkSettings deletion', () => {
     await waitFor(() => expect(result.current.devices).toHaveLength(1));
 
     vi.useFakeTimers();
+    let deleted: boolean | undefined;
     try {
-      let deleted: boolean | undefined;
       await act(async () => {
         const removing = result.current.remove('target').then((value) => { deleted = value; });
         // 「一直不返回」靠超时收口；其余情况不需要推进时间也已结束。
         await vi.advanceTimersByTimeAsync(60_000);
         await removing;
       });
-      expect(deleted).toBe(false);
     } finally {
       vi.useRealTimers();
     }
-    expect(effects.error).toHaveBeenCalledWith(message);
-    expect(effects.removeDevice).not.toHaveBeenCalled();
     expect(api.listDevices).toHaveBeenCalledTimes(2);
     unmount();
+    return deleted;
+  }
+
+  // 被拒后先刷新列表再选提示，提示要跟此刻界面上的列表一致：仍显示离线的设备不能再提示「尚不
+  // 支持移除在线设备」；点删除时与刷新后状态不同，以刷新后的为准。刷新一直不返回时界面仍是原
+  // 列表，按原列表选提示；刷新失败时界面换成错误块，沿用原提示。没有截止时间的请求也不能让
+  // 删除一直不返回。
+  it.each([
+    [false, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [true, 'online', 'settings.devices.toast.deleteOnline'],
+    [false, 'online', 'settings.devices.toast.deleteOnline'],
+    [true, 'offline', 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [false, 'fails', 'settings.devices.toast.deleteOnline'],
+    [false, 'never returns', 'settings.devices.toast.deleteRejectedWhileOffline'],
+    [true, 'never returns', 'settings.devices.toast.deleteOnline'],
+  ] as const)('explains an online rejection by the refreshed list (online before: %s, refresh: %s)', async (onlineBefore, refreshed, message) => {
+    expect(await removeAfterOnlineRejection(onlineBefore, refreshed)).toBe(false);
+    expect(effects.error).toHaveBeenCalledWith(message);
+    expect(effects.removeDevice).not.toHaveBeenCalled();
+  });
+
+  // 被拒之后设备被别处删掉：刷新后的列表里已经没有它，界面那一行已消失。确认框要按已删除关闭，
+  // 不能报「在线设备」错误、留下一个指向不存在设备的确认框。
+  it('closes as deleted when the refreshed list no longer has the device', async () => {
+    expect(await removeAfterOnlineRejection(false, 'gone')).toBe(true);
+    expect(effects.success).toHaveBeenCalledWith('settings.devices.toast.deleted');
+    expect(effects.removeDevice).toHaveBeenCalledWith('target');
+    expect(effects.error).not.toHaveBeenCalled();
   });
 });

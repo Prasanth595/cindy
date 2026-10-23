@@ -259,7 +259,8 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
           return false;
         }
         // 服务端以「设备在线」拒绝删除。先刷新一次列表与服务端对齐(最多等一会儿)，再按此刻
-        // 界面上的列表选提示：仍显示离线(含刷新超时、界面仍是原列表)说明两边的在线判断不一致，
+        // 界面上的列表收口：设备已不在列表里(拒绝之后被别处删掉)，界面那一行已经消失，按已删除
+        // 处理并关闭确认框；仍显示离线(含刷新超时、界面仍是原列表)说明两边的在线判断不一致，
         // 不能再提示「尚不支持移除在线设备」让用户误以为设备真在线；显示在线或刷新失败(界面
         // 换成错误块、看不到设备行)时沿用原提示。
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -271,11 +272,16 @@ export function useDeviceLinkSettings(active = true): DeviceLinkSettings {
         ]);
         clearTimeout(timer);
         const { devices: listed, ok } = latestList.current;
-        const listedOffline =
-          ok && (listed?.some((device) => device.deviceId === deviceId && !device.online) ?? false);
+        const target = ok ? listed?.find((device) => device.deviceId === deviceId) : undefined;
+        if (ok && listed && !target) {
+          remoteProjectsStore.removeDevice(deviceId);
+          removeDeviceLinkDevice(deviceId);
+          toast.success(t('settings.devices.toast.deleted'));
+          return true;
+        }
         toast.error(
           t(
-            listedOffline
+            target && !target.online
               ? 'settings.devices.toast.deleteRejectedWhileOffline'
               : 'settings.devices.toast.deleteOnline',
           ),
