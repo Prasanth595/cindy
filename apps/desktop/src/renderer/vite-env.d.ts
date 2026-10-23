@@ -19,6 +19,7 @@ type ModelAccessStatusPayload = import('../shared/modelAccess').ModelAccessStatu
 type AnalyticsSettingsPayload = import('../shared/analyticsSettings').AnalyticsSettingsPayload;
 type LogUploadSettingsPayload = import('../shared/logUpload').LogUploadSettingsPayload;
 type LogUploadResult = import('../shared/logUpload').LogUploadResult;
+type StartupGateStallSnapshot = import('../shared/startupGateStall').StartupGateStallSnapshot;
 type CustomProviderUpdateOptions =
   import('../shared/customProviderUpdate').CustomProviderUpdateOptions;
 type CustomProviderUpdateResult =
@@ -1226,6 +1227,9 @@ interface ElectronAPI {
     msg: string,
   ) => void;
 
+  /** 开屏卡住时上报一次启动门快照;main 校验字段后写进可上传的诊断日志。仅主窗 preload 提供。 */
+  reportStartupGateStall?: (snapshot: StartupGateStallSnapshot) => void;
+
   localThemes: {
     listSync: () => LocalThemesResult;
     list: () => Promise<LocalThemesResult>;
@@ -1583,7 +1587,7 @@ interface ElectronAPI {
     resolveConfirm: (requestId: string, confirmed: boolean) => Promise<{ handled: boolean }>;
     /** taskView 槽:插件请求在指定任务的右侧栏打开 / 聚焦它的任务页页签(main 已资格审)。 */
     onTaskViewOpen: (
-      callback: (payload: { instanceId: string; sessionId: string }) => void,
+      callback: (payload: { instanceId: string; sessionId: string; focus?: true }) => void,
     ) => () => void;
     /** preview 槽:插件请求在右侧栏内置浏览器开预览标签(main 已白名单守门+限速)。 */
     onPreviewOpen: (
@@ -4021,6 +4025,11 @@ interface ElectronAPI {
    * `silent: true` 只抑制 busy 的「manual relaunch」INFO,供横幅延后轮询;判定不变。
    */
   anyActivityBlockingRelaunch: (opts?: { silent?: boolean }) => Promise<boolean>;
+  describeRelaunchBlockingActivity: () => Promise<{
+    busy: boolean;
+    categories: Array<'companion' | 'conversation' | 'background-command' | 'scheduled-task' | 'generation' | 'subtask'>;
+    companionNames: string[];
+  }>;
   /** Tell main process to apply the update and relaunch the app.
    *  `theme` is the renderer's *resolved* light/dark (after collapsing 'system'),
    *  forwarded to cindy-updater so its splash matches the app the user is seeing. */

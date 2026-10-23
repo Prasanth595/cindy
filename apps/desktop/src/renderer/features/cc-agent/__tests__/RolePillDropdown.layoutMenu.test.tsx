@@ -1,13 +1,28 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { Profiler } from 'react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkerInfo } from '../hooks/useWorkers';
 import { WorkerListToolbar } from '../RolePillDropdown';
+import {
+  addSessionAttention,
+  clearSessionAttention,
+  getSessionAttentionKinds,
+} from '@/lib/sessionAttentionStore';
+import {
+  markWorkerAttention,
+  __resetWorkerAttentionStoreForTest,
+} from '../lib/workerAttentionStore';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, values?: { totalCount: number; activeCount: number }) =>
+      key === 'orca.rolePill.workerCountSummary' && values
+        ? `${values.totalCount} workers · ${values.activeCount} running`
+        : key,
+  }),
 }));
 
 vi.mock('@/hooks/useAppShortcut', () => ({
@@ -76,6 +91,41 @@ describe('WorkerLayoutMenu hover interaction', () => {
     vi.useRealTimers();
     cleanup();
   });
+
+  it.each(['tabs', 'dropdown'])(
+    '%s 标题只数 running，但创建上限仍计入空闲、完成和出错 Worker',
+    (layout) => {
+      localStorage.setItem('orca-worker-list-layout-v1', layout);
+      const workers = (['running', 'running', 'idle', 'done', 'error'] as const).map(
+        (status, index) =>
+          worker({
+            workerId: `worker-${index}`,
+            sessionId: `session-${index}`,
+            status,
+            focused: index === 0,
+          }),
+      );
+      const onOpenCreate = vi.fn();
+      const onOpenSettings = vi.fn();
+      renderToolbar({
+        worker: workers[0],
+        workers,
+        selectedWorkerId: workers[0].workerId,
+        activeWorkerCount: 5,
+        softLimit: 3,
+        hardLimit: 5,
+        onOpenCreate,
+        onOpenSettings,
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'orca.rolePill.settingsCollaboration' }));
+      expect(onOpenSettings).toHaveBeenCalledOnce();
+      expect(onOpenCreate).not.toHaveBeenCalled();
+      fireEvent.click(
+        layout === 'tabs' ? menuButton() : screen.getByRole('button', { name: /^developer/ }),
+      );
+      expect(screen.getByText('5 workers · 2 running')).toBeTruthy();
+    },
+  );
 
   it('hover 后经打开延迟临时展开菜单', () => {
     renderToolbar();
@@ -155,5 +205,150 @@ describe('WorkerLayoutMenu hover interaction', () => {
     fireEvent.click(menuButton());
     fireEvent.click(screen.getByRole('button', { name: 'orca.rolePill.layoutDropdown' }));
     expect(screen.queryByText('orca.rolePill.workersHeader')).toBeNull();
+  });
+});
+
+// 使用真实提醒 store 驱动四个展示入口；防止只修 helper 却漏接其中一份列表。
+describe('Worker list task attention', () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => {
+    cleanup();
+    for (const id of getSessionAttentionKinds().keys())
+      clearSessionAttention(id, { intent: 'explicit' });
+    __resetWorkerAttentionStoreForTest();
+  });
+
+  it.each(['tabs', 'dropdown'] as const)(
+    '%s：idle Worker 的错误、等待确认与清除同步到行和折叠入口',
+    (layout) => {
+      localStorage.setItem('orca-worker-list-layout-v1', layout);
+      const current = worker();
+      const hidden = worker({
+        workerId: 'worker-b',
+        sessionId: 'session-b',
+        role: 'reviewer',
+        focused: false,
+        status: 'done',
+      });
+      const view = renderToolbar({ worker: current, workers: [current, hidden] });
+      const openList = () =>
+        fireEvent.click(
+          layout === 'tabs' ? menuButton() : screen.getByRole('button', { name: /^developer/ }),
+        );
+
+      act(() => addSessionAttention(hidden.sessionId, 'error'));
+      // 未展开时：平铺 tab 或折叠入口都必须能看出隐藏 Worker 出错。
+      expect(screen.getByLabelText('orca.rolePill.errorBadgeAria')).toBeTruthy();
+      openList();
+      const row = screen.getAllByRole('button', { name: /reviewer.*gpt-5.4/ })[0];
+      expect(row.className).toContain('border-[var(--error-fg)]');
+      expect(
+        within(row.parentElement!).getByLabelText('orca.rolePill.errorBadgeAria'),
+      ).toBeTruthy();
+
+      act(() => {
+        clearSessionAttention(hidden.sessionId, { intent: 'explicit' });
+        addSessionAttention(hidden.sessionId, 'awaiting');
+        markWorkerAttention(hidden.workerId);
+      });
+      expect(screen.queryByLabelText('orca.rolePill.errorBadgeAria')).toBeNull();
+      expect(within(row).getByLabelText('orca.rolePill.awaitingBadgeAria')).toBeTruthy();
+      expect(screen.queryByLabelText('orca.rolePill.unread')).toBeNull();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(screen.getByLabelText('orca.rolePill.awaitingBadgeAria')).toBeTruthy();
+
+      // 当前 Worker 等确认仍显示；错误优先于当前/隐藏 Worker 的蓝点。
+      act(() => addSessionAttention(current.sessionId, 'awaiting'));
+      expect(screen.getAllByLabelText('orca.rolePill.awaitingBadgeAria').length).toBe(
+        layout === 'tabs' ? 2 : 1,
+      );
+      act(() => addSessionAttention(current.sessionId, 'error'));
+      expect(screen.getByRole('button', { name: /^developer/ }).className).toContain(
+        'border-[var(--error-',
+      );
+      if (layout === 'dropdown')
+        expect(screen.queryByLabelText('orca.rolePill.awaitingBadgeAria')).toBeNull();
+      act(() => {
+        clearSessionAttention(current.sessionId, { intent: 'explicit' });
+        clearSessionAttention(hidden.sessionId, { intent: 'explicit' });
+      });
+      expect(screen.queryByLabelText('orca.rolePill.errorBadgeAria')).toBeNull();
+      expect(screen.queryByLabelText('orca.rolePill.awaitingBadgeAria')).toBeNull();
+      openList();
+      expect(screen.getAllByLabelText('orca.rolePill.unread').length).toBeGreaterThan(0);
+      // 选中完成 Worker 后绿点隐藏，原来的「完成未读」语义不变。
+      view.rerender(
+        <WorkerListToolbar
+          worker={hidden}
+          workers={[
+            { ...current, focused: false },
+            { ...hidden, focused: true },
+          ]}
+          selectedWorkerId={hidden.workerId}
+          activeWorkerCount={1}
+          softLimit={5}
+          hardLimit={8}
+          onSwitchFocus={vi.fn()}
+          onOpenCreate={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onArchiveWorker={vi.fn()}
+        />,
+      );
+      expect(screen.queryByLabelText('orca.rolePill.unread')).toBeNull();
+    },
+  );
+
+  it('运行设备 Worker 不读本机同 id 的任务提醒，仍保留运行态 error；错误压过完成未读', () => {
+    const remote = worker({
+      executionDevice: {
+        deviceId: 'other-device',
+        remoteSessionId: 'remote-session',
+        deviceName: 'Other Mac',
+        reachable: true,
+        workingDir: null,
+      },
+    });
+    addSessionAttention(remote.sessionId, 'error');
+    const view = renderToolbar({ worker: remote, workers: [remote] });
+    expect(screen.queryByLabelText('orca.rolePill.errorBadgeAria')).toBeNull();
+    act(() => addSessionAttention(remote.sessionId, 'awaiting'));
+    expect(screen.queryByLabelText('orca.rolePill.awaitingBadgeAria')).toBeNull();
+    view.unmount();
+    markWorkerAttention(remote.workerId);
+    renderToolbar({
+      worker: remote,
+      workers: [{ ...remote, focused: false, status: 'error' }],
+      selectedWorkerId: null,
+      clearAttentionWhenVisible: false,
+    });
+    expect(screen.getByLabelText('orca.rolePill.errorBadgeAria')).toBeTruthy();
+    expect(screen.queryByLabelText('orca.rolePill.unread')).toBeNull();
+  });
+
+  it('其他任务的提醒变化不重新渲染 Worker 列表', () => {
+    const onRender = vi.fn();
+    const current = worker();
+    render(
+      <Profiler id="workers" onRender={onRender}>
+        <WorkerListToolbar
+          worker={current}
+          workers={[current]}
+          selectedWorkerId={current.workerId}
+          activeWorkerCount={1}
+          softLimit={5}
+          hardLimit={8}
+          onSwitchFocus={vi.fn()}
+          onOpenCreate={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onArchiveWorker={vi.fn()}
+        />
+      </Profiler>,
+    );
+    onRender.mockClear();
+    act(() => addSessionAttention('unrelated-session', 'error'));
+    expect(onRender).not.toHaveBeenCalled();
+    act(() => addSessionAttention(current.sessionId, 'awaiting'));
+    expect(onRender).toHaveBeenCalled();
+    expect(screen.getByLabelText('orca.rolePill.awaitingBadgeAria')).toBeTruthy();
   });
 });

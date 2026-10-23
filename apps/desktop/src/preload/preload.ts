@@ -30,6 +30,10 @@ import {
   type LoginItemState,
 } from '../shared/loginItem';
 import type { BotToolsetContext } from '../shared/botRemoteCapabilities';
+import {
+  STARTUP_GATE_STALL_CHANNEL,
+  type StartupGateStallSnapshot,
+} from '../shared/startupGateStall';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { createChatFolderUpload } from './chatFolderUpload';
 import { DESKTOP_LOCAL, type RemoteDesktopApi } from '../shared/remoteDesktop';
@@ -1072,9 +1076,14 @@ const clientEndpointsInfo = ipcRenderer.sendSync('client-endpoints:get-sync') as
   websiteUrl: string;
 };
 
-const appearanceSettingsInfo = ipcRenderer.sendSync(
+let appearanceSettingsInfo = ipcRenderer.sendSync(
   'appearance-settings:get-sync',
 ) as AppearanceSettings | null;
+// Keep the bootstrap snapshot current even before a terminal mounts. Register
+// before renderer subscriptions so getSync() sees the same update as onChanged.
+ipcRenderer.on('appearance-settings:changed', (_event, settings: AppearanceSettings) => {
+  appearanceSettingsInfo = settings;
+});
 
 contextBridge.exposeInMainWorld('electronAPI', {
   localAgent: {
@@ -1133,6 +1142,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     runNow: (botId: string, id: string) => ipcRenderer.invoke('routines:run-now', botId, id),
     history: (botId: string, id: string) => ipcRenderer.invoke('routines:history', botId, id),
     sources: () => ipcRenderer.invoke('routines:sources'),
+    nightlyLearning: {
+      get: (botId: string): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:get', botId),
+      setEnabled: (botId: string, enabled: boolean): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:set-enabled', botId, enabled),
+      setFrequency: (botId: string, frequency: import('../shared/botNightlyLearning').NightlyLearningFrequency): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:set-frequency', botId, frequency),
+      runNow: (botId: string): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:run-now', botId),
+      revert: (botId: string, runId: string, itemId: string, redo: boolean): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:revert', botId, runId, itemId, redo),
+      candidate: (botId: string, candidateId: string, action: 'promote' | 'decline'): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:candidate', botId, candidateId, action),
+    },
     onChanged: (listener: () => void) => {
       const wrapped = () => listener();
       ipcRenderer.on('routines:changed', wrapped);
@@ -1225,6 +1248,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scope: string,
     msg: string,
   ): void => ipcRenderer.send('renderer:log', level, scope, msg),
+
+  /** 开屏卡住时上报一次启动门快照;main 校验字段后写进可上传的诊断日志。 */
+  reportStartupGateStall: (snapshot: StartupGateStallSnapshot): void =>
+    ipcRenderer.send(STARTUP_GATE_STALL_CHANNEL, snapshot),
 
   localThemes: {
     listSync: (): LocalThemesResult => {
@@ -4649,6 +4676,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   anyActivityBlockingRelaunch: (opts?: { silent?: boolean }): Promise<boolean> =>
     ipcRenderer.invoke('update-relaunch:blocking-activity', opts),
+
+  /**
+   * 同一条忙闲判定的脱敏摘要。busy 仍是布尔;categories 为空表示读不出具体类别,
+   * 界面保留通用警告。不返回会话 id、路径、提示词或远程控制者。
+   */
+  describeRelaunchBlockingActivity: (): Promise<{
+    busy: boolean;
+    categories: Array<'companion' | 'conversation' | 'background-command' | 'scheduled-task' | 'generation' | 'subtask'>;
+    companionNames: string[];
+  }> => ipcRenderer.invoke('update-relaunch:blocking-summary'),
 
   /**
    * Tell the main process to apply the downloaded update and relaunch.

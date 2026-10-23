@@ -28,7 +28,6 @@ import {
   pinnedSidebarEntryComparisonKey,
 } from '@/features/cc-agent/lib/pinnedSidebarOrder';
 import type { Session } from '@/lib/ccAgent.types';
-import { setProvisionalDraftTaskId } from '@/features/cc-agent/lib/provisionalDraftTaskId';
 import { findProjectRepresentativeKey } from '@/features/cc-agent/lib/sidebarProjectVisibility';
 
 /* ---------------- helpers ---------------- */
@@ -789,15 +788,10 @@ describe('groupSessions', () => {
   it('places the new-task page\'s unsent task under its chosen project', () => {
     const unsent = s({ workingDir: '/p/foo', userSendAt: null });
     const otherDraft = s({ workingDir: '/p/foo', userSendAt: null });
-    setProvisionalDraftTaskId(unsent.id);
-    try {
-      const r = groupSessions([unsent, otherDraft]);
-      expect(r.unclassified).toEqual([otherDraft]);
-      expect(r.projects).toHaveLength(1);
-      expect(r.projects[0].sessions).toEqual([unsent]);
-    } finally {
-      setProvisionalDraftTaskId(null);
-    }
+    const r = groupSessions([unsent, otherDraft], { provisionalDraftTaskId: unsent.id });
+    expect(r.unclassified).toEqual([otherDraft]);
+    expect(r.projects).toHaveLength(1);
+    expect(r.projects[0].sessions).toEqual([unsent]);
   });
 
   // SDK echo 失败 / 老数据 backfill 漏掉的孤儿：userSendAt 没写上但 messages

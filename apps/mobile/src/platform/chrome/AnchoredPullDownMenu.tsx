@@ -354,6 +354,7 @@ function MenuRow({
   const { colors } = useTheme();
   const submenu = !!action.subactions?.length && !action.displayInline;
   const tint = action.destructive ? colors.destructive : colors.textPrimary;
+  const Icon = action.icon;
   return (
     <Pressable
       accessibilityLabel={
@@ -392,6 +393,8 @@ function MenuRow({
             size={iconSize.md}
             strokeWidth={iconStroke.medium}
           />
+        ) : Icon ? (
+          <Icon color={tint} size={iconSize.md} strokeWidth={iconStroke.regular} />
         ) : null}
       </View>
       <View style={styles.rowText}>

@@ -655,7 +655,6 @@ export function BotSettings({
                     contacts: 'personalization&section=personalization.contacts',
                     ssh: 'remote-control&section=remoteControl.ssh',
                     slack: 'im-bot&section=imBot.cindy.slack', feishu_bot: 'im-bot', wechat: 'im-bot',
-                    'ios-simulator': 'ghosts',
                   };
                   navigate(kind === 'skill' ? '/skillhub/local' : `/settings?tab=${toolSettings[id ?? ''] ?? 'builtin-tools'}`);
                 });

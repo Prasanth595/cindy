@@ -1,12 +1,14 @@
 import { CompanionCallDialogue } from './dialogue.js';
 import { ipcMain, webContents, type IpcMainInvokeEvent } from 'electron';
 import type { AsrProvider, AudioGate } from '@cindy/voice-input-core';
+import { storedCustomProviderId } from '@cindy/model-providers';
 import {
   normalizeVoiceConversationSelection,
   normalizeSpeechModelSelection,
   type VoiceConversationPreference,
 } from '../../shared/voiceConversation.js';
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
+import { readCachedGenericOAuthAccessToken } from '../maker-host/generic-oauth.js';
 import { getModelVisibilityOverride, waitForModelVisibilityMirror } from '../maker-host/model-visibility-mirror.js';
 import { getProviderSecretStore, readCustomProviderKey } from '../secrets/providerSecretStore.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
@@ -54,6 +56,7 @@ export function registerVoiceConversationIpc(deps: {
       disabled: isProviderModelRouteDisabled,
       visibilityOverride: getModelVisibilityOverride,
       readKey: readCustomProviderKey,
+      readOAuthToken: (providerId, oauth) => readCachedGenericOAuthAccessToken(storedCustomProviderId(providerId), oauth),
       gatewayConnection: () => ({
         baseUrl: effectiveXdGatewayBaseUrl(),
         apiKey: getProviderSecretStore().get('xd') ?? '',

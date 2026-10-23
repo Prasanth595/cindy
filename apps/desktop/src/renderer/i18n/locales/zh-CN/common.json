@@ -1763,6 +1763,16 @@
           "description": "仅调整代码块、修改对比和编辑器字号；不影响行内代码、状态数字、徽标和路径标签",
           "aria": "调整代码字号"
         },
+        "terminalFamily": {
+          "label": "终端字体",
+          "description": "仅用于内置终端，建议使用等宽字体。",
+          "aria": "选择终端字体"
+        },
+        "terminalSize": {
+          "label": "终端字号",
+          "description": "调整内置终端中的文字大小。",
+          "aria": "调整终端字号"
+        },
         "presetsUi": {
           "default": "Inter（默认）",
           "codexStyle": "Codex 风格",
@@ -1772,8 +1782,12 @@
           "default": "Codex 风格（默认）",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "等宽字体（默认）"
+        },
         "previewSamples": {
-          "ui": "中文字体预览，清晰锐利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "中文字体预览，清晰锐利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"终端字体预览\"\n终端字体预览\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
@@ -3353,6 +3367,7 @@
         "refreshingAria": "正在刷新模型列表…",
         "refreshDone": "模型列表已刷新",
         "refreshAdded": "已发现 {{count}} 个新模型",
+        "refreshSpeechAdded": "已更新模型，补充了 1 个语音参考型号",
         "refreshNoNew": "模型列表已是最新，无新增",
         "refreshFailed": "模型列表刷新失败，请稍后再试",
         "refreshFetchDisabled": "模型目录远程拉取未启用，已跳过刷新",
@@ -5181,10 +5196,6 @@
         "android": {
           "name": "Android 自动化",
           "description": "查看、点击和操作连接到本机的 Android 设备。"
-        },
-        "ios-simulator": {
-          "name": "iOS 模拟器",
-          "description": "在 iOS 模拟器中安装、运行和检查应用。"
         },
         "browser": {
           "name": "浏览器",
@@ -7117,10 +7128,10 @@
         "embeddedSimulator": {
           "title": "原内置模拟器已下线",
           "description": "Cindy 已移除原内置模拟器。",
-          "replacementName": "Baguette 模拟器",
-          "replacementDescription": "在 Cindy 侧边栏查看实时画面，操作设备、运行 App 和截图。",
+          "replacementName": "设备模拟器",
+          "replacementDescription": "在 Cindy 侧边栏查看实时画面，操作设备、运行 App 和截图。基于开源项目 Baguette。",
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更高版本及完整 Xcode。",
-          "dataNotice": "原模拟器的设备和应用数据不会被删除。安装 Baguette 不会自动迁移设备、App 或登录状态。"
+          "dataNotice": "原模拟器的设备和应用数据不会被删除。安装新的设备模拟器不会自动迁移设备、App 或登录状态。"
         }
       },
       "remote": {
@@ -8843,6 +8854,23 @@
       "preparingAria": "正在准备新版本，请稍候",
       "confirmTitle": "仍有任务在运行中",
       "confirmBusyHint": "重启会中断运行中的任务",
+      "confirmBusyActivities": "重启会中断{{activities}}。",
+      "activityJoiner": "、",
+      "activityJoinerPair": "、",
+      "activityJoinerLast": "、",
+      "activityNameJoiner": "、",
+      "activityNameJoinerPair": "、",
+      "activityNameJoinerLast": "、",
+      "activity": {
+        "companion": "伙伴的回复",
+        "companionOne": "伙伴 {{names}} 的回复",
+        "companionOther": "伙伴 {{names}} 的回复",
+        "conversation": "正在进行的对话",
+        "backgroundCommand": "后台命令",
+        "scheduledTask": "定时任务",
+        "generation": "生成任务",
+        "subtask": "子任务"
+      },
       "confirmButton": "仍要重启应用",
       "cancel": "取消",
       "confirmTooltip": "仍有任务在运行中，重启会中断它",
@@ -10265,7 +10293,6 @@
       "openSettings": "语音设置",
       "startConversation": "开始语音对话",
       "settingsHint": "选择这位伙伴使用的朗读模型和音色。设置完成后，从输入框开始语音对话。",
-      "incompleteSettings": "选择语音接口和音色后自动保存。",
       "previewNeedsChat": "与伙伴开始对话后可试听。",
       "voiceId": "音色 ID",
       "manualVoice": "手动输入音色 ID",
@@ -11714,6 +11741,7 @@
       "imageCopied": "图片已复制",
       "copyFailed": "复制失败",
       "openFolderFailed": "打开目录失败",
+      "longImagePreview": "长图 · 点击查看完整图片",
       "copyImage": "复制图片",
       "revealImage": "打开图片所在目录",
       "revealImageSidebar": "在文件浏览器中显示",
@@ -12334,6 +12362,7 @@
       "REMOTE_AGENT_UNSUPPORTED": "那台电脑上这个 Agent 不可用。在那台电脑上安装或登录后再试，或换一个 Agent。",
       "REMOTE_AGENT_INVALID": "和运行 Agent 的电脑通信出错。请重试；如果一直出现，请把两台电脑上的 Cindy 都更新到最新版。",
       "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑未向你开放这个供应商或所选模型。请让电脑主人在「远程与分享」中调整开放范围，或换一个模型。",
+      "REMOTE_AGENT_FORK_FAILED": "运行 Agent 的电脑没能从这里开启新任务。请重试，或换一条消息再试。",
       "REMOTE_AGENT_SHARE_PAUSED": "对方已暂停对你的分享，恢复前不能使用这些模型。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_REMOVED": "这个分享已不可用（对方删除了分享或你已退出）。可以换成其他模型继续。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供应商暂时不可用：对方电脑可能不在线，或对方暂时关闭了分享。可以稍后再试，或换成其他模型继续。",
@@ -16074,6 +16103,61 @@
     "builtinTodoCheck": {
       "name": "每天查待办（内置）",
       "hint": "工作日 9:00 在已连接的来源里找新待办，没有就不打扰；在近况里开关，只能暂停或恢复。"
+    },
+    "builtinNightlyLearning": {
+      "name": "夜间学习（内置）",
+      "title": "夜间学习",
+      "hint": "每天 3:30 整理和你的对话：合并记忆，把反复用到的做法总结成技能。没有新对话就跳过，不调用模型。",
+      "hintWeekly": "每周一 3:30 整理这一周和你的对话：合并记忆，把反复用到的做法总结成技能。没有新对话就跳过，不调用模型。"
+    },
+    "nightly": {
+      "switchLabel": "到点自动整理",
+      "paused": "已暂停。对话照常计数，打开后到点开始整理。",
+      "running": "正在整理…",
+      "memoryOff": "记忆已关闭，只整理技能。",
+      "pending": "待整理",
+      "pendingTurns_one": "{{count}} 轮对话",
+      "pendingTurns_other": "{{count}} 轮对话",
+      "pendingNone": "没有新对话，到点会跳过",
+      "last": "上次",
+      "lastNever": "还没整理过",
+      "lastFailed": "没整理完，下次会再试",
+      "lastLearned_one": "整理了 {{count}} 项",
+      "lastLearned_other": "整理了 {{count}} 项",
+      "nothing": "没有需要整理的",
+      "viewHistory": "查看记录",
+      "notHere": "夜间学习只在伙伴的主力电脑上运行。",
+      "switchHint": "没有新对话就跳过，不调用模型",
+      "frequency": "频率",
+      "daily": "每天",
+      "weekly": "每周",
+      "dailyHint": "每天 3:30",
+      "weeklyHint": "每周一 3:30",
+      "runNow": "现在整理",
+      "history": "记录",
+      "empty": "还没有整理过。有新对话后，到点会第一次整理。",
+      "manual": "手动整理",
+      "readTurns_one": "看了 {{count}} 轮对话",
+      "readTurns_other": "看了 {{count}} 轮对话",
+      "undone": "已撤销",
+      "undo": "撤销",
+      "redo": "恢复",
+      "watching": "在观察的做法",
+      "watchingHint": "只出现过一次的做法先放在这里，不会加载。再遇到同类事才会总结成技能。",
+      "promote": "现在记成技能",
+      "decline": "不用学",
+      "changedSince": "这一条之后被改过，不能撤销",
+      "failed": "没能完成，请重试",
+      "item": {
+        "memoryCreated": "新记住「{{title}}」",
+        "memoryUpdated": "整理了记忆「{{title}}」",
+        "memoryDeleted": "删除了记忆「{{title}}」",
+        "memoryMerged": "把记忆「{{title}}」并入「{{into}}」",
+        "skillCreated": "新学技能「{{title}}」",
+        "skillUpdated": "更新了技能「{{title}}」",
+        "skillDisabled": "停用了技能「{{title}}」",
+        "skillMerged": "把技能「{{title}}」并入「{{into}}」并停用"
+      }
     }
   },
   "cindyMakeDoctor": {
@@ -17098,5 +17182,12 @@
     "taskSource": "[任务来源] 本任务由伙伴发起。",
     "taskId": "任务 ID：",
     "contextReferences": "参考资料："
+  },
+  "subscriptionFastPolicy": {
+    "label": "允许使用 Fast",
+    "providerHint": "关闭后，此订阅账号使用普通模式，包括自己使用和分享使用。也适用于 Ultrafast。",
+    "groupHint": "关闭后，经此组运行的任务使用普通模式，也适用于 Ultrafast。",
+    "pending": "部分电脑尚未确认设置。请保持连接，并更新不支持此设置的组内电脑。",
+    "saveFailed": "设置可能已保存，但运行中的任务尚未全部确认切换为普通模式。请检查连接后重试。"
   }
 }

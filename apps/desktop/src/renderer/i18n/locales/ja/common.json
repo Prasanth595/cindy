@@ -1763,6 +1763,16 @@
           "description": "コードブロック、変更の比較、エディターの文字サイズのみを調整します。文中のコード、状態を示す数値、バッジ、パスのラベルは変わりません。",
           "aria": "コードのフォントサイズを調整"
         },
+        "terminalFamily": {
+          "label": "ターミナルのフォント",
+          "description": "内蔵ターミナルでのみ使用します。等幅フォントを推奨します。",
+          "aria": "ターミナルのフォントを選択"
+        },
+        "terminalSize": {
+          "label": "ターミナルのフォントサイズ",
+          "description": "内蔵ターミナルのフォントサイズを調整します。",
+          "aria": "ターミナルのフォントサイズを調整"
+        },
         "presetsUi": {
           "default": "Inter（デフォルト）",
           "codexStyle": "Codex スタイル",
@@ -1772,8 +1782,12 @@
           "default": "Codex スタイル（デフォルト）",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "等幅フォント（デフォルト）"
+        },
         "previewSamples": {
-          "ui": "日本語フォントは読みやすく美しい ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "日本語フォントは読みやすく美しい ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"ターミナルのフォントプレビュー\"\nターミナルのフォントプレビュー\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
@@ -3353,6 +3367,7 @@
         "refreshingAria": "モデル一覧を更新中…",
         "refreshDone": "モデル一覧を再読み込みしました",
         "refreshAdded": "新しいモデルを {{count}} 件検出しました",
+        "refreshSpeechAdded": "モデルを更新し、参考の音声モデルを 1 件追加しました",
         "refreshNoNew": "モデル一覧は最新です。新規はありません",
         "refreshFailed": "モデル一覧を更新できませんでした。しばらくしてから再試行してください",
         "refreshFetchDisabled": "モデルカタログのリモート取得が無効のため、更新をスキップしました",
@@ -5181,10 +5196,6 @@
         "android": {
           "name": "Android 自動化",
           "description": "接続された Android デバイスを表示・操作します。"
-        },
-        "ios-simulator": {
-          "name": "iOS シミュレータ",
-          "description": "iOS シミュレータでアプリをインストール、実行、検証します。"
         },
         "browser": {
           "name": "ブラウザ",
@@ -7117,10 +7128,10 @@
         "embeddedSimulator": {
           "title": "旧内蔵シミュレーターは提供を終了しました",
           "description": "Cindy は旧内蔵シミュレーターを削除しました。",
-          "replacementName": "Baguette シミュレーター",
-          "replacementDescription": "Cindy のサイドバーでリアルタイム画面を表示し、デバイスの操作、App の実行、スクリーンショットの撮影ができます。",
+          "replacementName": "デバイスシミュレータ",
+          "replacementDescription": "Cindy のサイドバーでリアルタイム画面を表示し、デバイスの操作、App の実行、スクリーンショットの撮影ができます。オープンソースプロジェクト Baguette をベースにしています。",
           "requirements": "Apple Silicon Mac、macOS 15 以降、フルバージョンの Xcode が必要です。",
-          "dataNotice": "元のシミュレーターのデバイスや App データは削除されません。Baguette をインストールしても、デバイス、App、ログイン状態は自動移行されません。"
+          "dataNotice": "元のシミュレーターのデバイスや App データは削除されません。新しいデバイスシミュレータをインストールしても、デバイス、App、ログイン状態は自動移行されません。"
         }
       },
       "remote": {
@@ -8843,6 +8854,23 @@
       "preparingAria": "新しいバージョンを準備中、お待ちください",
       "confirmTitle": "実行中のタスクがあります",
       "confirmBusyHint": "再起動すると中断されます",
+      "confirmBusyActivities": "再起動すると、{{activities}}が中断されます。",
+      "activityJoiner": "、",
+      "activityJoinerPair": "、",
+      "activityJoinerLast": "、",
+      "activityNameJoiner": "、",
+      "activityNameJoinerPair": "と",
+      "activityNameJoinerLast": "、",
+      "activity": {
+        "companion": "仲間の返信",
+        "companionOne": "仲間 {{names}}の返信",
+        "companionOther": "仲間 {{names}}の返信",
+        "conversation": "進行中のチャット",
+        "backgroundCommand": "バックグラウンドコマンド",
+        "scheduledTask": "スケジュールタスク",
+        "generation": "生成タスク",
+        "subtask": "サブタスク"
+      },
       "confirmButton": "それでもアプリを再起動",
       "cancel": "キャンセル",
       "confirmTooltip": "実行中のタスクがあります — 再起動すると中断されます",
@@ -10265,7 +10293,6 @@
       "openSettings": "音声設定",
       "startConversation": "音声会話を開始",
       "settingsHint": "このパートナーの読み上げモデルと声を選択し、入力欄から音声会話を開始できます。",
-      "incompleteSettings": "音声 API と声を選択すると自動で保存されます。",
       "previewNeedsChat": "パートナーとの会話を開始すると試聴できます。",
       "voiceId": "音声 ID",
       "manualVoice": "音声 ID を手動入力",
@@ -11714,6 +11741,7 @@
       "imageCopied": "画像をコピーしました",
       "copyFailed": "コピーに失敗しました",
       "openFolderFailed": "フォルダを開けませんでした",
+      "longImagePreview": "縦長画像 · クリックで全体を表示",
       "copyImage": "画像をコピー",
       "revealImage": "画像のフォルダを開く",
       "revealImageSidebar": "ファイルブラウザで表示",
@@ -12334,6 +12362,7 @@
       "REMOTE_AGENT_UNSUPPORTED": "相手のパソコンではこの Agent を使えません。そのパソコンでインストールまたはサインインするか、別の Agent を選んでください。",
       "REMOTE_AGENT_INVALID": "Agent を実行しているパソコンとの通信でエラーが発生しました。もう一度お試しください。続く場合は両方のパソコンの Cindy を最新版に更新してください。",
       "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "そのパソコンでは、このプロバイダーまたは選択したモデルのリモート利用が許可されていません。提供者に「リモートと共有」で利用範囲を変更してもらうか、別のモデルを選んでください。",
+      "REMOTE_AGENT_FORK_FAILED": "Agent を実行しているパソコンで、ここから新しいセッションを始められませんでした。もう一度試すか、別のメッセージでお試しください。",
       "REMOTE_AGENT_SHARE_PAUSED": "共有した人があなたへの共有を一時停止したため、再開されるまでこれらのモデルは使えません。別のモデルに切り替えて続けられます。",
       "REMOTE_AGENT_SHARE_REMOVED": "この共有は利用できなくなりました（共有した人が削除したか、あなたが退出しました）。別のモデルに切り替えて続けられます。",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "共有されたプロバイダーは一時的に利用できません。共有した人のパソコンがオフラインか、共有が一時的にオフになっている可能性があります。後でもう一度試すか、別のモデルに切り替えて続けられます。",
@@ -16074,6 +16103,61 @@
     "builtinTodoCheck": {
       "name": "毎日の Todo 確認（組み込み）",
       "hint": "平日 9:00 に接続済みのソースから新しい Todo を探し、なければ通知しません。近況からオン・オフでき、一時停止と再開のみできます。"
+    },
+    "builtinNightlyLearning": {
+      "name": "夜間の学習（組み込み）",
+      "title": "夜間の学習",
+      "hint": "毎日 3:30 にあなたとの会話を振り返り、メモリを整理し、繰り返し使うやり方をスキルにまとめます。新しい会話がなければ、モデルを呼び出さずにスキップします。",
+      "hintWeekly": "毎週月曜 3:30 にその週の会話を振り返り、メモリを整理し、繰り返し使うやり方をスキルにまとめます。新しい会話がなければ、モデルを呼び出さずにスキップします。"
+    },
+    "nightly": {
+      "switchLabel": "予定の時刻に自動で整理",
+      "paused": "一時停止中です。会話は引き続き数え、オンにすると予定の時刻から整理します。",
+      "running": "整理中…",
+      "memoryOff": "メモリがオフのため、スキルだけを整理します。",
+      "pending": "未整理",
+      "pendingTurns_one": "{{count}} 回のやり取り",
+      "pendingTurns_other": "{{count}} 回のやり取り",
+      "pendingNone": "新しい会話はありません。次回はスキップします",
+      "last": "前回",
+      "lastNever": "まだ整理していません",
+      "lastFailed": "完了しませんでした。次回もう一度試します",
+      "lastLearned_one": "{{count}} 件を整理",
+      "lastLearned_other": "{{count}} 件を整理",
+      "nothing": "整理するものはありませんでした",
+      "viewHistory": "履歴を見る",
+      "notHere": "夜間の学習は仲間のメインのパソコンでのみ実行されます。",
+      "switchHint": "新しい会話がなければ、モデルを呼び出さずにスキップします",
+      "frequency": "頻度",
+      "daily": "毎日",
+      "weekly": "毎週",
+      "dailyHint": "毎日 3:30",
+      "weeklyHint": "毎週月曜 3:30",
+      "runNow": "今すぐ整理",
+      "history": "履歴",
+      "empty": "まだ整理していません。新しい会話があれば、予定の時刻に最初の整理を行います。",
+      "manual": "手動で整理",
+      "readTurns_one": "{{count}} 回のやり取りを確認",
+      "readTurns_other": "{{count}} 回のやり取りを確認",
+      "undone": "元に戻しました",
+      "undo": "元に戻す",
+      "redo": "復元",
+      "watching": "様子見中のやり方",
+      "watchingHint": "一度しか出てきていないやり方はここで待機し、読み込まれません。同じようなことがもう一度あればスキルにまとめます。",
+      "promote": "今すぐスキルにする",
+      "decline": "学ばない",
+      "changedSince": "この項目はその後変更されたため、元に戻せません",
+      "failed": "完了できませんでした。もう一度お試しください",
+      "item": {
+        "memoryCreated": "「{{title}}」を記憶",
+        "memoryUpdated": "メモリ「{{title}}」を整理",
+        "memoryDeleted": "メモリ「{{title}}」を削除",
+        "memoryMerged": "メモリ「{{title}}」を「{{into}}」に統合",
+        "skillCreated": "スキル「{{title}}」を習得",
+        "skillUpdated": "スキル「{{title}}」を更新",
+        "skillDisabled": "スキル「{{title}}」をオフに",
+        "skillMerged": "スキル「{{title}}」を「{{into}}」に統合してオフに"
+      }
     }
   },
   "cindyMakeDoctor": {
@@ -17098,5 +17182,12 @@
     "taskSource": "[タスクの出典] このタスクはパートナーが開始しました。",
     "taskId": "タスク ID：",
     "contextReferences": "参考資料："
+  },
+  "subscriptionFastPolicy": {
+    "label": "Fast を許可",
+    "providerHint": "オフにすると、このサブスクリプションの自分用・共有タスクは通常速度になります。Ultrafast も対象です。",
+    "groupHint": "オフにすると、このグループ経由のすべてのタスクは通常速度になります。Ultrafast も対象です。",
+    "pending": "一部のコンピューターが設定を確認していません。接続を維持し、この設定に対応していないグループ内のコンピューターを更新してください。",
+    "saveFailed": "設定は保存された可能性がありますが、一部の実行中タスクが通常速度への切り替えを確認していません。接続を確認して再試行してください。"
   }
 }

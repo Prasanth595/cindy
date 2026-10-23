@@ -50,6 +50,7 @@ import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy
 
 import { cn } from '@/lib/utils';
 import { provisionalDraftTaskId, subscribeProvisionalDraftTask } from './provisionalDraftTask';
+import { useProvisionalDraftProjectTaskId } from './hooks/useProvisionalDraftProjectTaskId';
 import { toast } from '@/lib/toast';
 import { isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import { useCCSessions } from '@/hooks/useCCSessions';
@@ -1794,10 +1795,12 @@ function ExpandedView({
     [pinnedProjectKeys, localPlatform],
   );
 
+  const provisionalProjectTaskId = useProvisionalDraftProjectTaskId();
   const restorableProjectKeys = useMemo(
     () =>
       collectRestorableProjectKeys({
         sessions: scopedSidebarSessions,
+        provisionalDraftTaskId: provisionalProjectTaskId,
         persistentLocalProjects: visiblePersistentLocalProjects,
         lastActivityCutoff: cutoffForLastActivity(filter.lastActivity),
         pinnedProjectKeys,
@@ -1806,6 +1809,7 @@ function ExpandedView({
       }),
     [
       filter.lastActivity,
+      provisionalProjectTaskId,
       localPlatform,
       pinnedProjectKeys,
       scopedSidebarSessions,

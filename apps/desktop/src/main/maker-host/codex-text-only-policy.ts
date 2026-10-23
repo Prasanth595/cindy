@@ -152,7 +152,7 @@ export function codexTextOnlyRequestGuard(
   };
 }
 
-export function codexTextOnlyWebSocketTransforms(disabled: () => boolean, requiresSerial = false) {
+export function codexTextOnlyWebSocketTransforms(disabled: () => boolean, requiresSerial = false, transformRequest: (message: Buffer) => Buffer = message => message) {
   // Frozen at each request, never relaxed by a subsequent UI send or teardown.
   let restricted = false;
   let completed = true;
@@ -162,7 +162,7 @@ export function codexTextOnlyWebSocketTransforms(disabled: () => boolean, requir
       if (restricted && !completed) reject();
       restricted = next;
       completed = false;
-      return restricted ? restrictCodexRequest(message, { serial: requiresSerial }) : message;
+      return transformRequest(restricted ? restrictCodexRequest(message, { serial: requiresSerial }) : message);
     }),
     inbound: createWebSocketMessageTransform(false, message => {
       if (restricted) {

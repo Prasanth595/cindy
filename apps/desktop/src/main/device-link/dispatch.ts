@@ -409,6 +409,14 @@ function providerShareGuestAccess(controller: string): ReturnType<ProviderShareA
   return providerShareAccess?.guestAccess(controller) ?? null;
 }
 
+/** Empty invalidation only, scoped to the currently authorized shared provider. Never subscribe guests to owner topics. */
+export function notifyProviderShareCatalogChanged(providerId: string): void {
+  for (const peer of acceptedLinkControllers) {
+    if (!isProviderSharePeer(peer) || providerShareGuestAccess(peer)?.providerId !== providerId) continue;
+    sendPushBestEffort(peer, 'maker:provider:changed', {});
+  }
+}
+
 /**
  * 受邀者被拒时在本机日志记下原因(同一对端、同一位置、同一原因每分钟最多一条)。对方只收到
  * 「暂时不可用」，排查「受邀者读不到模型」只能靠这里。
@@ -4268,7 +4276,7 @@ const PROVIDER_SHARE_CHANNELS: ReadonlySet<string> = new Set([
 const PROVIDER_SHARE_AGENT_ARG_CHANNELS: ReadonlySet<string> = new Set(['maker:get-capabilities', 'maker:agent:status']);
 const PROVIDER_SHARE_AGENT_KINDS: ReadonlySet<string> = new Set(['claude-code', 'codex', 'pi']);
 
-type SharedProviderView = { agents: string[]; models: Record<string, string[]> };
+type SharedProviderView = { agents: string[]; models: Record<string, string[]>; fastAllowed: boolean };
 
 /**
  * The shared provider as the guest sees it: `null` when it is no longer open for remote use,
@@ -4293,7 +4301,8 @@ async function sharedProviderView(
         : [];
     }
   }
-  return { agents, models };
+  const policy = provider.subscriptionFastPolicy as { allowFast?: boolean; groupAllowsFast?: boolean } | undefined;
+  return { agents, models, fastAllowed: policy?.allowFast !== false && policy?.groupAllowsFast !== false };
 }
 
 /**
@@ -4333,11 +4342,13 @@ async function projectProviderShareRead(
     ok: true,
     value: {
       ...capabilities,
+      ...(view?.fastAllowed === false ? { hasFastMode: false } : {}),
       availableModels: Array.isArray(capabilities.availableModels)
         ? capabilities.availableModels.filter((model) => {
           const id = model && typeof (model as { id?: unknown }).id === 'string' ? (model as { id: string }).id : '';
           return id !== '' && offered.has(id);
-        })
+        }).map(model => view?.fastAllowed === false
+          ? { ...(model as object), supportsFastMode: false, supportsUltrafastMode: false } : model)
         : [],
     },
   };

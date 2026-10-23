@@ -2,7 +2,7 @@
 import { act, type ReactNode } from 'react';
 import { readFileSync } from 'node:fs';
 import { parseAgentErrorCode } from '@cindy/maker-shared/error-redaction';
-import { unclassifiedAgentErrorI18nKey, requiresAgentErrorConfigurationChange } from '@/session/agentErrorI18n';
+import { remoteActionErrorI18nKey, unclassifiedAgentErrorI18nKey, requiresAgentErrorConfigurationChange } from '@/session/agentErrorI18n';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { i18n } from '@/i18n';
@@ -157,6 +157,16 @@ describe.each(SUPPORTED_LOCALES)('known mobile remote errors in %s', locale => {
     expect(i18n.t(key)).not.toBe(i18n.t('session.tail.replyFailed'));
     const [normalized] = normalizeRemoteMessages([row(message)]);
     expect(normalized.body).toBe(i18n.t(key));
+  });
+
+  // The fork action showed the raw "[IPC_ERROR] [REMOTE_AGENT_FORK_FAILED] …" string; it must use
+  // the localized remote copy, while unknown codes keep the caller's own fallback.
+  it('localizes a remote fork failure in one-shot action errors', async () => {
+    await i18n.changeLanguage(locale);
+    expect(remoteActionErrorI18nKey('[IPC_ERROR] [REMOTE_AGENT_FORK_FAILED] the conversation could not be forked'))
+      .toBe('session.remoteError.REMOTE_AGENT_FORK_FAILED');
+    expect(remoteActionErrorI18nKey('[REMOTE_FUTURE] private diagnostic')).toBeNull();
+    expect(remoteActionErrorI18nKey('[NOT_FOUND] message missing')).toBeNull();
   });
 
   it('has every desktop bracket-code translation without relying on fallback languages', async () => {

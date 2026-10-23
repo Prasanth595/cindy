@@ -355,6 +355,8 @@ export interface SessionSendOptions extends SendOptions {
 }
 
 export interface SessionTurnLifecycleObserver {
+  /** Last synchronous authorization check; no asynchronous work may follow before handle.send. */
+  onDispatching?(): void;
   /** Awaited after option validation and before any provider-owned start hook or send. */
   beforeProviderStart(turnGeneration: number): void | Promise<void>;
   /** Called when a prepared generation never crosses the provider dispatch boundary. */
@@ -1007,6 +1009,14 @@ export class Session {
       try {
         this.beginTurnControl(reservedTurnGeneration);
         onDispatching?.();
+        try {
+          turnLifecycleObserver?.onDispatching?.();
+        } catch (error) {
+          // Host authorization rejected synchronously, before handle.send could
+          // create work. Do not fence a later valid send for a nonexistent tail.
+          dispatchConfirmedUndispatched = true;
+          throw error;
+        }
         this.insideProviderSendSync = true;
         try {
           await this.handle.send(msg, {

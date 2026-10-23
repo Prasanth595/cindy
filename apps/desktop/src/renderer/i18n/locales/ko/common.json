@@ -1763,6 +1763,16 @@
           "description": "코드 블록, 변경 사항 비교, 편집기의 글자 크기만 조절합니다. 문장 안의 코드, 상태 숫자, 배지, 경로 라벨의 크기는 바뀌지 않습니다.",
           "aria": "코드 글꼴 크기 조정"
         },
+        "terminalFamily": {
+          "label": "터미널 글꼴",
+          "description": "내장 터미널에만 사용됩니다. 고정폭 글꼴을 권장합니다.",
+          "aria": "터미널 글꼴 선택"
+        },
+        "terminalSize": {
+          "label": "터미널 글꼴 크기",
+          "description": "내장 터미널의 글자 크기를 조정합니다.",
+          "aria": "터미널 글꼴 크기 조정"
+        },
         "presetsUi": {
           "default": "Inter(기본값)",
           "codexStyle": "Codex 스타일",
@@ -1772,8 +1782,12 @@
           "default": "Codex 스타일(기본값)",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "고정폭 글꼴(기본값)"
+        },
         "previewSamples": {
-          "ui": "한글 글꼴은 또렷하고 읽기 쉬워요 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "한글 글꼴은 또렷하고 읽기 쉬워요 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"터미널 글꼴 미리보기\"\n터미널 글꼴 미리보기\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
@@ -3353,6 +3367,7 @@
         "refreshingAria": "모델 목록 새로고침 중…",
         "refreshDone": "모델 목록을 새로고침했습니다",
         "refreshAdded": "새 모델 {{count}}개를 발견했습니다",
+        "refreshSpeechAdded": "모델을 업데이트하고 추천 음성 모델 1개를 추가했습니다",
         "refreshNoNew": "모델 목록이 최신 상태입니다. 새 항목이 없습니다",
         "refreshFailed": "모델 목록을 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요",
         "refreshFetchDisabled": "모델 카탈로그 원격 가져오기가 비활성화되어 새로고침을 건너뛰었습니다",
@@ -5181,10 +5196,6 @@
         "android": {
           "name": "Android 자동화",
           "description": "이 컴퓨터에 연결된 Android 기기를 확인하고 조작합니다."
-        },
-        "ios-simulator": {
-          "name": "iOS 시뮬레이터",
-          "description": "iOS 시뮬레이터에서 앱을 설치, 실행 및 검사합니다."
         },
         "browser": {
           "name": "브라우저",
@@ -7117,10 +7128,10 @@
         "embeddedSimulator": {
           "title": "기존 내장 시뮬레이터 지원이 종료되었습니다",
           "description": "Cindy에서 기존 내장 시뮬레이터를 제거했습니다.",
-          "replacementName": "Baguette 시뮬레이터",
-          "replacementDescription": "Cindy 사이드바에서 실시간 화면을 보고 기기를 조작하며 App 실행과 스크린샷 촬영을 할 수 있습니다.",
+          "replacementName": "기기 시뮬레이터",
+          "replacementDescription": "Cindy 사이드바에서 실시간 화면을 보고 기기를 조작하며 App 실행과 스크린샷 촬영을 할 수 있습니다. 오픈 소스 프로젝트 Baguette를 기반으로 합니다.",
           "requirements": "Apple Silicon Mac, macOS 15 이상 및 전체 Xcode가 필요합니다.",
-          "dataNotice": "기존 시뮬레이터 기기와 App 데이터는 삭제되지 않습니다. Baguette를 설치해도 기기, App, 로그인 상태는 자동으로 이전되지 않습니다."
+          "dataNotice": "기존 시뮬레이터 기기와 App 데이터는 삭제되지 않습니다. 새 기기 시뮬레이터를 설치해도 기기, App, 로그인 상태는 자동으로 이전되지 않습니다."
         }
       },
       "remote": {
@@ -8843,6 +8854,23 @@
       "preparingAria": "새 버전 준비 중입니다. 잠시만 기다려 주세요",
       "confirmTitle": "아직 실행 중인 작업이 있습니다",
       "confirmBusyHint": "재시작하면 작업이 중단됩니다",
+      "confirmBusyActivities": "다시 시작하면 {{activities}} 중단됩니다.",
+      "activityJoiner": ", ",
+      "activityJoinerPair": ", ",
+      "activityJoinerLast": ", ",
+      "activityNameJoiner": ", ",
+      "activityNameJoinerPair": ", ",
+      "activityNameJoinerLast": ", ",
+      "activity": {
+        "companion": "동료의 답장이",
+        "companionOne": "동료 {{names}}의 답장이",
+        "companionOther": "동료 {{names}}의 답장이",
+        "conversation": "진행 중인 채팅이",
+        "backgroundCommand": "백그라운드 명령이",
+        "scheduledTask": "예약 작업이",
+        "generation": "생성 작업이",
+        "subtask": "하위 작업이"
+      },
       "confirmButton": "그래도 앱 재시작",
       "cancel": "취소",
       "confirmTooltip": "아직 실행 중인 작업이 있습니다 — 재시작하면 중단됩니다",
@@ -10265,7 +10293,6 @@
       "openSettings": "음성 설정",
       "startConversation": "음성 대화 시작",
       "settingsHint": "이 파트너의 낭독 모델과 음성을 선택한 후 입력창에서 음성 대화를 시작하세요.",
-      "incompleteSettings": "음성 API와 음성을 선택하면 자동으로 저장됩니다.",
       "previewNeedsChat": "파트너와 대화를 시작하면 음성을 미리 들을 수 있습니다.",
       "voiceId": "음성 ID",
       "manualVoice": "음성 ID 직접 입력",
@@ -11714,6 +11741,7 @@
       "imageCopied": "이미지를 복사했습니다",
       "copyFailed": "복사에 실패했습니다",
       "openFolderFailed": "폴더를 열지 못했습니다",
+      "longImagePreview": "긴 이미지 · 클릭하여 전체 보기",
       "copyImage": "이미지 복사",
       "revealImage": "이미지 폴더 열기",
       "revealImageSidebar": "파일 브라우저에서 보기",
@@ -12334,6 +12362,7 @@
       "REMOTE_AGENT_UNSUPPORTED": "상대 컴퓨터에서는 이 Agent를 사용할 수 없습니다. 그 컴퓨터에서 설치하거나 로그인한 뒤 다시 시도하거나, 다른 Agent를 선택하세요.",
       "REMOTE_AGENT_INVALID": "Agent를 실행하는 컴퓨터와 통신하는 중 오류가 발생했습니다. 다시 시도하고, 계속되면 두 컴퓨터의 Cindy를 모두 최신 버전으로 업데이트하세요.",
       "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "그 컴퓨터에서 이 제공자 또는 선택한 모델의 원격 사용을 허용하지 않았습니다. 제공자에게 원격 및 공유에서 사용 범위를 조정해 달라고 요청하거나 다른 모델을 선택하세요.",
+      "REMOTE_AGENT_FORK_FAILED": "Agent를 실행하는 컴퓨터에서 여기서 새 세션을 시작하지 못했습니다. 다시 시도하거나 다른 메시지로 시도해 주세요.",
       "REMOTE_AGENT_SHARE_PAUSED": "공유한 사람이 나에 대한 공유를 일시 중지해서 재개될 때까지 이 모델을 사용할 수 없습니다. 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_REMOVED": "이 공유는 더 이상 사용할 수 없습니다(공유한 사람이 삭제했거나 내가 나갔습니다). 다른 모델로 바꿔 계속할 수 있습니다.",
       "REMOTE_AGENT_SHARE_UNAVAILABLE": "공유된 제공자를 일시적으로 사용할 수 없습니다. 공유한 사람의 컴퓨터가 오프라인이거나 공유가 잠시 꺼져 있을 수 있습니다. 나중에 다시 시도하거나 다른 모델로 바꿔 계속할 수 있습니다.",
@@ -15313,7 +15342,7 @@
       "unread": "읽지 않은 업데이트",
       "worker": "Worker",
       "workersHeader": "Workers",
-      "workerCountSummary_other": "전체 Worker {{totalCount}} · 활성 {{activeCount}}",
+      "workerCountSummary_other": "전체 Worker {{totalCount}} · 실행 중 {{activeCount}}",
       "statusAria": "상태 {{status}}",
       "archiveWorkerAria": "Worker {{name}} 아카이브",
       "createWorker": "새 Worker 만들기",
@@ -16074,6 +16103,61 @@
     "builtinTodoCheck": {
       "name": "매일 할 일 확인(기본 제공)",
       "hint": "평일 9:00에 연결된 소스에서 새 할 일을 찾고, 없으면 알리지 않습니다. 근황에서 켜고 끌 수 있으며 일시 중지와 재개만 할 수 있습니다."
+    },
+    "builtinNightlyLearning": {
+      "name": "야간 학습(기본 제공)",
+      "title": "야간 학습",
+      "hint": "매일 3:30에 대화를 정리합니다. 메모리를 정돈하고 반복해서 쓰는 방법을 스킬로 정리합니다. 새 대화가 없으면 모델을 호출하지 않고 건너뜁니다.",
+      "hintWeekly": "매주 월요일 3:30에 그 주의 대화를 정리합니다. 메모리를 정돈하고 반복해서 쓰는 방법을 스킬로 정리합니다. 새 대화가 없으면 모델을 호출하지 않고 건너뜁니다."
+    },
+    "nightly": {
+      "switchLabel": "예정된 시간에 자동 정리",
+      "paused": "일시 중지됨. 대화는 계속 집계되며, 켜면 예정된 시간부터 정리합니다.",
+      "running": "정리하는 중…",
+      "memoryOff": "메모리가 꺼져 있어 스킬만 정리합니다.",
+      "pending": "정리 대기",
+      "pendingTurns_one": "대화 {{count}}회",
+      "pendingTurns_other": "대화 {{count}}회",
+      "pendingNone": "새 대화가 없어 다음에는 건너뜁니다",
+      "last": "지난번",
+      "lastNever": "아직 정리하지 않음",
+      "lastFailed": "끝내지 못해 다음에 다시 시도합니다",
+      "lastLearned_one": "{{count}}개 정리",
+      "lastLearned_other": "{{count}}개 정리",
+      "nothing": "정리할 내용 없음",
+      "viewHistory": "기록 보기",
+      "notHere": "야간 학습은 동료의 주 컴퓨터에서만 실행됩니다.",
+      "switchHint": "새 대화가 없으면 모델을 호출하지 않고 건너뜁니다",
+      "frequency": "빈도",
+      "daily": "매일",
+      "weekly": "매주",
+      "dailyHint": "매일 3:30",
+      "weeklyHint": "매주 월요일 3:30",
+      "runNow": "지금 정리",
+      "history": "기록",
+      "empty": "아직 정리하지 않았습니다. 새 대화가 생기면 예정된 시간에 처음 정리합니다.",
+      "manual": "직접 정리",
+      "readTurns_one": "대화 {{count}}회 확인",
+      "readTurns_other": "대화 {{count}}회 확인",
+      "undone": "취소됨",
+      "undo": "실행 취소",
+      "redo": "복원",
+      "watching": "지켜보는 방법",
+      "watchingHint": "한 번만 나온 방법은 여기서 기다리며 불러오지 않습니다. 비슷한 일이 다시 생기면 스킬로 정리합니다.",
+      "promote": "지금 스킬로",
+      "decline": "배우지 않음",
+      "changedSince": "이후에 바뀐 항목이라 취소할 수 없습니다",
+      "failed": "완료하지 못했습니다. 다시 시도해 주세요",
+      "item": {
+        "memoryCreated": "「{{title}}」 기억",
+        "memoryUpdated": "메모리 「{{title}}」 정리",
+        "memoryDeleted": "메모리 「{{title}}」 삭제",
+        "memoryMerged": "메모리 「{{title}}」를 「{{into}}」에 합침",
+        "skillCreated": "스킬 「{{title}}」 학습",
+        "skillUpdated": "스킬 「{{title}}」 업데이트",
+        "skillDisabled": "스킬 「{{title}}」 끔",
+        "skillMerged": "스킬 「{{title}}」를 「{{into}}」에 합치고 끔"
+      }
     }
   },
   "cindyMakeDoctor": {
@@ -17098,5 +17182,12 @@
     "taskSource": "[작업 출처] 파트너가 시작한 작업입니다.",
     "taskId": "작업 ID:",
     "contextReferences": "참고 자료:"
+  },
+  "subscriptionFastPolicy": {
+    "label": "Fast 허용",
+    "providerHint": "끄면 이 구독 계정의 본인 및 공유 작업이 일반 속도로 실행됩니다. Ultrafast에도 적용됩니다.",
+    "groupHint": "끄면 이 그룹을 통해 실행하는 모든 작업이 일반 속도로 실행됩니다. Ultrafast에도 적용됩니다.",
+    "pending": "일부 컴퓨터가 설정을 확인하지 않았습니다. 연결을 유지하고 이 설정을 지원하지 않는 그룹 컴퓨터를 업데이트하세요.",
+    "saveFailed": "설정은 저장되었을 수 있지만 일부 실행 중인 작업이 일반 속도 전환을 확인하지 않았습니다. 연결을 확인한 후 다시 시도하세요."
   }
 }

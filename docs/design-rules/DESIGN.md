@@ -676,6 +676,19 @@ release-notes entry. Updating keeps the existing confirm → busy warning → re
 download happens in the normal startup Splash, not in the row.
 
 
+### User-attached long images
+
+Desktop user attachments with natural height / width **strictly greater than 3** use a
+240×240 top-aligned partial preview, shrinking to the available container width. A
+non-interactive pill overlay says “长图 · 点击查看完整图片” (localized); it uses semantic
+surface/text tokens and wraps in narrow containers. The image retains its existing
+12px content crop and keyboard/click target. Ordinary portraits, landscape images,
+unknown dimensions and tool-output images retain their existing contain rules.
+Click/Enter/Space still opens the complete original in ImageLightbox; gallery, copy,
+annotations and original bytes remain unchanged. This applies through the shared
+Desktop user-attachment renderer in private chats, groups and tasks.
+Decision: [#6796, maintainer confirmation](https://github.com/makecindy/cindy/issues/6796#issuecomment-6361112964).
+
 ## 5. Layout Principles
 
 ### Spacing System

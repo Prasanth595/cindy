@@ -1221,6 +1221,20 @@ old RTC generations are discarded. Hidden cursors are not drawn. Unsupported
 cursor images fall back to the existing position indicator without killing video.
 Both Light and Dark use the source raster rather than tinting it.
 
+On a portrait half-fold, the upper region shows the desktop and the lower region
+holds the touchpad or keyboard controls. Landscape half-folds use the ordinary
+full-width landscape viewer. The keyboard toolbar remains below the hinge rather
+than moving into the video region when the system keyboard leaves little room.
+The lower touchpad owns relative cursor movement for its entire contact, including
+pauses, regardless of the video surface's touch/pointer preference. Host position
+feedback resumes after a full 200ms grace period measured from lift (or a later
+local input), even when the finger paused before lifting. New contacts preserve
+edge coordinates; only viewport changes request cursor re-entry. Gesture
+cancellation, control loss and leaving the pad clear that ownership. The local
+React Native/WebView bridge carries contact start/end; the remote input protocol
+is unchanged. Regression coverage lives in Mobile's `viewer.test.ts` and
+`screen.test.tsx` under `src/remote-desktop/__tests__/`.
+
 Desktop viewers use the local system pointer instead of drawing this raster.
 An optional `shape` hint selects a bounded standard cursor keyword (text, hand,
 resize, etc.); size, DPI and accessibility appearance remain owned by the local

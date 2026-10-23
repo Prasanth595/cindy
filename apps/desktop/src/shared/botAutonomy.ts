@@ -21,6 +21,9 @@ export const BUILTIN_FOLLOW_UP_ROUTINE_PREFIX = 'builtin-follow-up-';
 /** 内置「每天查待办」例行任务的 id 前缀；主人在近况里打开时才建，完整 id 见 todoCheckRoutine.ts。 */
 export const BUILTIN_TODO_CHECK_ROUTINE_PREFIX = 'builtin-todo-check-';
 
+/** 内置「夜间学习」例行任务的 id 前缀；每个伙伴默认一条，完整 id 见 nightlyLearningRoutine.ts。 */
+export const BUILTIN_NIGHTLY_LEARNING_ROUTINE_PREFIX = 'builtin-nightly-learning-';
+
 /** 出厂 Cindy 助理的稳定 id；仅用于邀请入口，不意味着已开启自动跟进。 */
 export const DEFAULT_SCHEDULER_BOT_ID = 'cindy-default';
 
