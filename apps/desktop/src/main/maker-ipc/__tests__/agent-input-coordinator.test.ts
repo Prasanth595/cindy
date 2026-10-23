@@ -2247,6 +2247,22 @@ describe('AgentInputCoordinator send transaction', () => {
     expect(h.coordinator.isActiveInputOwnerAuthored(sid)).toBe(false);
   });
 
+  it.each([
+    ['the owner', {}, true],
+    ['an ordinary scheduled task', { origin: { kind: 'scheduler' as const, scheduleId: 's', scheduleName: 'n' } }, true],
+    ['an ordinary Worker', { origin: { kind: 'orca' as const, senderLabel: 'Lead' } }, true],
+    ['a shared-task guest', { sharedTaskAuthor: { sharedTaskId: 't', sessionId: 'account-input', memberId: 'm', accountId: 'guest', displayName: 'G' } }, false],
+  ])('keeps account tools scoped to %s throughout the active turn', async (_label, patch, expected) => {
+    const h = createHarness(), sid = 'account-input';
+    h.sendToAgent.mockImplementationOnce(async () => { h.setRunning(true); return sendSuccess(); });
+    expect(h.coordinator.isActiveInputAccountScoped(sid)).toBe(false);
+    h.coordinator.enqueue(sid, { ...makeItem('input', 'Check my plugins'), ...patch } as AgentInputQueuedMessage);
+    await flush();
+    expect(h.coordinator.isActiveInputAccountScoped(sid)).toBe(expected);
+    h.setRunning(false); h.coordinator.onTurnEvent(sid, 'done');
+    expect(h.coordinator.isActiveInputAccountScoped(sid)).toBe(false);
+  });
+
   // unit: a real same-account quote-bearing input lost owner attribution before
   // task-action admission. Non-owner origins must remain non-owner after projection.
   it.each(['owner', 'scheduler', 'session', 'guest', 'quote-only'] as const)(

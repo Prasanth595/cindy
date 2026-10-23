@@ -64,6 +64,7 @@
 | 伙伴     | 查看与更换主力电脑                                         | 有   | 有（2026-10-17） |
 | 伙伴     | 夜间学习：暂停 / 恢复、立即运行（沿用伙伴自己的例行任务工具） | 有   | 无               |
 | 伙伴     | 夜间学习：改频率、撤销 / 恢复整理改动、处理在观察的做法     | 无   | 无               |
+| 社区插件贡献 | 当前安装快照准备、提交审核/当前进度、本人列表/详情/留存内容 | 有（2026-10-15） | 无 |
 
 Worker 工具省略 working_dir 时保持继承 Lead 任务记录目录，不跟随之后 cd 进入的 worktree。
 面板默认识别实际目录属于 UI 行为；Agent 通过显式 working_dir 共用已有 worktree，
@@ -137,3 +138,17 @@ Host 不因当前输入缺少主人标记再追加行动同意判定。只认运
 已有委托的执行权不依赖自动观察规则的开关；仅凭普通 Orca Lead 的当前 team 回报只延续原 team 范围。
 跨电脑任务互发要求双方支持
 行动回执，旧端明确提示不支持；未增加观察数据权限。实机多端验收仍待完成。
+
+## 社区插件贡献
+
+普通个人作者的独立入口为 `ghost_contribution_prepare`、`ghost_contribution_submit`、
+`ghost_contribution_status`、`ghost_contribution_stop`、`ghost_my_plugins`、`ghost_cancel_plugin_review`，由 `cindy-tools`
+直接提供工具说明。手动和 AI 复用 Host 的精确安装快照、操作键、回执及个人读取接口；AI 不拿到
+Bearer、PUT 票据或受管文件路径。公开写入遵循当前任务 Full Access / Auto / Ask，不加最后人工点击。
+共享任务访客及既有 helper surface 判为 restricted 的插件托管任务（包括其 Worker）不得读取个人
+个人插件发布资料或执行发布。普通用户自己的 Worker、自动任务沿相同账号边界与任务权限；人工审核不由 Agent 执行。
+客户端提交边界见 [社区贡献实现说明](../plugin-community-contribution.md)。
+
+2026-10-16：个人发布 prepare 返回包内 releaseNotes 和远端只读预检；submit 前重新校验所见快照内容。
+`ghost_cancel_plugin_review` 使用本人版本的精确 revision，区分停止上传与取消审核，沿现有 Full Access/Auto/Ask 授权。
+旧版本包仍可安装，成功提审后的同版本不再支持改包重提。

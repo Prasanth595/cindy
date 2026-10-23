@@ -1338,6 +1338,12 @@ export class AgentInputCoordinator {
       retrySourceClientId: item.retrySourceClientId ?? item.supersedesUserClientId };
   }
 
+  /** Account-scoped tools may not borrow the Host identity from a shared guest input. */
+  isActiveInputAccountScoped(sessionId: string): boolean {
+    const item = this.states.get(sessionId)?.activeTurn?.item;
+    return !!item && !item.sharedTaskAuthor;
+  }
+
   /**
    * Owner-only Host actions (app update) require the active input itself to be text
    * this account's user typed on Desktop or a same-account remote device. Automation,

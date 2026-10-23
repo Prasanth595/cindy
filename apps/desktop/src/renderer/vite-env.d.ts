@@ -1692,6 +1692,7 @@ interface ElectronAPI {
     refreshSource: (name: string) => Promise<import('../shared/pluginMarket').MarketSourceSummary>;
     gitPreflight: () => Promise<{ ok: boolean; version: string | null }>;
   };
+  pluginContributions: import('../shared/pluginContributions').PluginContributionsApi;
   pluginPublisher: {
     start: (filePath: string) => Promise<{ transferId: string; uploadId: string | null }>;
     status: (transferId: string) => Promise<{ progress: unknown }>;

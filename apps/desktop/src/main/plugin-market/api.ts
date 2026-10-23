@@ -17,6 +17,7 @@ import {
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { createLogger } from '../logger.js';
 import { serverApiFetch, type ApiFetchOptions } from '../serverApiClient.js';
+import { pluginObjectUrlOptions } from './objectUrlPolicy.js';
 
 const log = createLogger('plugin-market-api');
 const PLUGIN_MARKET_API_TIMEOUT_MS = 15_000;
@@ -113,6 +114,7 @@ export class PluginMarketApi {
           `/api/plugins?${search.toString()}`,
           this.requestOptions(),
         ),
+        pluginObjectUrlOptions(),
       );
       for (const plugin of response.plugins) {
         if (seen.has(plugin.id)) continue;
@@ -182,6 +184,7 @@ export class PluginMarketApi {
         `/api/plugins/${encodeURIComponent(pluginId)}`,
         this.requestOptions(),
       ),
+      pluginObjectUrlOptions(),
     ).plugin;
   }
 
@@ -194,6 +197,7 @@ export class PluginMarketApi {
         `/api/plugins/${encodeURIComponent(pluginId)}/releases/${encodeURIComponent(releaseId)}/download`,
         this.requestOptions(),
       ),
+      pluginObjectUrlOptions(),
     );
   }
 
