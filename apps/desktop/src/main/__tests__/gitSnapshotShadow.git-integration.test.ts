@@ -11,7 +11,7 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TestDirectoryTemplate } from '../../test/vitest/testDirectoryTemplate';
 import {
@@ -127,6 +127,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(repoPath, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   if (originalGitLocaleEnv.LC_ALL === undefined) delete process.env.LC_ALL;
   else process.env.LC_ALL = originalGitLocaleEnv.LC_ALL;
@@ -141,6 +142,64 @@ afterAll(async () => {
 });
 
 describe('createShadowSavepoint', () => {
+  // #6901: advance the monotonic clock after allocating the temporary index.
+  // The real Git executor must reject the expired deadline and the kernel
+  // must remove that index, rather than granting staging a fresh timeout.
+  it('cleans up its temporary index when the shared budget expires before staging', async () => {
+    await commitSeed();
+    await writeRepoFile('a.txt', 'aa');
+    const before = await captureUserVisibleState();
+    const mkdtemp = fs.mkdtemp.bind(fs);
+    const now = performance.now.bind(performance);
+    const clock = vi.spyOn(performance, 'now');
+    let indexDir: string | undefined;
+    vi.spyOn(fs, 'mkdtemp').mockImplementation(async (...args) => {
+      const dir = await mkdtemp(...args);
+      if (String(args[0]).includes('xdt-snapshot-index-')) {
+        indexDir = String(dir);
+        clock.mockReturnValue(now() + 60_000);
+      }
+      return dir;
+    });
+    await expect(createShadowSavepoint(repoPath, {
+      sessionId: SESSION, label: 'baseline', meta: { kind: 'turn-start' },
+      captureBudget: { maxFiles: 10, maxTotalBytes: 100, timeoutMs: 5_000 },
+    })).rejects.toMatchObject({ timedOut: true });
+    vi.restoreAllMocks();
+    expect(indexDir).toBeDefined();
+    await expect(fs.access(indexDir!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readSavepointTip(repoPath, SESSION)).toBeNull();
+    expect(await captureUserVisibleState()).toEqual(before);
+  });
+
+  // #6901: real Git integration; existing tests cover individual exclusions,
+  // not an aggregate capture budget. Two small files must fail as a whole,
+  // leaving the user's index and the shadow ref untouched, then recover.
+  it.each([
+    { maxFiles: 1, maxTotalBytes: 100, timeoutMs: 5_000, reason: 'file-count' },
+    { maxFiles: 10, maxTotalBytes: 3, timeoutMs: 5_000, reason: 'total-bytes' },
+    { maxFiles: 10, maxTotalBytes: 100, timeoutMs: 0, reason: 'deadline' },
+  ])('rejects an over-budget capture without publishing a partial baseline: %j', async ({ reason, ...captureBudget }) => {
+    await gitExec(['commit', '--allow-empty', '-m', 'empty project'], repoPath);
+    await writeRepoFile('a.txt', 'aa');
+    await writeRepoFile('b.txt', 'bb');
+    await gitExec(['add', 'a.txt'], repoPath);
+    const before = await captureUserVisibleState();
+    const input = { sessionId: SESSION, label: 'baseline', meta: { kind: 'turn-start' as const } };
+
+    await expect(createShadowSavepoint(repoPath, { ...input, captureBudget })).rejects.toMatchObject({
+      name: 'SnapshotCaptureBudgetExceededError', reason,
+    });
+    expect(await readSavepointTip(repoPath, SESSION)).toBeNull();
+    expect(await captureUserVisibleState()).toEqual(before);
+    expect(await fs.readFile(path.join(repoPath, 'b.txt'), 'utf8')).toBe('bb');
+
+    const result = await createShadowSavepoint(repoPath, input);
+    expect(await gitStdout(['show', `${result.commit}:a.txt`])).toBe('aa');
+    expect(await gitStdout(['show', `${result.commit}:b.txt`])).toBe('bb');
+    expect(await captureUserVisibleState()).toEqual(before);
+  });
+
   it('never changes HEAD, branch, status or the cached diff', async () => {
     await commitSeed();
     await writeRepoFile('staged.txt', 'staged change\n');
