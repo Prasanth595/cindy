@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
 
 vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn() },
@@ -100,6 +101,23 @@ function builtinCodexCatalog() {
 }
 
 describe('auxiliary model settings IPC helpers', () => {
+  it('round-trips a Pi-only HTTP choice while retaining old catalog pins', () => {
+    const preset = BUNDLED_CATALOG.presets!.find((entry) => entry.id === 'opencode-go')!;
+    const provider = buildUserProvider({ id: 'go', name: 'Go', runtimes: {
+      pi: { ...preset.runtimes.pi!, catalogPresetId: preset.id, models: [{ id: 'deepseek-v4.1-flash', name: 'Flash' }] },
+    } }, { presets: BUNDLED_CATALOG.presets });
+    const pin = `cat:${provider.id}:pi:deepseek-v4.1-flash`;
+    const options = buildAuxiliaryModelOptions({
+      settings: { models: [PIN] }, catalog: { ...BUNDLED_CATALOG, providers: [provider] },
+      overrides: undefined, hasCredential: () => true,
+    });
+    expect(options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: pin, defaultEnabled: true, available: true }),
+      expect.objectContaining({ id: PIN, available: false }),
+    ]));
+    expect(parseAuxiliaryModelSettingsPatch({ models: [pin, PIN] }, new Set([pin]), new Set([PIN]))).toEqual({ models: [pin, PIN] });
+    expect(() => parseAuxiliaryModelSettingsPatch({ models: ['cat:unknown:pi:model'] }, new Set([pin]))).toThrow(/not currently routable/);
+  });
   it('accepts a unique models list and empty automatic reset', () => {
     const allowed = new Set([PIN]);
     expect(parseAuxiliaryModelSettingsPatch({ models: [PIN] }, allowed)).toEqual({

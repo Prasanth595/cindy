@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keyboardControlRegion, controlRegion, windowDivision, type WindowGeometry } from '@/platform/windowGeometry';
+import { keyboardControlRegion, controlRegion, sharedStatusRowDrawerTop, windowDivision, type WindowGeometry } from '@/platform/windowGeometry';
 import { foldDesktopLayout } from '@/remote-desktop/foldDesktopLayout';
 import { sessionPaneLayout } from '@/session/sessionPaneLayout';
 
@@ -101,5 +101,16 @@ describe('folded desktop keyboard geometry', () => {
   });
   it('returns to ordinary layout after unfolding without a synthetic half-screen split', () => {
     expect(foldDesktopLayout(window(), 0, 240, false)).toBeNull();
+  });
+});
+
+// Regression: #7008. Duo portrait's top bar shares the status row, so the task-list drawer header
+// sat 72pt too low under safeArea.top; measured on the Duo simulator (safe top 82, bar height 82).
+describe('task-list drawer top when the system bar shares the status row', () => {
+  it('lands the header on the shared row for Duo and leaves ordinary bars alone', () => {
+    expect(sharedStatusRowDrawerTop(82, 82)).toBe(10);
+    expect(sharedStatusRowDrawerTop(40, 82)).toBe(0);
+    expect(sharedStatusRowDrawerTop(103, 59)).toBeUndefined();
+    expect(sharedStatusRowDrawerTop(0, 82)).toBeUndefined();
   });
 });

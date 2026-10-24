@@ -1,3 +1,5 @@
+import { modelWithInterface } from '@cindy/model-providers';
+import { sessionModelInterface } from './session-model-interface.js';
 import { ANSWER_DELIVERY_PROMPT } from '@cindy/maker-shared/rich-answer-guide';
 import { listCindyManagedSkills } from './managed-skills.js';
 import { scanLocalCustomizations } from '../skillhub/customizationScanHost';
@@ -1221,6 +1223,7 @@ export function buildPiNativeProvidersFromConfigs(
           reasoningEfforts?: PiReasoningEffort[];
           api?: PiModelApi;
           piApi?: PiModelApi;
+          selectedInterface?: import('@cindy/model-providers').ModelInterfaceSnapshot;
           route?: {
             baseUrl: string;
             wireProtocol: ProviderWireProtocol;
@@ -1257,8 +1260,15 @@ export function buildPiNativeProvidersFromConfigs(
     }
   };
   for (const cfg of configs) {
-    const rt = cfg.runtimes.pi;
-    if (!rt) continue;
+    const savedRuntime = cfg.runtimes.pi;
+    if (!savedRuntime) continue;
+    const resolvedProvider = resolvedCatalog?.providers.find(p => p.id === runtimeCustomProviderId(cfg.id));
+    const rt = { ...savedRuntime, models: savedRuntime.models.map(model => {
+      const resolved = resolvedProvider?.models.pi?.find(item => item.id === model.id);
+      return resolved?.selectedInterface ? { ...model, api: resolved.api, piApi: resolved.piApi,
+        route: resolved.route, selectedInterface: resolved.selectedInterface } : model;
+    }) };
+
     const authMethod = cfg.auth?.method ?? 'apiKey';
     if (authMethod === 'oauth' && (!cfg.auth?.oauth || !oauthProxyEndpoint)) {
       onSkip?.(cfg.id, 'oauth proxy not ready for pi native');
@@ -1431,6 +1441,7 @@ export function buildPiNativeProvidersFromConfigs(
           m.route && explicitRouteApi === modelApi ? explicitRoute?.baseUrl : undefined;
         const spec = {
           id: m.id,
+          ...(m.selectedInterface ? { wireId: m.selectedInterface.wireModelId } : {}),
           ...(authMethod === 'oauth' ? { cacheIdentityBaseUrl: modelBaseUrl ?? rt.baseUrl } : {}),
           ...(resolved?.supportsFastMode !== undefined ? { supportsFastMode: resolved.supportsFastMode } : {}),
           ...(m.api || m.piApi || modelApi !== providerApi ? { api: modelApi } : {}),
@@ -1736,6 +1747,7 @@ export function resolvePiCindyGatewayModelSpec(
 
 /** BYOM:读 DB 自定义 provider + safeStorage key → pi 原生 provider spec。IO 外壳,逻辑在上面。 */
 export async function resolvePiNativeProviders(ctx: {
+  sessionId?: string;
   workingDir: string;
   remoteHostId?: string | null;
   providerId?: string | null;
@@ -1826,12 +1838,23 @@ export async function resolvePiNativeProviders(ctx: {
       }
     }
   }
+  const sessionCatalog = getActiveCatalog();
+  const pinnedCatalog = ctx.sessionId && ctx.purpose !== 'preview' ? { ...sessionCatalog,
+    providers: sessionCatalog.providers.map(provider => provider.id !== ctx.providerId ? provider : {
+      ...provider, models: { ...provider.models, pi: provider.models.pi?.map(model => {
+        if (model.id !== ctx.model) return model;
+        const selected = sessionModelInterface(ctx.sessionId!, provider.id, 'pi', model, sessionCatalog.modelRegistry,
+          ctx.resumeSessionId ? provider.routing.pi?.wireProtocol : undefined);
+        return modelWithInterface(model, selected);
+      }) },
+    }),
+  } : sessionCatalog;
   const custom = buildPiNativeProvidersFromConfigs(
     mergeByokNativeConfigs(configs, getActiveCatalog().providers),
     readCustomProviderKey,
     (id, reason) => log.warn('resolvePiNativeProviders: skipped custom provider', { id, reason }),
     bundledModels ?? undefined,
-    getActiveCatalog(),
+    pinnedCatalog,
     !isRemote && compatProxyReady ? getClaudeEndpoint() : undefined,
   );
   // Remote PI cannot use the local native overlay. Preserve upstream's exact

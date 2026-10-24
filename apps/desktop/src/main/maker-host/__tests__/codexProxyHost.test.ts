@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { translateResponsesRequest } from '@cindy/responses-chat-bridge';
 import { TEST_XD_GATEWAY_BASE_URL as XD_GATEWAY_BASE_URL } from '../../../test/vitest/clientEndpointsFixture';
 
 type Registry = {
@@ -880,13 +881,57 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://api.moonshot.ai/v1', 'kimi-k2.7-code'],
     ['https://api.moonshot.cn/v1', 'kimi-k2.7-code-highspeed'],
     ['https://api.moonshot.cn/v1', 'kimi-k2.6'],
-  ])('enables image_url for Kimi on official Moonshot host: %s / %s', async (upstream, model) => {
+    ['https://api.moonshot.cn/v1', 'kimi-k3.1-pro'],
+    ['https://api.moonshot.ai/v1', 'kimi-k3.1-pro-highspeed'],
+    ['https://api.kimi.com/coding/v1', 'k3.1-pro'],
+    ['https://api.kimi.com/coding/v1', 'k3.1-pro-highspeed'],
+    ['https://api.kimi.com/coding/v1', 'k3'],
+    ['https://api.kimi.com/coding/v1', 'kimi-for-coding'],
+  ])('translates image input for Kimi on its official route: %s / %s', async (upstream, model) => {
     const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
-    expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
+    const { BUNDLED_CATALOG } = await import('@cindy/model-providers');
+    const { setActiveCatalog } = await import('../active-catalog.js');
+    const imageUrl = 'data:image/png;base64,eA==';
+    try {
+      // V5 servers cannot send interface bindings; existing image routes must survive negotiation.
+      for (const modelRegistry of [BUNDLED_CATALOG.modelRegistry, {
+        schemaVersion: 5 as const, updatedAt: BUNDLED_CATALOG.modelRegistry!.updatedAt, models: [],
+      }]) {
+        setActiveCatalog({ ...BUNDLED_CATALOG, modelRegistry });
+        const capabilities = chatBridgeCapabilitiesForRoute(upstream, model);
+        const translated = translateResponsesRequest({ model, input: [{ type: 'message', role: 'user',
+          content: [{ type: 'input_image', image_url: imageUrl }],
+        }] }, { capabilities });
+        expect(translated.messages).toEqual([{ role: 'user', content: [{ type: 'image_url', image_url: { url: imageUrl } }] }]);
+      }
+    } finally {
+      setActiveCatalog(BUNDLED_CATALOG);
+    }
+  });
+
+  it.each(['empty', 'retired'] as const)('honors %s V6 declarations instead of restoring bundled image support', async (state) => {
+    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { BUNDLED_CATALOG } = await import('@cindy/model-providers');
+    const { setActiveCatalog } = await import('../active-catalog.js');
+    const catalog = structuredClone(BUNDLED_CATALOG);
+    const registry = catalog.modelRegistry!;
+    registry.interfaceProfiles = state === 'empty' ? [] : registry.interfaceProfiles!.map(profile => ({ ...profile, retired: true }));
+    try {
+      setActiveCatalog(catalog);
+      const capabilities = chatBridgeCapabilitiesForRoute('https://api.kimi.com/coding/v1', 'k3.1-pro');
+      expect(capabilities.imageInput).toBeUndefined();
+      expect(() => translateResponsesRequest({ model: 'k3.1-pro', input: [{ type: 'message', role: 'user',
+        content: [{ type: 'input_image', image_url: 'data:image/png;base64,eA==' }],
+      }] }, { capabilities })).toThrow(/input_image/);
+    } finally {
+      setActiveCatalog(BUNDLED_CATALOG);
+    }
   });
 
   it.each([
     ['https://api.moonshot.cn/v1', 'kimi-k2.5'],
+    ['https://api.kimi.com.evil.example/coding/v1', 'k3.1-pro'],
+    ['https://api.deepseek.com/v1', 'kimi-k3.1-pro'],
     // Kimi Code: non-HTTPS, spoofed subdomain, and models without verified image support stay closed.
     ['http://api.kimi.com/coding/v1', 'k3'],
     ['https://api.kimi.com.evil.example/coding/v1', 'k3'],

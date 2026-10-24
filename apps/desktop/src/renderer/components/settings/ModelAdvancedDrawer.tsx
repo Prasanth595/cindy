@@ -318,23 +318,29 @@ export function ModelAdvancedDrawer({
     } catch { toast.error(t('settings.providers.custom.toast.saveFailed')); }
     finally { setImageCapabilitySaving(false); }
   };
-  const setModelApi = async (agent: AgentKind, api: PiModelApi) => {
+  const setModelApi = async (agent: AgentKind, api: string) => {
     if (protocolSaving || !canEditProtocol || !row?.byAgent[agent]) return;
     const config = providerViewToCustomProviderConfig(provider);
     const runtime = config.runtimes[agent];
     const model = runtime?.models.find(m => m.id === row.byAgent[agent]!.id);
     if (!runtime || !model) return;
-    model.api = api;
-    if (agent === 'pi') model.piApi = api;
-    const wire = providerWireProtocolForApi(api);
-    if (!wire) return;
-    const existingRoute = { ...(model.route ?? {}) };
-    delete existingRoute.requestPath;
-    model.route = {
-      ...existingRoute,
-      baseUrl: providerBaseUrlForApi(model.route?.baseUrl ?? runtime.baseUrl, api),
-      wireProtocol: wire,
-    };
+    const choice = row.byAgent[agent]?.availableInterfaces?.find(item => item.profileId === api);
+    if (api === 'auto' || choice) {
+      model.interfaceId = api;
+      delete model.api;
+      delete model.piApi;
+      delete model.route;
+    } else {
+      delete model.interfaceId;
+      model.api = api as PiModelApi;
+      if (agent === 'pi') model.piApi = api as PiModelApi;
+      const wire = providerWireProtocolForApi(api);
+      if (!wire) return;
+      model.route = {
+        baseUrl: providerBaseUrlForApi(model.route?.baseUrl ?? runtime.baseUrl, api),
+        wireProtocol: wire,
+      };
+    }
     setProtocolSaving(true);
     try {
       const result = await updateCustomProvider(config, {}, { source: 'manual-settings' });
@@ -610,7 +616,7 @@ export function ModelAdvancedDrawer({
                                   id={protocolId}
                                   className="mt-0.5 text-11 leading-4 text-[var(--text-tertiary)]"
                                 >
-                                  {canEditProtocol && !model?.catalogPresetId && supported ? (
+                                  {canEditProtocol && (!model?.catalogPresetId || !!model.availableInterfaces?.length) && supported ? (
                                     <DropdownMenu>
                                       <DropdownMenuTrigger asChild>
                                         <button type="button" disabled={protocolSaving}
@@ -620,9 +626,12 @@ export function ModelAdvancedDrawer({
                                         </button>
                                       </DropdownMenuTrigger>
                                       <DropdownMenuContent className="z-[10003]" align="start">
-                                        <DropdownMenuRadioGroup value={protocol.outbound ?? ''}
-                                          onValueChange={value => void setModelApi(agent, value as PiModelApi)}>
-                                          {MODEL_PROTOCOL_OPTIONS.map(([api, label]) => <DropdownMenuRadioItem key={api} value={api}>{label}</DropdownMenuRadioItem>)}
+                                        <DropdownMenuRadioGroup value={model?.availableInterfaces?.length ? model.userModelConfig?.interfaceId ?? ((model.userModelConfig?.api || model.userModelConfig?.piApi || model.userModelConfig?.route) ? model.selectedInterface?.profileId : 'auto') : protocol.outbound ?? ''}
+                                          onValueChange={value => void setModelApi(agent, value)}>
+                                          {model?.availableInterfaces?.length ? <>
+                                            <DropdownMenuRadioItem value="auto">{t('settings.providers.models.advanced.protocol.automatic')}</DropdownMenuRadioItem>
+                                            {model.availableInterfaces.map(item => <DropdownMenuRadioItem key={item.profileId} value={item.profileId}>{protocolLabel(item.api)}</DropdownMenuRadioItem>)}
+                                          </> : MODEL_PROTOCOL_OPTIONS.map(([api, label]) => <DropdownMenuRadioItem key={api} value={api}>{label}</DropdownMenuRadioItem>)}
                                         </DropdownMenuRadioGroup>
                                       </DropdownMenuContent>
                                     </DropdownMenu>

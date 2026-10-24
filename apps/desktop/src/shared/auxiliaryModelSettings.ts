@@ -34,7 +34,7 @@ export interface AuxiliaryModelOption {
   agentKind: 'codex' | 'claude-code' | 'pi';
   modelId: string;
   modelName: string;
-  /** Follow the same default visibility as the regular model selector. */
+  /** Auxiliary default; direct HTTP models do not inherit harness compatibility defaults. */
   defaultEnabled?: boolean;
   icon?: string;
   budget: boolean;

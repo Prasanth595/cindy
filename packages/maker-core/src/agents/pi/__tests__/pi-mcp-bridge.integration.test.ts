@@ -927,6 +927,9 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
         | 'local' | 'orca' | 'local-multi' | 'bot-memory' | 'remote' | 'remote-sse' | 'remote-paginated' = 'local',
     prompt = 'call the echo tool',
     localHostOnly: boolean | 'native' = false,
+    // 披露记录按 sessionId 落盘，所以要真正走到「首次未披露」必须给独立会话；
+    // 否则同文件前序用例已落盘的披露会让首次调用直接执行，掩盖门的行为。
+    sessionId = `mcp-itest-${permissionMode}`,
   ): Promise<{
     events: AgentEvent[];
     permissionAsked: boolean;
@@ -941,7 +944,7 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
     let permissionAsked = false;
     try {
       handle = await agent.startSession({
-        sessionId: `mcp-itest-${permissionMode}`,
+        sessionId,
         workingDir: cwd,
         model: 'pi-test-model',
         permissionMode,
@@ -1476,6 +1479,9 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
         },
         'local',
         'call without schema inspection',
+        // 披露记录按会话落盘：给独立会话，才走得到「首次未披露」。
+        false,
+        'mcp-itest-uninspected-first-call',
       );
 
       expect(permissionAsked).toBe(true);

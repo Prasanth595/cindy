@@ -4838,6 +4838,110 @@ it('preserves the actual Vertex API through the probe IPC and rejects unknown SD
   expect(deps.testConnection).toHaveBeenCalledOnce();
 });
 
+// Scheme-2 detection shares the existing local credential boundary. The new ingress
+// needs explicit sender/cancellation coverage; ordinary model fetch has no draft lifecycle.
+describe('provider detection drafts', () => {
+  const input = { requestId: 'draft-1', agent: 'pi', authMethod: 'apiKey', baseUrl: 'https://relay.example/v1', apiKey: 'fake-test-key' };
+  it('rejects untrusted senders and invalid inputs before dispatch', async () => {
+    const harness = new IpcHarness();
+    const detectProvider = vi.fn();
+    const guard = vi.fn<() => void>(() => { throwIpcError('PERMISSION_DENIED', 'untrusted'); });
+    registerProviderHandlers(harness, makeDeps({ detectProvider, assertTrustedSender: guard }));
+    await expect(harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, input)).rejects.toThrow(/PERMISSION_DENIED/);
+    guard.mockImplementation(() => undefined);
+    for (const invalid of [{ ...input, requestId: '../other' }, { ...input, savedProviderId: 'saved' }, { ...input, baseUrl: 'file:///tmp/key' }, { ...input, headers: { bad: 1 } }]) {
+      await expect(harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, invalid)).rejects.toThrow(/INVALID_PARAMS/);
+    }
+    expect(detectProvider).not.toHaveBeenCalled();
+  });
+  it('discards a replaced result without deleting the newer detection operation', async () => {
+    const harness = new IpcHarness();
+    const pending: { signal: AbortSignal; finish: (value: any) => void }[] = [];
+    registerProviderHandlers(harness, makeDeps({ detectProvider: (_spec, signal) => new Promise(resolve => {
+      pending.push({ signal, finish: resolve });
+    }) }));
+    const first = harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, input);
+    const second = harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, { ...input, requestId: 'draft-2' });
+    expect(pending[0].signal.aborted).toBe(true);
+    pending[0].finish({ candidates: ['sub2api'], reason: 'matched' });
+    expect(await first).toEqual({ candidates: [], reason: 'insufficient_evidence' });
+    await harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, { requestId: 'draft-1', cancel: true });
+    expect(pending[1].signal.aborted).toBe(false);
+    await harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, { requestId: 'draft-2', cancel: true });
+    expect(pending[1].signal.aborted).toBe(true);
+    pending[1].finish({ candidates: ['litellm'], reason: 'matched' });
+    expect(await second).toEqual({ candidates: [], reason: 'insufficient_evidence' });
+  });
+  it('isolates cancellations by sender and request, and cancels destroyed windows', async () => {
+    const harness = new IpcHarness();
+    const signals: AbortSignal[] = [];
+    registerProviderHandlers(harness, makeDeps({ detectProvider: async (_spec, signal) => {
+      signals.push(signal);
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+      return { candidates: [], reason: 'insufficient_evidence' };
+    } }));
+    const first = harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, input);
+    const second = harness.invokeFrom(2, MAKER_INVOKE.PROVIDER_DETECT, input);
+    await harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, { requestId: 'old-draft', cancel: true });
+    expect(signals.map(s => s.aborted)).toEqual([false, false]);
+    await harness.invokeFrom(1, MAKER_INVOKE.PROVIDER_DETECT, { requestId: 'draft-1', cancel: true });
+    expect(signals.map(s => s.aborted)).toEqual([true, false]);
+    harness.destroySender(2);
+    await Promise.all([first, second]);
+    expect(signals[1].aborted).toBe(true);
+  });
+});
+
+// New probe lifecycle shares the existing IPC, with sender-owned cancellation and no secret echo.
+describe('one-click protocol test ownership', () => {
+  const request = { kind: 'adhoc', requestId: 'probe-test', strategy: 'auto', spec: {
+    agent: 'pi', authMethod: 'apiKey', baseUrl: 'https://relay.example/v1', modelId: 'test', apiKey: 'fake-key',
+  } };
+  it('forwards the automatic strategy and cancels only the owning renderer operation', async () => {
+    const harness = new IpcHarness();
+    let signal!: AbortSignal;
+    let finish!: (result: { ok: boolean; latencyMs: number }) => void;
+    const testConnection = vi.fn((_input: unknown, current?: AbortSignal) => { signal = current!; return new Promise<{ ok: boolean; latencyMs: number }>(resolve => { finish = resolve; }); });
+    registerProviderHandlers(harness, makeDeps({ testConnection }));
+    const pending = harness.invokeFrom(7, MAKER_INVOKE.PROVIDER_TEST_CONNECTION, request);
+    await harness.invokeFrom(8, MAKER_INVOKE.PROVIDER_TEST_CONNECTION, { kind: 'cancel', requestId: request.requestId });
+    expect(signal.aborted).toBe(false);
+    await expect(harness.invokeFrom(7, MAKER_INVOKE.PROVIDER_TEST_CONNECTION, request)).rejects.toThrow(/PRECONDITION_FAILED/);
+    await harness.invokeFrom(7, MAKER_INVOKE.PROVIDER_TEST_CONNECTION, { kind: 'cancel', requestId: request.requestId });
+    expect(signal.aborted).toBe(true);
+    finish({ ok: true, latencyMs: 1 });
+    expect(await pending).toMatchObject({ ok: false, decision: 'cancelled' });
+    expect(testConnection).toHaveBeenCalledOnce();
+    expect(testConnection.mock.calls[0][0]).toMatchObject(request);
+  });
+  it.each([
+    { ...request, spec: { ...request.spec, agent: 'codex' } },
+    { ...request, spec: { ...request.spec, catalogPresetId: 'google-gemini-api' } },
+    { ...request, spec: { ...request.spec, api: 'google-vertex' } },
+    { ...request, spec: { ...request.spec, baseUrl: 'https://user:pass@relay.example/v1' } },
+    { ...request, requestId: '../bad' },
+  ])('rejects unsupported strategy or credential binding before executing', async input => {
+    const harness = new IpcHarness();
+    const deps = makeDeps();
+    registerProviderHandlers(harness, deps);
+    await expect(harness.invokeFrom(7, MAKER_INVOKE.PROVIDER_TEST_CONNECTION, input)).rejects.toThrow(/INVALID_PARAMS/);
+    expect(deps.testConnection).not.toHaveBeenCalled();
+  });
+  it('aborts the operation when its renderer is destroyed', async () => {
+    const harness = new IpcHarness();
+    let signal!: AbortSignal;
+    const testConnection = vi.fn((_input: unknown, current?: AbortSignal) => {
+      signal = current!;
+      return new Promise<{ ok: boolean; latencyMs: number }>(resolve => current!.addEventListener('abort', () => resolve({ ok: false, latencyMs: 0 }), { once: true }));
+    });
+    registerProviderHandlers(harness, makeDeps({ testConnection }));
+    const pending = harness.invokeFrom(7, MAKER_INVOKE.PROVIDER_TEST_CONNECTION, request);
+    harness.destroySender(7);
+    expect(signal.aborted).toBe(true);
+    expect(await pending).toMatchObject({ decision: 'cancelled' });
+  });
+});
+
 // #6928 unit regression: discovery returns a new ID without mode, and only the
 // active Registry classifies it. Exercise fetch -> merge -> update -> DB reread;
 // Renderer-only tests cannot prove Main classifies before the one persisted write.

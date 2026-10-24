@@ -12654,6 +12654,24 @@ describe('AgentInputCoordinator 中断自动续跑', () => {
     return { h, guard, fail };
   }
 
+  // PR #6936 review: the generated continuation carries originalSyntheticTrigger='continue'.
+  // It keeps the owner's authorship for teammate task actions, never as fresh owner input.
+  it.each([
+    ['owner', { autoReviewUserText: 'Relay the fix to the other task' }, true],
+    ['another task', { autoReviewUserText: 'Relay it', origin: { kind: 'session' as const, senderSessionId: 'other', displayText: 'relay' } }, false],
+  ] as const)('attributes a real automatic continuation of %s input', async (_label, patch, expected) => {
+    const { h, fail } = availabilityHarness();
+    const sid = `pi-availability-continuation-${expected}`;
+    h.coordinator.enqueue(sid, { ...availabilityInput(), ...patch } as AgentInputQueuedMessage);
+    await flush();
+    await fail(sid, { toolResult: true });
+    expect(await h.coordinator.autoRetryLastError(sid, 1)).toBe('resumed');
+    await flush();
+    expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({ type: 'user', content: CONTINUE_AFTER_ERROR_PROMPT });
+    expect(h.coordinator.isActiveInputOwnerContinuation(sid)).toBe(expected);
+    expect(h.coordinator.isActiveInputOwnerAuthored(sid)).toBe(false);
+  });
+
   it('continues after a completed tool and stops at the existing host retry budget', async () => {
     const { h, guard, fail } = availabilityHarness();
     const sid = 'pi-availability-budget';
@@ -15522,4 +15540,21 @@ it('keeps remote Lead reporting pending through real coordinator recovery stages
     expect(calls, phase).toEqual([{ status: 'done', finalText: 'FINAL_AFTER_CAPACITY_RECOVERY' }]);
     runtime.stop();
   }
+});
+
+// Incident 2026-10-23: a teammate's verified relay of the owner's request reached the task
+// with an empty review intent. Only the sending host's verified mark carries the owner's words.
+describe('teammate relay review intent', () => {
+  it.each([[true, '可以提交 pr'], [false, '']] as const)('uses the owner words only when verified=%s', async (ownerVerified, expected) => {
+    const h = createHarness();
+    h.coordinator.enqueue('s1', {
+      ...makeItem('relay', 'envelope'),
+      autoReviewUserText: { kind: 'agent-request', request: {
+        userText: '可以提交 pr', sessionId: 'teammate', clientId: 'u1', ...(ownerVerified ? { ownerVerified: true as const } : {}),
+      } },
+    });
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+    expect(h.sendToAgent.mock.calls[0][3][AUTO_REVIEW_SOURCE_CONTENT]).toBe(expected);
+  });
 });

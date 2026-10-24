@@ -1,3 +1,4 @@
+import { removeSessionModelInterface } from '../../maker-host/session-model-interface.js';
 import { ensureOpenedProjectGit, openSession } from '../sessionOpening.js';
 import {
   claimOwnedProvisionalSession,
@@ -3096,6 +3097,9 @@ function removeImAttachmentsIfStillDeleted(sessionId: string): Promise<void> {
 function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): void {
   if (status !== 'deleted' && status !== 'archived') return;
   if (status === 'deleted') {
+    try { removeSessionModelInterface(sessionId); } catch (error) {
+      log.warn('session interface snapshot cleanup failed', { sessionId, error: String(error) });
+    }
     void removeTurnChangeSetsForSession(sessionId).catch((err) => {
       log.warn('turn change-set cleanup failed', {
         sessionId,

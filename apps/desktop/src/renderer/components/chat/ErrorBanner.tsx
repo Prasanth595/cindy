@@ -359,6 +359,7 @@ export function ErrorBanner({
         ? t(errorReasonI18nKey)
         : undefined;
   const remoteErrorCode = parseAgentErrorCode(error)?.code;
+  const isAttachmentAccessDenied = remoteErrorCode === 'DEVICE_LINK_MEDIA_ACCESS_DENIED';
   const remoteErrorKey = remoteAgentLimitErrorKey(error) ?? chatRemoteErrorGuidanceKey(remoteErrorCode, sessionSource);
   const remoteGuidance = remoteErrorKey && i18n.exists(remoteErrorKey) ? t(remoteErrorKey) : undefined;
   const terminalRateLimitRetryProgress = parseTerminalRateLimitRetryProgress(error, errorReason);
@@ -675,11 +676,13 @@ export function ErrorBanner({
       ref={bannerRef}
       className={cn('mx-auto', className)}
       style={style}
-      message={displayError}
+      message={isAttachmentAccessDenied ? t('chat.errorBanner.attachmentAccessDeniedTitle') : displayError}
       description={
-        (showHistoryRecovery || showInvalidEncryptedContentRecovery) && onForkStripEncrypted
-          ? t('chat.errorBanner.readableHistoryRecoveryDescription')
-          : undefined
+        isAttachmentAccessDenied
+          ? t('chat.errorBanner.attachmentAccessDeniedRecovery')
+          : (showHistoryRecovery || showInvalidEncryptedContentRecovery) && onForkStripEncrypted
+            ? t('chat.errorBanner.readableHistoryRecoveryDescription')
+            : undefined
       }
       details={canShowErrorDetails ? error : undefined}
       onDiagnose={

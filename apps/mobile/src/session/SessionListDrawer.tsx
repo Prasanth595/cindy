@@ -15,9 +15,11 @@ const DRAWER_CLOSE_VELOCITY = -800;
 
 /** Container only: Home owns every list row, search, group, menu and subscription. */
 export function SessionListDrawer({ currentSessionId, persistent = false, newSessionInSystemBar = false,
-  onClose, onClosed, onSelectSession, runNavigation, newSessionActionRef, open, width,
+  onClose, onClosed, onSelectSession, runNavigation, newSessionActionRef, open, width, topInset,
 }: {
   currentSessionId: string;
+  /** Overrides the safe-area top where the task bar sits inside the status area (Duo). */
+  topInset?: number;
   persistent?: boolean;
   newSessionInSystemBar?: boolean;
   onClose(): void;
@@ -199,7 +201,7 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
         onPress={onClose} style={styles.scrimPressable} testID="sessionDrawer.scrim" />
     </Animated.View> : null}
     <GestureDetector gesture={panGesture}>
-      <Animated.View style={[styles.panel, { paddingLeft: insets.left, paddingTop: insets.top, width: panelWidth },
+      <Animated.View style={[styles.panel, { paddingLeft: insets.left, paddingTop: topInset ?? insets.top, width: panelWidth },
         !persistent && panelStyle]} testID="sessionDrawer.panel">
         <View ref={homeContentRef} style={styles.content}>
           <MobileHome newSessionActionRef={newSessionActionRef} width={width} currentSessionId={currentSessionId}

@@ -289,6 +289,26 @@ describe('model advanced editor', () => {
     } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
   });
 
+  // V6 selection is a user intent, not a copy of today's resolved route/limits.
+  it.each(['auto', 'moonshot-kimi-code-openai-responses'])('persists Kimi interface %s without locking catalog defaults', async (interfaceId) => {
+    const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+    const source = { ...buildUserProvider({ id: 'kimi-user', name: 'Kimi', runtimes: {
+      codex: { catalogPresetId: 'moonshot-kimi-code', baseUrl: 'https://api.kimi.com/coding/v1', wireProtocol: 'openai-chat',
+        models: [{ id: 'k3.1-pro', name: 'K3.1', interfaceId: 'moonshot-kimi-code-openai-completions' }] },
+    } }), connected: true } as ProviderView;
+    try {
+      render(drawer(source.models.codex![0], 'high', ['high'], source));
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Codex · settings.providers.custom.fields.wireProtocol' }), { key: 'ArrowDown' });
+      fireEvent.click(await screen.findByRole('menuitemradio', { name: interfaceId === 'auto' ? 'settings.providers.models.advanced.protocol.automatic' : 'Responses' }));
+      await waitFor(() => expect(update).toHaveBeenCalledOnce());
+      const config = update.mock.calls[0]![0] as Parameters<typeof buildUserProvider>[0];
+      expect(config.runtimes.codex!.models).toEqual([{ id: 'k3.1-pro', name: 'K3.1', interfaceId }]);
+      expect(buildUserProvider(config).models.codex![0].selectedInterface?.api).toBe('openai-responses');
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
   it('saves Google selection with its matching wire and official endpoint', async () => {
     const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
     const previous = window.electronAPI;

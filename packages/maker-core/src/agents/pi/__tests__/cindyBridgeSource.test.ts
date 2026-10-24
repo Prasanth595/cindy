@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -1623,8 +1624,13 @@ describe('cindy-bridge extension source', () => {
     );
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain("qualifiedName: 'mcp__' + serverName + '__' + toolName");
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('private readonly disclosedSchemas');
+    // 披露判定按 schema 指纹（Pi 升级不再整片失效）+ 按会话落盘；门本身保持上游的
+    // 严格 fail closed：未披露的调用被拦下、不触达 MCP、不记账。
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('private schemaFingerprint(');
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('markSchemaDisclosed(call: ResolvedMcpGatewayCall)');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('mcpGateway.isSchemaDisclosed(resolvedGatewayCall)');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('Inspect this tool before execution');
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('const gatewayCall = resolvedGatewayCall && mcpGateway.isSchemaDisclosed(resolvedGatewayCall)');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('permissionToolName = gatewayCall?.qualifiedName');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('permissionInput = gatewayCall?.args');
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain(
@@ -2316,6 +2322,9 @@ it('routes Bot shortcuts through the scoped helper entry without exposing them t
     { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const context: Record<string, any> = {
+    // 沙箱没有模块系统：bridge 顶部的 node:crypto import 在切片后丢失，
+    // 指纹计算用的 createHash 必须由宿主注入。
+    createHash,
     recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
     mcpContentToPi: (content: unknown) => content,
   };
@@ -2461,6 +2470,9 @@ it('lets cindy_mcp_call_tool omit args and forwards an empty object for no-param
     { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const context: Record<string, any> = {
+    // 沙箱没有模块系统：bridge 顶部的 node:crypto import 在切片后丢失，
+    // 指纹计算用的 createHash 必须由宿主注入（PR #6002 的 schemaFingerprint 走 sha256）。
+    createHash,
     recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
     mcpContentToPi: (content: unknown) => content,
   };
@@ -2517,6 +2529,9 @@ it('tells the model the call_tool envelope instead of forwarding a flattened env
     { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const context: Record<string, any> = {
+    // 沙箱没有模块系统：bridge 顶部的 node:crypto import 在切片后丢失，
+    // 指纹计算用的 createHash 必须由宿主注入。
+    createHash,
     recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
     mcpContentToPi: (content: unknown) => content,
   };
@@ -2556,6 +2571,9 @@ it('does not apply the Cindy envelope rule to a third-party tool also named call
     { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const context: Record<string, any> = {
+    // 沙箱没有模块系统：bridge 顶部的 node:crypto import 在切片后丢失，
+    // 指纹计算用的 createHash 必须由宿主注入。
+    createHash,
     recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
     mcpContentToPi: (content: unknown) => content,
   };
@@ -2614,6 +2632,9 @@ it('leaves a direct tool alone when its required name is not the Cindy envelope'
     { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const context: Record<string, any> = {
+    // 沙箱没有模块系统：bridge 顶部的 node:crypto import 在切片后丢失，
+    // 指纹计算用的 createHash 必须由宿主注入。
+    createHash,
     recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
     mcpContentToPi: (content: unknown) => content,
   };

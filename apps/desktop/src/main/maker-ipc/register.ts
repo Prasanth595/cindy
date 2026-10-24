@@ -4,8 +4,9 @@ import { createOrcaWorkerProjectHandlers } from './orcaWorkerProjectHandlers';
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore';
 import { readWorkerProjectContext, createWorkerWorktree, rememberWorkerProject, probeWorkerProject, resolveWorkerWorktreeSource, getWorkerOwnedWorktree } from './orcaWorkerProject';
 import type { WorkerWorktreeRequest } from '../../shared/orca-worker-project';
-import { captureAgentRequest as captureRequest, type CapturedAgentRequest } from './forwardedRequest.js';
-import type { AgentRequestReceipt } from '../../shared/forwardedRequest.js';
+import { captureAgentRequest as captureRequest, ownerChannelInputEvidence, type CapturedAgentRequest } from './forwardedRequest.js';
+import { readChannelToolScope } from '../im/shared/channelToolScope.js';
+import { verifiedOwnerRequestText, type AgentRequestReceipt } from '../../shared/forwardedRequest.js';
 import { configureBotTodoDispatch, settleBotTodoForSession } from './botTodoAccess.js';
 import { createBotTodoDispatch } from './botTodoDispatch.js';
 import { assertBotTaskCoordination, classifySessionMessagePurpose, coordinationInput } from './botTaskCoordination.js';
@@ -939,7 +940,7 @@ import {
 } from './orcaInterAgentDispatcher.js';
 import { resolveOrcaImageAttachmentInput } from './orcaImageAttachments.js';
 import { OrcaWorkerPermissionConfirmBridge } from './orcaWorkerPermissionConfirmBridge.js';
-import { assertTaskActionCurrent, captureTaskActionGuard, bindTaskActionInput, hasTaskActionAuthorization, taskActionInputGuard, settleTaskActionInput, TaskActionAuthorizationError, type TaskActionDeliveryGuard } from './taskActionAuthorization.js';
+import { assertTaskActionCurrent, captureTaskActionGuard, bindTaskActionInput, hasTaskActionAuthorization, taskActionInputGuard, taskActionPrincipal, settleTaskActionInput, TaskActionAuthorizationError, type TaskActionDeliveryGuard } from './taskActionAuthorization.js';
 import {
   getOrcaWorkspaceInfoReadOnly,
   getOrcaWorkerDiagnosticStatusReadOnly,
@@ -1160,6 +1161,7 @@ import {
 import {
   deviceAvailableModels,
   deviceWorkerRoutingContext,
+  localAvailableModels,
   readOrcaWorkerProviderRoutingContext,
   sshCodexWorkerRoutingContext,
 } from './orcaProviderRoutingContext.js';
@@ -1185,6 +1187,7 @@ import { refreshOpenAiMediaModels } from '../maker-host/model-discovery/openai-m
 import { refreshXaiMediaModels } from '../maker-host/model-discovery/xai-media.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
 import { fetchProviderModels, fetchSavedOAuthProviderModels } from '../maker-host/provider-model-fetch.js';
+import { detectProviderDeployment } from '../maker-host/provider-detection.js';
 import {
   beginProviderRouteMutation,
   setPendingCredentialSwitchReader,
@@ -4718,13 +4721,23 @@ export function getSessionInputProvenance(sessionId: string) {
 export async function captureSessionAgentRequest(sessionId: string, supplement: string): Promise<CapturedAgentRequest> {
   const scope = captureDataOwnerBroadcastScope();
   const active = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
+  const lane = readChannelToolScope({ sessionId, sessionInstanceId: getMakerIfReady()?.getSession(sessionId)?.instanceId });
+  const principal = taskActionPrincipal(sessionId);
   // Only a companion's task instructions forward the owner's words. Ordinary
   // sessions (including scheduled runs and child results) keep their own body.
   const [companion] = await getDbClient().drizzle.select({ role: botSessionLinks.role })
     .from(botSessionLinks).where(and(eq(botSessionLinks.sessionId, sessionId),
       inArray(botSessionLinks.role, ['canonical', 'group', 'channel']), isNull(botSessionLinks.archivedAt))).limit(1);
-  const request = await captureRequest(sessionId, supplement, active,
-    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'), !!companion);
+  const ownerVerified = !!companion && principal === 'owner';
+  const evidence = active ?? (ownerVerified ? await ownerChannelInputEvidence(lane, async (clientId) => {
+    const [row] = await getDbClient().drizzle.select({ content: messages.content }).from(messages)
+      .where(and(eq(messages.sessionId, sessionId), eq(messages.clientId, clientId), eq(messages.role, 'user'),
+        isNull(messages.rewindAt)))
+      .limit(1);
+    return row ? extractPlainText(row.content) : null;
+  }) : null);
+  const request = await captureRequest(sessionId, supplement, evidence,
+    () => listMessagesForAgentHandoff(sessionId, 1, undefined, 'user'), !!companion, ownerVerified);
   if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('Data owner changed before request capture');
   return request;
 }
@@ -4739,6 +4752,7 @@ export function getTaskActionInputState(sessionId: string) {
       (id) => getMakerIfReady()?.getSession(id), sessionId, session?.instanceId,
     ),
     ownerInput: isActiveInputOwnerAuthored(sessionId),
+    ownerContinuation: agentInputCoordinatorHolder?.isActiveInputOwnerContinuation(sessionId) ?? false,
     automatic: !!input.input && !isActiveInputOwnerAuthored(sessionId),
     orcaSenderSessionId: input.input?.orcaSenderSessionId,
     boundary: `${session?.instanceId ?? ''}:${agentInputCoordinatorHolder?.getGeneration(sessionId) ?? -1}`,
@@ -7241,7 +7255,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getProviderOrder: () => readProviderOrder(),
     listPresets: () => getActiveCatalog().presets ?? [],
     getModelCatalog: () => getActiveCatalog(),
-    testConnection: (input) => testProviderConnection(input),
+    testConnection: (input, signal) => testProviderConnection(input, undefined, signal),
+    detectProvider: detectProviderDeployment,
     fetchModels: async (spec) => {
       if (spec.savedProviderId && subscriptionAccountKind(spec.savedProviderId)) {
         return { ok: await refreshSubscriptionAccountModels(spec.savedProviderId), models: [] };
@@ -11389,7 +11404,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
      * persistedText 用来识别主机隐藏指令(不加说明)。空闲直发不经 send 事务,
      * 说明只在这里加一次。
      */
-    source?: { origin?: unknown; sourcePlugin?: unknown; persistedText?: string },
+    source?: { origin?: unknown; sourcePlugin?: unknown; autoReviewUserText?: unknown; persistedText?: string },
   ): Promise<SessionSendResult> {
     assertCindyMakeSessionAvailable(await readSessionSource(session.id));
     const dispatchMergeTurn = prepareUpstreamMergeTurn(session.id);
@@ -11412,7 +11427,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 原生命令必须留在消息开头,同 send 事务的占位规则。
       const sourceNote = source && shouldPrependMobileClientPromptNote(message, session.agentKind)
         ? buildWireMessageSourceNote(
-            { origin: source.origin, sourcePlugin: source.sourcePlugin },
+            { origin: source.origin, sourcePlugin: source.sourcePlugin, autoReviewUserText: source.autoReviewUserText },
             { visibleText: source.persistedText ?? message },
           )
         : null;
@@ -11654,6 +11669,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const directSource = {
       origin: queuedOrigin,
       sourcePlugin,
+      autoReviewUserText: params.autoReviewUserText,
       persistedText: extractPlainText(persistedContent ?? message),
     };
 
@@ -12219,7 +12235,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               ...(params.autoReviewUserText.kind === 'delegated-continuation' ? {
                 [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
                 [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
-              } : { [AUTO_REVIEW_USER_INTENT]: '' }),
+              } : { [AUTO_REVIEW_USER_INTENT]: verifiedOwnerRequestText(params.autoReviewUserText) ?? '' }),
             } : {}),
             planMode: false,
             onAccepted: persistUserMessage,
@@ -12352,7 +12368,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             ...(params.autoReviewUserText.kind === 'delegated-continuation' ? {
               [AUTO_REVIEW_USER_INTENT]: restoreAutoReviewUserIntent(await readAutoReviewHistory(targetSessionId)),
               [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const,
-            } : { [AUTO_REVIEW_USER_INTENT]: '' }),
+            } : { [AUTO_REVIEW_USER_INTENT]: verifiedOwnerRequestText(params.autoReviewUserText) ?? '' }),
           } : {}),
           planMode: false,
           onAccepted: persistUserMessage,
@@ -17283,15 +17299,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const caps = maker.getCapabilities(a);
           // key 必须区分 pi,否则 pi 模型会被塞进 claude_code 键与 CC 模型混淆。
           const key = a === 'codex' ? 'codex' : a === 'pi' ? 'pi' : 'claude_code';
-          const providers = providerRouting.availability[a] ?? [];
-          result[key] = caps.availableModels.map((m) => ({
-            id: m.id,
-            label: m.displayName,
-            providers: providers
-              .filter((provider) => provider.models.includes(m.id))
-              .map((provider) => ({ id: provider.id, name: provider.name })),
-            defaultProviderId: providerRouting.resolveDefaultProviderIdForModel(a, m.id),
-          }));
+          result[key] = localAvailableModels(
+            caps.availableModels,
+            providerRouting.availability[a] ?? [],
+            providerRouting.resolveDefaultProviderIdForModel,
+            a,
+          );
         }
         return { ok: true, agentDeviceId: null, ...(locations ? { locations } : {}), ...result };
       } catch (err) {

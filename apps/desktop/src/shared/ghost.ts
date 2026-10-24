@@ -8932,6 +8932,7 @@ export type GhostPipeFetchResult =
 /** 工具调用的结构化失败分类(与 cindy-tools 的 CindyGhostCallErrorCode 同构)。 */
 export type GhostToolCallErrorCode =
   | 'GHOST_NOT_FOUND'
+  | 'GHOST_NAMESPACE_MISMATCH'
   | 'GHOST_ASLEEP'
   | 'GHOST_DISABLED_IN_WORKDIR'
   | 'TOOL_NOT_FOUND'
@@ -8944,6 +8945,7 @@ export type GhostToolCallErrorCode =
 /** 主机错误码不能被插件结果覆盖；其余格式合法的码作为业务错误码透传。 */
 const GHOST_HOST_ERROR_CODES: ReadonlySet<string> = new Set([
   'GHOST_NOT_FOUND',
+  'GHOST_NAMESPACE_MISMATCH',
   'GHOST_ASLEEP',
   'GHOST_DISABLED_IN_WORKDIR',
   'TOOL_NOT_FOUND',

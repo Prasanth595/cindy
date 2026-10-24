@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
 import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION, TurnDispatchRejectedError, type SendOptions } from '@cindy/maker-core';
 import { restoreAutoReviewUserIntent } from '../autoReviewUserIntent.js';
+import { verifiedOwnerRequestText } from '../../../shared/forwardedRequest.js';
 
 const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8').replace(
   /\r\n?/g,
@@ -153,7 +154,7 @@ function botTaskDispatchHarness(
   const stubs: Record<string, unknown> = {
     assertTaskActionCurrent, hasTaskActionAuthorization, TurnDispatchRejectedError,
     AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION,
-    restoreAutoReviewUserIntent, readAutoReviewHistory,
+    restoreAutoReviewUserIntent, readAutoReviewHistory, verifiedOwnerRequestText,
     maker: {
       getSession: (id: string) => live[id],
       getSessionMeta: async (id: string) => ({
@@ -375,6 +376,23 @@ describe('idle forwarded request authorization', () => {
       expect(opts[AUTO_REVIEW_DELEGATED_CONTINUATION]).toBe(true);
       expect(h.readAutoReviewHistory).toHaveBeenCalledWith('child');
     }
+  });
+
+  // Incident 2026-10-23: the owner's relayed "可以提交 pr" reached the task with an empty
+  // review intent. A relay the sending host verified carries exactly the owner's words.
+  it.each(['live', 'resumed'] as const)('%s dispatch reviews a verified owner relay against the owner words', async path => {
+    const live: Record<string, object> = path === 'live' ? { child: {
+      id: 'child', agentKind: 'claude-code', remoteHostId: null,
+      isTurnRunning: () => false, getStatus: () => 'active',
+    } } : {};
+    const h = botTaskDispatchHarness({ child: { permissionMode: 'auto', planModeEnabled: false } }, live);
+    await h.delegationDispatch({
+      targetSessionId: 'child', message: 'envelope', clientId: 'verified-relay',
+      autoReviewUserText: { kind: 'agent-request', request: {
+        userText: 'Submit the PR.', sessionId: 'source', clientId: 'owner-input', ownerVerified: true } },
+    });
+    expect(h.sendOptions[0]?.[AUTO_REVIEW_USER_INTENT]).toBe('Submit the PR.');
+    expect(h.readAutoReviewHistory).not.toHaveBeenCalled();
   });
 });
 

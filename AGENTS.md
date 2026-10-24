@@ -66,6 +66,8 @@
   `docs/product-rules/message-source.md`：界面标签与模型说明同源，两侧一起改。
 - 修改伙伴（Bot）的身份、Session 生命周期、模型 fallback、工作目录、Skill / MCP 装配、
   委派协作或伙伴设置前，必须先读 `docs/product-rules/cindy-bots-runtime.md`。
+- 修改伙伴调用任务写工具的身份判定（主人代办 / 受托 / 自主）、自主轮可做的范围、转达主人原话的
+  核实凭证，或伙伴提示词里对应的说法前，必须先读 `docs/product-rules/teammate-authority.md`。
 - 修改伙伴的跨电脑身份、主力电脑（登记、接管、交出、降级）、云端对话层与资料上传，或
   `apps/desktop/src/main/companion-cloud/`、Chat Server 的伙伴 actor／1:1 房间合同前，必须先读
   `docs/product-rules/cloud-companions.md`。

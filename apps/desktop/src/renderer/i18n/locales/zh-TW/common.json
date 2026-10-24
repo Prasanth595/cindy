@@ -1,5 +1,10 @@
 {
   "localAgent": {"title":"本機應用程式連線","empty":"尚未連接應用程式","description":"允許已授權的本機應用程式使用 Cindy 的模型與執行能力。供應商登入仍由 Cindy 管理。","revoke":"撤銷連線","failed":"無法讀取應用程式連線。","connectTitle":"連接本機應用程式","connectMessage":"允許「{{app}}」使用 Cindy？","connectDetail":"此應用程式可以查看模型與供應商目錄、建立自己的執行並提供工具。原生執行可以依目前系統使用者的權限讀寫檔案、執行命令；工作目錄不限制存取範圍。供應商憑證保留在 Cindy。可在設定 → 遠端連線 → 本機應用程式連線中個別撤銷連線。","cancel":"取消","allow":"允許連接","revokeMessage":"撤銷所有本機應用程式連線？","revokeDetail":"所有本機應用程式連線將失效，正在執行的接入任務會停止。需要時可重新申請連線。","clientIdentity":"應用程式自報編號：{{id}}\n版本：{{version}}\n名稱與編號由申請方提供，不代表 Cindy 已驗證其發行者。","revokeOneMessage":"撤銷「{{app}}」的這條連線？","revokeOneDetail":"透過此連線執行的任務會停止。其他應用程式連線不受影響，需要時可重新申請連線。","revokeConnection":"撤銷「{{app}}」的連線","clientId":"應用程式編號：{{id}}","operationFailed":"無法確認本機應用程式操作的結果，請先查看目前狀態。","invalidConnection":"應用程式連線編號無效。","revokeFailed":"無法確認撤銷結果，請查看目前連線狀態。","loading":"正在讀取應用程式連線…","revoking":"正在撤銷連線…","authorizationRequired":"此操作需要有效的本機應用程式授權。","pairExpired":"連線申請已過期或取消，請從應用程式重新申請連線。","busy":"本機應用程式仍有執行正在運行，或已達執行上限，請先結束不用的執行。","limitReached":"已達本機應用程式連線上限，請在設定中撤銷不用的連線。","invalidWorkspace":"應用程式須指定此電腦上已存在的絕對工作目錄。","sessionExists":"此應用程式連線已在使用該執行編號。","executionUnavailable":"所請求的執行或工具呼叫無法使用，訊息與工具操作未被重播。","selectionUnavailable":"所選模型、供應商或推理強度無法使用，請在應用程式中重新選擇。","requestNotReplayed":"此請求未被重複執行，請在應用程式中查看原操作結果。","storageUnavailable":"無法讀取或儲存本機應用程式連線資料，已保留現有授權紀錄。","stopUnconfirmed":"已阻止繼續向此執行傳送訊息，但尚未確認程序已停止。","interactionUnavailable":"引擎需要此應用程式無法接收的互動操作。","interrupted":"本次傳送已中斷。","toolTimeout":"應用程式工具呼叫已逾時，未自動重試。","connectResult":"請返回申請連線的應用程式查看結果，授權由 Cindy 確認視窗決定。","invalidRequest":"應用程式請求無效，或該操作不受支援。","hostInUse":"此設定檔的本機應用程式連線正由另一個 Cindy 執行個體管理，請在該執行個體中查看連線。","developerConnection":"開發連線","copyCode":"複製連線碼","codeCopied":"連線碼已複製","codeCopyFailed":"無法複製連線碼","developerState":{"ready":"供此電腦上的應用程式暫時連線，仍需在此 Cindy 中授權。重新啟動後需重新複製。","starting":"正在準備連線…","owner-unavailable":"請先登入或進入本機模式","host-in-use":"此資料目錄的連線正由另一個 Cindy 管理","failed":"本機連線未能啟動","stopped":"本機連線已停止"}},
+  "attachmentAccessConfirmation": {
+    "title": "確認附件存取",
+    "message": "Cindy 無法讀取這個附件。請選擇原始檔案，確認後繼續傳送這則訊息；取消會保留草稿。",
+    "button": "使用原始檔案"
+  },
   "mailReader": {
     "markReadFailed": "未能同步已讀狀態，請檢查信箱授權後重新開啟。",
     "title": "郵件",
@@ -973,6 +978,7 @@
     "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任務暫不支援切換 Harness。請選擇目前 Harness 下的模型，或使用所需 Harness 建立新的 SSH 任務。",
     "MODEL_SELECTION_UNAVAILABLE": "所選模型在該供應商下已無法使用。請在設定中檢查連線，或重新選擇可用模型。",
     "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切換。請查看錯誤詳細資訊，待 Harness 就緒後重試。",
+    "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy 無法讀取來源附件，訊息未傳送。請將檔案另存到「下載」或其他可存取的資料夾，移除原附件，再用附件按鈕加入副本後傳送。",
     "DEVICE_LINK_BUSY": "遠端忙碌中，請稍後再試。",
     "INVALID_PARAMS": "引數無效，請檢查後重試。",
     "PRECONDITION_FAILED": "目前狀態下無法執行此操作，請稍後再試。",
@@ -1022,8 +1028,8 @@
     "SSH_HOST_KEY_MISMATCH": "SSH 主機金鑰已變更"
   },
   "providerError": {
-    "AUTH_INVALID": "API 金鑰無效或已過期（401），請檢查金鑰後重試",
-    "AUTH_FORBIDDEN": "金鑰有效但無權訪問（403），請檢查套餐或模型權限",
+    "AUTH_INVALID": "目前介面驗證失敗，請檢查位址、金鑰和驗證方式",
+    "AUTH_FORBIDDEN": "目前介面拒絕存取，請檢查方案、模型或地區權限",
     "RATE_LIMITED": "請求被限流（429），請稍後重試",
     "QUOTA_EXCEEDED": "配額或餘額不足，請檢查供應商帳戶",
     "MODEL_NOT_FOUND": "模型不存在或無權使用，請檢查模型 ID",
@@ -3245,8 +3251,13 @@
           "placeholder": "選擇一個模板…"
         },
         "test": {
+          "inconclusive": "暫時無法確認連線。請檢查位址或網路後重試；上一個請求可能已執行。",
+          "exhausted": "已嘗試所有候選介面，暫未找到可用連線。",
+          "costHint": "測試會傳送簡短生成請求，可能產生少量費用。",
+          "details": "查看嘗試結果",
           "button": "測試連線",
           "testing": "測試中…",
+          "stop": "停止測試",
           "ok": "連線成功（{{ms}}ms）",
           "needFields": "請先填寫基礎 URL 和至少一個模型 ID",
           "unsupportedProtocol": "測試連線暫不支援此模型協定"
@@ -3487,6 +3498,7 @@
           },
           "effortMixed": "各引擎的檔位不同；選擇後套用至支援該檔位的引擎。",
           "protocol": {
+            "automatic": "自動選擇",
             "reference": "原生協定",
             "compatibility": "相容模式",
             "compatibilityHint": "相容模式可能出現執行不穩定或功能異常，建議有經驗的使用者使用。",
@@ -3837,6 +3849,10 @@
         "modelCount": "已設定 {{count}} 個模型",
         "modelsAutomatic": "模型資料自動取得。個別模型的設定請在模型清單調整。",
         "manualModel": "模型 ID（無法自動取得時填寫）",
+        "manualAdd": "手動新增模型",
+        "manualId": "模型 ID",
+        "saveProvider": "儲存供應商",
+        "removeModel": "移除模型",
         "modelTypeAutomatic": "自動辨識",
         "manualModelTypeHint": "相同 ID 可更新類型；自動辨識會恢復目錄中的類型。",
         "mediaOnlyTestHint": "此連線僅含非對話模型。可取得模型列表檢查目錄存取，此處不驗證模型呼叫。"
@@ -3849,6 +3865,17 @@
         "unavailable": "暫時無法使用"
       },
       "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱",
+      "detection": {
+        "keyRequired": "填寫 API 金鑰後繼續。",
+        "authRejected": "驗證未通過，請檢查位址和 API 金鑰，修改後會自動重試。",
+        "hint": "填寫網址和 API 金鑰後自動識別供應商。儲存後可在編輯連線中調整協定。",
+        "pending": "正在識別供應商…",
+        "matched": "已識別為 {{name}}",
+        "ambiguous": "符合多個設定，請繼續自訂或選擇供應商。",
+        "custom": "繼續自訂設定，可取得模型清單或手動新增。",
+        "configure": "前往設定",
+        "keepCustom": "繼續自訂"
+      },
       "speechSetup": {
         "title": "語音",
         "add": "新增語音模型",
@@ -8792,6 +8819,7 @@
         "task": "任務執行",
         "service": "帳戶與模型"
       },
+      "sessionDetail": "任務：{{title}}",
       "services": {
         "audio": "音訊服務",
         "network": "網路服務",
@@ -11591,6 +11619,8 @@
     "errorBanner": {
       "requestFormatError": "應用程式送出的請求格式有誤，本次回覆未能完成。",
       "replyFailed": "回覆未完成",
+      "attachmentAccessDeniedTitle": "Cindy 無法讀取來源附件，訊息未傳送。",
+      "attachmentAccessDeniedRecovery": "請將檔案另存到「下載」或其他可存取的資料夾，移除原附件，再用附件按鈕加入副本後傳送。",
       "retryTitle": "重新傳送最後一條訊息",
       "cancelTitle": "關閉錯誤提示",
       "retry": "重試",
@@ -12330,6 +12360,7 @@
       "LOCAL_OLLAMA_NOT_READY": "本機 Ollama 尚未就緒。請打開設定 → 模型供應商 → Ollama。",
       "DEVICE_LINK_CONTROL_DISABLED": "已關閉對該裝置的控制，訊息未傳送。",
       "DEVICE_LINK_MEDIA_TRANSFER_FAILED": "附件傳輸失敗，訊息未傳送。請重試。",
+      "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy 無法讀取來源附件，訊息未傳送。請將檔案另存到「下載」或其他可存取的資料夾，移除原附件，再用附件按鈕加入副本後傳送。",
       "MCP_APPROVAL_AUTO_BLOCKED": "這次工具呼叫被自動審核攔截，未收到你手動拒絕的紀錄。",
       "MCP_APPROVAL_CONFIRMATION_TIMEOUT": "權限確認逾時，未收到有效的確認結果。僅憑逾時無法判斷你是否點過按鈕。",
       "MCP_APPROVAL_CONFIRMATION_UNAVAILABLE": "這次權限確認未完成，未收到你手動拒絕的紀錄。",
@@ -13234,7 +13265,10 @@
       "treeLoading": "正在載入檔案…",
       "treeAction": {
         "collapseAll": "收起所有",
-        "refresh": "重新整理"
+        "refresh": "重新整理",
+        "showIgnoredDirs": "顯示被忽略的目錄",
+        "hideIgnoredDirs": "隱藏被忽略的目錄",
+        "showIgnoredDirsUnsupported": "對方裝置的 {{appName}} 版本過舊，暫不支援顯示被忽略的目錄"
       },
       "treeMenu": {
         "newFile": "新建檔案",

@@ -612,6 +612,7 @@ export const MAKER_INVOKE = {
    * 需要 code 渲染分类文案）。带密钥材料，不进 device-link 白名单（口径同 test-connection）。
    */
   PROVIDER_MODELS_FETCH: 'maker:provider:models-fetch',
+  PROVIDER_DETECT: 'maker:provider:detect',
   /**
    * 通用 OAuth 供应商（目录 auth.oauth 描述符驱动、非 bespoke 四家）的登录 / 登出 / 取消。
    * 入参 = providerId；login 走 generic-oauth Runner（PKCE 浏览器流），成功后拉动态模型

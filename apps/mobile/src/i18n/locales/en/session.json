@@ -606,6 +606,7 @@
     "DEVICE_LINK_CONTROL_DISABLED": "Control for this device is off; the message was not sent.",
     "DEVICE_LINK_BUSY": "The remote computer is busy. Please try again shortly.",
     "DEVICE_LINK_MEDIA_TRANSFER_FAILED": "Attachment transfer failed; the message was not sent. Please try again.",
+    "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy cannot read the source attachment; the message was not sent. Save a copy to Downloads or another accessible folder, remove the original attachment, and add the copy using the attachment button before sending again.",
     "MCP_APPROVAL_AUTO_BLOCKED": "Auto approve blocked this tool call. No manual rejection was received.",
     "MCP_APPROVAL_CONFIRMATION_TIMEOUT": "The permission request timed out without a confirmed decision. A timeout does not show whether you clicked a button.",
     "MCP_APPROVAL_CONFIRMATION_UNAVAILABLE": "Permission confirmation could not be completed. No manual rejection was received.",

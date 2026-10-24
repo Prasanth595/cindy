@@ -94,6 +94,7 @@ import { useProviderSubscriptionCard } from './useProviderSubscriptionCard';
 import { QuotaHoverCard } from '../status/QuotaHoverCard';
 import { ProviderConnectionDialog } from './ProviderConnectionDialog';
 import { AddProviderWizard, type WizardEntry } from './AddProviderWizard';
+import type { DetectedProviderDraft } from '../../../shared/providerDetection';
 import { OllamaProviderDetail } from './OllamaProviderDetail';
 import {
   OwnRemoteProviderDetail,
@@ -2500,11 +2501,11 @@ export function ProvidersSection() {
   }>({ dataOwnerId, ids: new Set<string>() });
   // 向导:null = 关;{ entry } = 打开(entry 指定直达的供应商,来自检测建议)。
   const [speechProvider, setSpeechProvider] = useState<{ provider: ProviderView; owner: string | null; generation: number | null } | null>(null);
-  const [wizard, setWizard] = useState<null | { entry?: WizardEntry }>(null);
+  const [wizard, setWizard] = useState<null | { entry?: WizardEntry; detected?: DetectedProviderDraft }>(null);
   // 自定义供应商完整表单(编辑,或从向导「自定义端点」进入新建)。
   const [dialog, setDialog] = useState<
     | null
-    | { mode: 'create' }
+    | { mode: 'create'; draft?: DetectedProviderDraft }
     | {
         mode: 'edit';
         config: CustomProviderConfig;
@@ -3541,6 +3542,8 @@ export function ProvidersSection() {
         <AddProviderWizard
           providers={providers}
           entry={wizard.entry}
+          detected={wizard.detected}
+          onReturnCustom={(draft) => { setWizard(null); setDialog({ mode: 'create', draft }); }}
           onOpenCustomForm={() => {
             setWizard(null);
             setDialog({ mode: 'create' });
@@ -3556,6 +3559,8 @@ export function ProvidersSection() {
 
       {dialog && (
         <ProviderConnectionDialog
+          draft={dialog.mode === 'create' ? dialog.draft : undefined}
+          onDetected={(detected) => { setDialog(null); setWizard({ detected }); }}
           initial={dialog.mode === 'edit' ? dialog.config : undefined}
           catalogModels={dialog.mode === 'edit' ? providers.find(p =>
             p.source === 'user' && storedCustomProviderId(p.id) === dialog.config.id)?.models : undefined}

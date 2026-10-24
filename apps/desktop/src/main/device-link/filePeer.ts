@@ -41,6 +41,7 @@ import { createLogger } from '../logger.js';
 import { handlePeerAttachment } from './peerAttachmentStore';
 import { fileVersion } from './fileVersion';
 import { remoteFileVersionCache, type FileVersionMetadata } from './remoteFileVersionCache';
+import { createSourceFileAccessError, isSourceFileAccessError, withSourceFileHandleContext } from './sourceFileError';
 
 // Local-only diagnostics (scope is not upload-allowlisted): stages, sizes and timings, never paths.
 const log = createLogger('device-link:filePeer');
@@ -1024,7 +1025,9 @@ export async function tryUploadPeerAttachment(
     try {
       if (typeof source === 'string')
         handle = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      const size = handle ? (await handle.stat()).size : (source as Buffer).length;
+      const size = handle
+        ? (await withSourceFileHandleContext(source, () => handle!.stat())).size
+        : (source as Buffer).length;
       if (!size) return null;
       // 读整份文件算摘要之前先确认对端能收:对端离线、旧版或不支持时不白读一遍(随后还要走 OSS)。
       // The probe is the one wait with no checkpoint of its own; a late answer is ignored.
@@ -1035,7 +1038,9 @@ export async function tryUploadPeerAttachment(
         checkActive();
         if (!handle) return (source as Buffer).subarray(offset, offset + length);
         const bytes = Buffer.alloc(length);
-        if ((await handle.read(bytes, 0, length, offset)).bytesRead !== length)
+        const result = await withSourceFileHandleContext(source, () =>
+          handle!.read(bytes, 0, length, offset));
+        if (result.bytesRead !== length)
           throw new Error('FILE_PEER_CHANGED');
         return bytes;
       };
@@ -1096,9 +1101,12 @@ export async function tryUploadPeerAttachment(
         `uploaded peer=${short(peer)} bytes=${size} transferMs=${ms} bytesPerSecond=${Math.round((size * 1000) / Math.max(1, ms))}`,
       );
       return result;
-    } catch {
+    } catch (error) {
       check();
       if (signal?.aborted) throw new Error('FILE_PEER_CANCELLED');
+      // The source is unreadable on this computer; another transport cannot fix it.
+      // Leave the healthy peer connection and its cooldown untouched.
+      if (isSourceFileAccessError(error, source)) throw createSourceFileAccessError();
       cooldown.fail(peer);
       const failed = outgoing.get(peer);
       if (failed) stopConnection(failed.id, 'upload-failed');

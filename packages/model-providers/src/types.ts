@@ -184,6 +184,7 @@ export type OAuthProviderDescriptor =
  * 真实上游 + 鉴权 + model id 还原。加新供应商 = 加这份数据，不改路由器代码。
  */
 export interface RoutingDescriptor {
+  modelInterface?: ModelInterfaceSnapshot;
   /**
    * 上游 wire protocol。Claude Code / Codex 缺省保持历史语义；Pi 必须显式声明。
    * Codex 的 openai-chat / anthropic-messages 会分别进入对应的本地 Responses bridge。
@@ -305,7 +306,24 @@ export interface ModelCost {
  * per-agent 拆分正是为了表达这种分歧:各 agent 列表里各写各的值。同一 agent 内、同一 id
  * 跨 provider(如 gpt-5.5 同时由 openai 与 xd 提供)则必须元数据一致(见 catalog.ts 校验)。
  */
+/** Non-sensitive, atomic execution selection. Stored with a running task. */
+export interface ModelInterfaceSnapshot {
+  profileId: string;
+  providerId: string;
+  revision: string;
+  api: PiModelApi;
+  wireModelId: string;
+  route: ProviderModelRouteConfig;
+  defaults: ModelMetadata;
+  compatibility: string[];
+  preferred: boolean;
+  nativeApis?: import('./modelAccessBean.js').ModelNativeApi[] | null;
+}
 export interface CatalogModel {
+  interfaceUnavailable?: boolean;
+  selectedInterface?: ModelInterfaceSnapshot;
+  availableInterfaces?: ModelInterfaceSnapshot[];
+  nativeApis?: import("./modelAccessBean.js").ModelNativeApi[] | null;
   /** Same-provider display-only pricing; never inherited through public model metadata. */
   displayPricing?: ModelDisplayPricing;
   currency?: 'USD' | 'CNY';
@@ -629,6 +647,11 @@ export interface Provider {
  * 并随用户配置持久化，避免已知长上下文模型被错误降级。
  */
 export interface ProviderRuntimeModelConfig extends ModelMetadata {
+  /** User override; absent follows the directory. Never persist derived snapshots. */
+  interfaceId?: string;
+  interfaceUnavailable?: boolean;
+  selectedInterface?: ModelInterfaceSnapshot;
+  availableInterfaces?: ModelInterfaceSnapshot[];
   /** Current account discovery only; deliberately excluded from inheritable ModelMetadata. */
   supportsUltrafastMode?: boolean;
   discoveredMetadata?: ModelMetadata;

@@ -18,7 +18,7 @@ import { HomeNewTaskButton } from '@/session/HomeNewTaskButton';
 import { RecentMessageHistories, MessageHistoryOverlay } from '@/session/RecentMessageHistories';
 import { rememberRecentTask } from '@/session/recentTasks';
 import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome/SystemNavigationBack';
-import { keyboardControlRegion, type LayoutRect } from '@/platform/windowGeometry';
+import { keyboardControlRegion, sharedStatusRowDrawerTop, type LayoutRect } from '@/platform/windowGeometry';
 import { useAdaptiveWindow, PaneViewportProvider } from '@/platform/AdaptiveWindowContext';
 import { useSessionHeaderHeight } from '@/session/useSessionHeaderHeight';
 import { useDoubleTap } from '@/session/useDoubleTap';
@@ -3059,6 +3059,10 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   // already includes that area; safeArea.top + 44 would count the toolbar twice.
   const topChromeHeight = Math.max(topOverlayHeight,
     horizontalSystemHeader ? nativeHeaderHeight : insets.top + navigationChrome.target);
+  // The drawer hides that toolbar; put the drawer's own header in the same row instead of
+  // below the whole status area.
+  const sessionListDrawerTopInset = horizontalSystemHeader
+    ? sharedStatusRowDrawerTop(nativeHeaderHeight, insets.top) : undefined;
   // 退出宽屏后 layout.drawerWidth 会变 0;退场期间继续用最后一个有效宽度,避免面板几何跳变。
   const sessionListDrawerWidthRef = useRef(wideSessionNav.drawerWidth);
   if (wideSessionNav.enabled) sessionListDrawerWidthRef.current = wideSessionNav.drawerWidth;
@@ -11110,6 +11114,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           runNavigation={queueDrawerNavigation}
           onSelectSession={handleDrawerSelectSession}
           open={sessionListDrawerOpen}
+          topInset={sessionListDrawerTopInset}
           width={sessionListDrawerWidthRef.current}
         />
         ) : null}

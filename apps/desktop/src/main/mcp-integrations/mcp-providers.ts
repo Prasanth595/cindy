@@ -84,6 +84,7 @@ import {
   saveBotSkillForSession,
 } from '../maker-ipc/botSkillService.js';
 import {
+  canBotContinueWorkbenchTask,
   captureBotCreatedTaskResponsibility,
   runBotWorkbenchTool,
   runBotProjectsTool,
@@ -307,6 +308,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     isScopeCurrent: (db) => !isAppSessionBoundaryPending() && db === tryGetDbClient(),
     authorizeAction: createDesktopTaskActionAuthorizer({
       input: getTaskActionInputState, getSession: getTaskActionSession, confirm: confirmTaskAction,
+      isEntrustedTask: canBotContinueWorkbenchTask,
     }),
   });
   // Companion history uses the same account scope as ordinary task history.

@@ -266,7 +266,7 @@ iOS 新增与改造界面遵循 [iOS 原生界面规范](../../../docs/design-ru
   新建任务的设备、工作区和远程目录选择复用 RN `NewTaskSelectionRow`；设备使用原生底部弹层，
   目录仍在同一兼容弹层内逐级返回，盘符通过原生菜单切换，继续调用被控端目录接口。
   开关和普通文本输入原本已是原生控件；富文本编辑器不属于此次迁移。
-- **Android 交互跟随 iOS**（2026-09-27 产品裁决）：入口位置、顺序、分组、显示哪些信息与输入校验以 iOS 为准；外观保持 Android 平台实现，不照搬玻璃。贴着控件弹出的菜单统一走 `NativePullDownMenu`，Android 通过 `AnchoredPullDownMenu.android` 使用现有 Expo UI 的 Material `DropdownMenu`，保留分组标题、勾选、禁用、危险操作、子菜单返回行及 `keepPresented`。弹出定位、滚动、焦点及动画交给系统；外部点击和系统返回收起原生菜单。触发器整块是一个读屏按钮，触发控件禁用时不挂菜单。自绘实现保留用于兼容，不使用能力不足的基础 PopupMenu 替代。
+- **Android 交互跟随 iOS**（2026-09-27 产品裁决）：入口位置、顺序、分组、显示哪些信息与输入校验以 iOS 为准；外观保持 Android 平台实现，不照搬玻璃。贴着控件弹出的菜单统一走 `NativePullDownMenu`，Android 通过 `AnchoredPullDownMenu.android` 使用现有 Expo UI 的 Material `DropdownMenu`，保留分组标题、勾选、禁用、危险操作、子菜单返回行及 `keepPresented`。弹出定位、滚动、焦点及动画交给系统；外部点击和系统返回收起原生菜单。触发器整块是一个读屏按钮，触发控件禁用时不挂菜单。例外是伙伴私聊气泡的长按菜单：气泡里有引用、链接和横向滚动，菜单不能接管整块触摸，改由调用方用同一个 RNGH 长按手势识别后，以受控方式（`open` / `onOpenChange`）打开 `AnchoredPullDownMenu`。自绘实现保留用于兼容，不使用能力不足的基础 PopupMenu 替代。
   原生菜单首次使用时创建 Compose 容器，随后随触发器复用；收起只修改 `expanded`，保留系统关闭动画，避免每次点击重建整棵原生树。锚点的 RN 外层使用 `pointerEvents="none"`，防止关闭后的容器挡住触发器；弹出窗口独立接收菜单点击。验收必须覆盖关闭后再次打开、外部点击和菜单项选择，不能只验证首次呈现。
   可勾选菜单项在原生弹出窗口中使用 `RNHostView` 承载一个 RN `menuitem`，通过 `accessibilityState.checked` 表达选中、未选中和半选，禁用态与整行点击共用同一节点；勾号只是装饰，不能代替无障碍语义。现有 Compose modifier 未提供完整三态设置，不增加第二个可点击复选框。回归见 `androidMaterialMenu.test.tsx`，模拟器须核验真实节点。
 
