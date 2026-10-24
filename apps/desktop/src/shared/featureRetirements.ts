@@ -33,7 +33,7 @@ export const FEATURE_RETIREMENTS: readonly FeatureRetirement[] = [
       builtinToolsetIds: ['ios-simulator'],
     },
     replacement: {
-      ghostId: 'baguette-simulator',
+      ghostId: 'cindy-simulator',
       marketId: 'cb93909aaa6ac600bbc2f6b8a',
     },
   },

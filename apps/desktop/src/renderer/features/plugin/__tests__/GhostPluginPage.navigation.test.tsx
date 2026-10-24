@@ -444,7 +444,7 @@ describe('retirement migration from the original plugin', () => {
     ...old,
     manifest: {
       ...detail.manifest,
-      id: 'baguette-simulator',
+      id: 'cindy-simulator',
       name: 'Baguette',
       command: 'baguette',
     },
@@ -505,7 +505,7 @@ describe('retirement migration from the original plugin', () => {
     const baguette = {
       ...detail,
       pluginId: 'cb93909aaa6ac600bbc2f6b8a',
-      ghostId: 'baguette-simulator',
+      ghostId: 'cindy-simulator',
       manifest: replacement.manifest,
     };
     loadDetail.mockResolvedValue(baguette);
@@ -529,9 +529,9 @@ describe('retirement migration from the original plugin', () => {
   });
 
   it.each(['legacy', 'root'] as const)('enables the %s replacement without reinstalling it', async (layout) => {
-    const instanceId = layout === 'root' ? '_root__baguette-simulator' : 'baguette-simulator';
+    const instanceId = layout === 'root' ? '_root__cindy-simulator' : 'cindy-simulator';
     const installed = { ...replacement, namespace: null,
-      dir: path.join('plugins', ...(layout === 'root' ? ['_ns', '_root'] : []), 'baguette-simulator') };
+      dir: path.join('plugins', ...(layout === 'root' ? ['_ns', '_root'] : []), 'cindy-simulator') };
     const bridge = installFixture([old, installed]);
     vi.mocked(bridge.ghosts.setEnabled).mockImplementation(async (id) => {
       if (id !== instanceId) throw new Error('[NOT_FOUND] Wrong plugin instance');
@@ -549,18 +549,18 @@ describe('retirement migration from the original plugin', () => {
   });
 
   it('enables the market-matched organization replacement instead of its root sibling', async () => {
-    const root = { ...replacement, namespace: null, enabled: true, dir: 'plugins/baguette-simulator' };
+    const root = { ...replacement, namespace: null, enabled: true, dir: 'plugins/cindy-simulator' };
     const organization = {
       ...replacement,
       namespace: 'acme',
       enabled: false,
-      dir: 'plugins/_ns/acme/baguette-simulator',
+      dir: 'plugins/_ns/acme/cindy-simulator',
     };
     const bridge = installFixture([old, root, organization]);
     const marketReplacement = {
       ...detail,
       pluginId: 'cb93909aaa6ac600bbc2f6b8a',
-      ghostId: 'baguette-simulator',
+      ghostId: 'cindy-simulator',
       name: 'Baguette',
       namespace: 'acme',
       scope: 'organization' as const,
@@ -576,7 +576,7 @@ describe('retirement migration from the original plugin', () => {
       unavailableCustomSourceNames: [],
     });
     vi.mocked(bridge.ghosts.setEnabled).mockImplementation(async (id) => {
-      if (id !== '_ns__acme__baguette-simulator') throw new Error('[NOT_FOUND] Wrong plugin instance');
+      if (id !== '_ns__acme__cindy-simulator') throw new Error('[NOT_FOUND] Wrong plugin instance');
       return { ok: true };
     });
     render(page('/plugins?retired=ios-simulator'));
@@ -585,7 +585,7 @@ describe('retirement migration from the original plugin', () => {
     );
     await waitFor(() =>
       expect(bridge.ghosts.setEnabled).toHaveBeenCalledWith(
-        '_ns__acme__baguette-simulator',
+        '_ns__acme__cindy-simulator',
         true,
         'approved:' + organization.approval.revision,
       ),
@@ -599,7 +599,7 @@ describe('retirement migration from the original plugin', () => {
     }]);
     render(page('/plugins?retired=ios-simulator'));
     fireEvent.click(await screen.findByRole('button', { name: 'settings.ghosts.retirement.open' }));
-    expect((await screen.findByTestId('replacement-panel')).textContent).toBe('baguette-simulator');
+    expect((await screen.findByTestId('replacement-panel')).textContent).toBe('cindy-simulator');
     expect(screen.queryByText('settings.ghosts.retirement.embeddedSimulator.title')).toBeNull();
     expect(loadDetail).not.toHaveBeenCalled();
   });

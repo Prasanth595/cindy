@@ -129,7 +129,7 @@ it('ships authored copy within the field limits for all ten packages, with publi
   const wording = /配方|本包|离线示例|UTC|原作者|USER\.md|脚本|\.py\b|水位|游标|字段名/;
   // Public-market plugins only (never organisation-only xd-* ones); the page lists representative ones, teammates use whatever the user has.
   const publicPlugins = new Set(['cindy-github', 'cindy-gitlab', 'cindy-notion', 'google-sheets', 'google-gmail', 'outlook-mail', 'google-drive',
-    'cindy-web-search', 'x-manager', 'cindy-art', 'opendesign-trial', 'baguette-simulator']);
+    'cindy-web-search', 'x-manager', 'cindy-art', 'opendesign-trial', 'cindy-simulator']);
   const shape: Record<string, number[]> = {};
   for (const id of BOT_PACKAGE_IDS) {
     const manifest = JSON.parse(await fs.readFile(path.join(root, id, version, 'manifest.json'), 'utf8'));
