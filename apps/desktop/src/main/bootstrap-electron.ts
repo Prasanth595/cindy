@@ -3710,11 +3710,9 @@ function applyPageZoomLevel(mainWindow: BrowserWindow, nextFactor: number): numb
 }
 
 // ── Custom URL scheme (cindy://... + 历史 xdt-maker://...) ───────────────
-// 必须在 app.whenReady() 之前注册:
-//   - registerDeepLinkProtocol() 调 setAsDefaultProtocolClient (Windows/Linux
-//     写注册表 / .desktop entry; macOS 走 Info.plist, 此调用是兜底)
+//   - registerDeepLinkProtocol() 仅为 packaged client 注册 OS 协议，dev 不改变系统关联
 //   - app.on('open-url') 是 macOS-only 事件, 冷启动时也会在 ready 之前 fire,
-//     提前 attach 才能接住
+//     必须在 app.whenReady() 之前 attach；dev 仍接收显式投递的事件
 watchCindyVersionStartupResult();
 if (!isCindyPersonalRuntime()) registerDeepLinkProtocol();
 app.on('open-url', (event, url) => {
