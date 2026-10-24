@@ -3689,6 +3689,30 @@ describe('model catalog thinking handlers', () => {
     // 展示值取运行期真正消费 thinking 档位的那一侧（Pi），并把「一边声明、一边跟随」报成分叉。
     expect(view).toMatchObject({ value: ['low', 'high'], isCustomized: true, diverged: true });
   });
+
+  it('reports divergence when only the default tier differs across engines', async () => {
+    // 两侧档位集合相同、默认档不同（手改文件留下的分裂）：diverged 不置位会让「重选当前项」
+    // 被同值 no-op 挡掉，默认档的分叉永远修不掉。
+    const harness = new IpcHarness();
+    const read = vi.fn((t: { agent?: string }) =>
+      t.agent === 'pi'
+        ? { value: ['low', 'max'], defaultEffort: 'low', isCustomized: true }
+        : { value: ['low', 'max'], defaultEffort: 'max', isCustomized: true },
+    );
+    const deps = thinkingDeps({ readModelCatalogThinking: read as never });
+    registerProviderHandlers(harness, deps);
+
+    const view = await harness.invoke(MAKER_INVOKE.MODEL_CATALOG_THINKING_GET, {
+      ...target,
+      relatedTargets: [{ providerId: 'opencode-go', agent: 'codex', modelId: 'gpt-5.6-sol' }],
+    });
+    expect(view).toMatchObject({
+      value: ['low', 'max'],
+      defaultEffort: 'low',
+      isCustomized: true,
+      diverged: true,
+    });
+  });
 });
 
 describe('model catalog image input handlers', () => {

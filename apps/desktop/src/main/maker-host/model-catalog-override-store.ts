@@ -406,6 +406,9 @@ export function readModelCatalogThinkingDivergence(
     return {
       // 按内容比而不是按引用：每次读盘都会造新数组，引用比较会把「两侧声明一致」误判成分叉。
       tiers: declared ? JSON.stringify(declared.efforts) : null,
+      // 默认档也参与分叉判定：两侧集合相同但默认档不同（手改文件留下的分裂）时，
+      // 「重选当前项」同样要能放行，否则默认档的分叉永远修不掉。
+      defaultEffort: declared ? (declared.defaultEffort ?? null) : null,
       customized: declared !== undefined,
     };
   });
@@ -413,7 +416,10 @@ export function readModelCatalogThinkingDivergence(
   const head = views[0]!;
   return {
     diverged: views.some(
-      (view) => view.tiers !== head.tiers || view.customized !== head.customized,
+      (view) =>
+        view.tiers !== head.tiers ||
+        view.defaultEffort !== head.defaultEffort ||
+        view.customized !== head.customized,
     ),
   };
 }

@@ -29,6 +29,7 @@ const {
   readModelCatalogOverrides,
   readModelCatalogImageInput,
   setModelCatalogImageInput,
+  readModelCatalogThinkingDivergence,
 } = await import('../model-catalog-override-store.js');
 
 const patchEntry = { base: { name: 'Renamed' } };
@@ -272,5 +273,50 @@ describe('model-catalog-override-store', () => {
     expect(readModelCatalogOverrides().patches).toEqual({});
     expect(fs.statSync(oversized).size).toBeGreaterThan(MAX_MODEL_CATALOG_OVERRIDE_FILE_BYTES);
     expect(fs.existsSync(oversized)).toBe(true);
+  });
+
+  it('readModelCatalogThinkingDivergence 把「同集合不同默认档」报成分叉', () => {
+    // 手改文件留下的分裂：两侧档位集合相同、默认档不同。diverged 不置位的话，
+    // 抽屉的「重选当前项」会被同值 no-op 挡掉，默认档的分叉永远修不掉。
+    owner.current = 'owner-thinking-diverged-default';
+    writeOwnerFile({
+      version: 1,
+      patches: {
+        'prov:model': {
+          agents: ['pi', 'codex'],
+          perAgent: {
+            pi: { efforts: ['low', 'max'], defaultEffort: 'low' },
+            codex: { efforts: ['low', 'max'], defaultEffort: 'max' },
+          },
+        },
+      },
+    });
+    expect(
+      readModelCatalogThinkingDivergence([
+        { providerId: 'prov', modelId: 'model', agent: 'pi' },
+        { providerId: 'prov', modelId: 'model', agent: 'codex' },
+      ]),
+    ).toEqual({ diverged: true });
+
+    // 默认档一致时不算分叉（集合相同 + 默认档相同）。
+    owner.current = 'owner-thinking-consistent';
+    writeOwnerFile({
+      version: 1,
+      patches: {
+        'prov:model': {
+          agents: ['pi', 'codex'],
+          perAgent: {
+            pi: { efforts: ['low', 'max'], defaultEffort: 'low' },
+            codex: { efforts: ['low', 'max'], defaultEffort: 'low' },
+          },
+        },
+      },
+    });
+    expect(
+      readModelCatalogThinkingDivergence([
+        { providerId: 'prov', modelId: 'model', agent: 'pi' },
+        { providerId: 'prov', modelId: 'model', agent: 'codex' },
+      ]),
+    ).toEqual({ diverged: false });
   });
 });

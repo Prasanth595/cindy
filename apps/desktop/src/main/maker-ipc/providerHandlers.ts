@@ -2234,6 +2234,10 @@ export function registerProviderHandlers(
     const piIndex = targets.findIndex((target) => target.agent === 'pi');
     const sameTiers = (a: string[] | null, b: string[] | null): boolean =>
       a === b || (a !== null && b !== null && a.length === b.length && a.every((t, i) => t === b[i]));
+    // 默认档也参与分叉判定（undefined 与 null 同归「未设」）：两侧集合相同但默认档不同时，
+    // 「重选当前项」同样要能放行，否则默认档的分叉永远修不掉。
+    const sameDefault = (a: string | null | undefined, b: string | null | undefined): boolean =>
+      (a ?? null) === (b ?? null);
     const primary = piIndex >= 0 ? views[piIndex]! : views[0]!;
     const value = primary.value ?? (piIndex >= 0 ? null : views.find((view) => view.value !== null)?.value ?? null);
     return {
@@ -2241,7 +2245,12 @@ export function registerProviderHandlers(
       // 默认档跟着展示值那一侧走：写入侧靠它避免猜「排序第一档」把厂商默认改掉。
       ...(value !== null ? { defaultEffort: primary.defaultEffort ?? null } : {}),
       isCustomized: views.some((view) => view.isCustomized),
-      ...(views.some((view) => !sameTiers(view.value, primary.value) || view.isCustomized !== primary.isCustomized)
+      ...(views.some(
+          (view) =>
+            !sameTiers(view.value, primary.value) ||
+            !sameDefault(view.defaultEffort, primary.defaultEffort) ||
+            view.isCustomized !== primary.isCustomized,
+        )
         ? { diverged: true }
         : {}),
     };
