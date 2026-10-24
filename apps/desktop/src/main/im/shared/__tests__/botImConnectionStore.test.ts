@@ -13,10 +13,11 @@ vi.mock('../../../maker-host/logger-adapter.js', () => ({
 vi.mock('../../ownerScopedStorage.js', () => ({
   ownerScopedImUserDataPath: (...parts: string[]) => path.join(h.root, 'owners', h.owner, ...parts),
 }));
-vi.mock('../../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.owner }));
+vi.mock('../../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.owner, isAppSessionBoundaryPending: () => false }));
 
 import {
   addBotImConnectionRecord,
+  archiveBotImTaskRow,
   listBotImConnections,
   listBotImConnectionsForBot,
   readBotImConnection,
@@ -125,6 +126,21 @@ describe('bot im connection store', () => {
       }),
     );
     expect(readBotImConnection('222222222222')?.groupActivation).toEqual({ '-1': 'always' });
+  });
+
+  // 用户明确要求只归档列表、不归档 session。既有存储测试没有行级显示偏好。
+  // 最小输入一条连接、两个任务行；unit 走真实文件入口验证并发合并、持久化与账号隔离。
+  it('persists row archives atomically per connection without changing its binding', async () => {
+    const record = await addBotImConnectionRecord({ botId: 'bot-a', channel: 'feishu' }, { id: () => 'aaaaaaaaaaaa' });
+    await Promise.all([archiveBotImTaskRow(record, 'session-main'), archiveBotImTaskRow(record, 'session-topic')]);
+    expect(readBotImConnection(record.id)).toMatchObject({
+      botId: 'bot-a', channel: 'feishu', botContextId: null,
+      archivedTaskRows: { 'session-main': expect.any(Number), 'session-topic': expect.any(Number) },
+    });
+    expect(JSON.parse(fs.readFileSync(file(), 'utf8')).connections[record.id].archivedTaskRows)
+      .toEqual(readBotImConnection(record.id)?.archivedTaskRows);
+    h.owner = 'owner-b';
+    expect(readBotImConnection(record.id)).toBeNull();
   });
 
   it('is scoped per data owner', async () => {

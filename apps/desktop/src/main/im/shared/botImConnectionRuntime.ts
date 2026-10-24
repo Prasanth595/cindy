@@ -53,7 +53,7 @@ import {
   updateBotImConnectionRecord,
 } from './botImConnectionStore';
 import { companionConnectionRouteKeyPrefix } from './imBotBindingRoute';
-import { listBotImConnectionLanes, resetBotImConnectionLane } from './botImLaneRuntime';
+import { archiveBotImConnectionLane, listBotImConnectionLanes, resetBotImConnectionLane } from './botImLaneRuntime';
 import type { ImOrchestrator } from './orchestrator';
 
 const log = createLogger('im:bot-connections');
@@ -784,6 +784,15 @@ export function registerBotImConnectionIpc(): void {
       throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
     }
     return resetBotImConnectionLane(p.id, p.sessionId, laneOptions);
+  });
+  ipcMain.handle('botImConnection:archive-lane', (e, payload) => {
+    assertTrustedAppRendererEvent(e);
+    const p = (payload ?? {}) as { id?: unknown; sessionId?: unknown };
+    if (!isBotImConnectionId(p.id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
+    if (typeof p.sessionId !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(p.sessionId)) {
+      throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
+    }
+    return archiveBotImConnectionLane(p.id, p.sessionId, laneOptions);
   });
 }
 

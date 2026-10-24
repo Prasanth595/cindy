@@ -10,8 +10,11 @@ import type { BotImConnectionRecord } from '../../../../shared/botImConnection';
 
 const h = vi.hoisted(() => ({
   records: new Map<string, unknown>(),
+  archived: new Set<string>(),
+  owner: 'owner-a',
 }));
 
+vi.mock('../../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.owner, isAppSessionBoundaryPending: () => false }));
 vi.mock('../../../logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
@@ -19,10 +22,17 @@ vi.mock('../../../localDb/client/current', () => ({ getDbClient: vi.fn() }));
 vi.mock('../../../localDb/schema', () => ({ botSessionLinks: {}, messages: {}, sessions: {} }));
 vi.mock('../botImConnectionStore', () => ({
   readBotImConnection: (id: string) => h.records.get(id) ?? null,
+  archiveBotImTaskRow: async (record: BotImConnectionRecord, sessionId: string) => {
+    const next = { ...record, archivedTaskRows: { ...record.archivedTaskRows, [sessionId]: Date.now() } };
+    h.records.set(record.id, next);
+    h.archived.add(sessionId);
+    return next;
+  },
 }));
 
 import {
   __testing,
+  archiveBotImConnectionLane,
   configureBotImLaneRuntime,
   listBotImConnectionLanes,
   resetBotImConnectionLane,
@@ -73,12 +83,46 @@ const knownGroups = vi.fn(async () => [{ chatId: '-1001', chatName: 'Launch crew
 beforeEach(() => {
   vi.clearAllMocks();
   h.records.clear();
+  h.archived.clear();
+  h.owner = 'owner-a';
   h.records.set(TELEGRAM.id, TELEGRAM);
   __testing.setStore({ listLinks, readActivity });
   configureBotImLaneRuntime({ isTurnRunning: (id) => id === 's-guest', restartSession });
 });
 
 describe('botImLaneRuntime', () => {
+  // 用户确认的专线归档：既有覆盖只有重启；unit 注入存储验证列表移除与越权拒绝。
+  it('archives only the selected connection row and preserves all session links', async () => {
+    const payload = await archiveBotImConnectionLane(TELEGRAM.id, 's-topic');
+    expect(payload.lanes.map((lane) => lane.sessionId)).toEqual(['s-main', 's-group', 's-guest']);
+    expect(h.archived).toEqual(new Set(['s-topic']));
+    await expect(archiveBotImConnectionLane(TELEGRAM.id, 's-feishu')).rejects.toThrow(/LANE_NOT_FOUND/);
+    await expect(archiveBotImConnectionLane(TELEGRAM.id, 's-other-bot')).rejects.toThrow(/LANE_NOT_FOUND/);
+    expect(h.archived).toEqual(new Set(['s-topic']));
+    expect(await listLinks(TELEGRAM.botId)).toEqual(LINKS);
+    const afterOwnerArchive = await archiveBotImConnectionLane(TELEGRAM.id, 's-main');
+    expect(afterOwnerArchive.lanes.map((lane) => lane.sessionId)).toEqual(['s-group', 's-guest']);
+    expect(restartSession).not.toHaveBeenCalled();
+  });
+
+  // 列表归档不改变 session：后续消息仍在原任务上，既有用例不覆盖归档后的活动。
+  it('shows the same session again after new activity without creating or restarting it', async () => {
+    await archiveBotImConnectionLane(TELEGRAM.id, 's-topic');
+    readActivity.mockImplementationOnce(async () => ACTIVITY['s-main']);
+    readActivity.mockImplementationOnce(async () => ACTIVITY['s-group']);
+    readActivity.mockImplementationOnce(async () => activity({ lastActivityAt: Date.now() + 1 }));
+    const payload = await listBotImConnectionLanes(TELEGRAM.id);
+    expect(payload.lanes.some((lane) => lane.sessionId === 's-topic')).toBe(true);
+    expect(await listLinks(TELEGRAM.botId)).toEqual(LINKS);
+    expect(restartSession).not.toHaveBeenCalled();
+  });
+
+  it('does not archive after an account change during the ownership lookup', async () => {
+    listLinks.mockImplementationOnce(async () => { h.owner = 'owner-b'; return LINKS; });
+    await expect(archiveBotImConnectionLane(TELEGRAM.id, 's-topic')).rejects.toThrow(/OWNER_CHANGED/);
+    expect(h.archived.size).toBe(0);
+  });
+
   it('lists only the lanes of this connection, with names, state and order from existing data', async () => {
     const payload = await listBotImConnectionLanes(TELEGRAM.id, { knownGroups });
 

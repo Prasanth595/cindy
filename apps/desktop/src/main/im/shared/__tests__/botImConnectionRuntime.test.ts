@@ -12,6 +12,7 @@ import type { BotImConnectionRecord } from '../../../../shared/botImConnection';
 
 const h = vi.hoisted(() => ({
   root: '',
+  ipcHandlers: new Map<string, (event: unknown, payload: unknown) => unknown>(),
   secrets: new Map<string, string>(),
   botStatus: 'active' as string | null,
   archived: [] as string[],
@@ -25,7 +26,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('electron', () => ({
   app: { getPath: () => h.root },
-  ipcMain: { handle: vi.fn() },
+  ipcMain: { handle: vi.fn((name: string, handler: (event: unknown, payload: unknown) => unknown) => h.ipcHandlers.set(name, handler)) },
   BrowserWindow: {
     getAllWindows: () => [
       { isDestroyed: () => false, webContents: { send: (channel: string, payload: unknown) => h.sent.push({ channel, payload }) } },
@@ -84,6 +85,7 @@ import {
   addBotImConnection,
   buildBotImConnectionListPayload,
   configureBotImConnectionRuntime,
+  registerBotImConnectionIpc,
   setWechatCompanionBinding,
   getBotFeishuTransport,
   listBotImConnectionGroups,
@@ -284,6 +286,17 @@ let connectOutcome = true;
 let telegramConflictAfterConnect = false;
 
 describe('bot im connection runtime', () => {
+  // Electron IPC 安全规则 §5：新增归档入口不能绕过 sender/payload 校验；旧测试只覆盖连接生命周期。
+  // unit：注册真实 handler，以非法 sessionId 作为最小输入，拒绝后无归档写入。
+  it('validates archive IPC payload before entering the lane runtime', async () => {
+    registerBotImConnectionIpc();
+    const handler = h.ipcHandlers.get('botImConnection:archive-lane')!;
+    expect(handler).toBeTypeOf('function');
+    expect(() => handler({}, { id: 'a1b2c3d4e5f6', sessionId: '../outside' })).toThrow(/INVALID_PARAMS/);
+    expect(() => handler({}, { id: 'invalid', sessionId: 'session' })).toThrow(/INVALID_PARAMS/);
+    expect(h.archiveCalls).toEqual([]);
+  });
+
   beforeEach(() => {
     h.root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-im-runtime-'));
     h.secrets.clear();

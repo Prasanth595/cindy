@@ -18,6 +18,7 @@
 
 import { and, count, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessionState.js';
 import { createLogger } from '../../logger';
 import { getDbClient } from '../../localDb/client/current';
 import { botSessionLinks, messages, sessions } from '../../localDb/schema';
@@ -28,7 +29,7 @@ import type {
   BotImConnectionRecord,
   BotImLaneKind,
 } from '../../../shared/botImConnection';
-import { readBotImConnection } from './botImConnectionStore';
+import { archiveBotImTaskRow, readBotImConnection } from './botImConnectionStore';
 import { companionConnectionRouteKeyPrefix } from './imBotBindingRoute';
 
 const log = createLogger('im:bot-lanes');
@@ -245,7 +246,10 @@ export async function listBotImConnectionLanes(
     if (a.kind === 'owner-dm' || b.kind === 'owner-dm') return a.kind === 'owner-dm' ? -1 : 1;
     return (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0);
   });
-  return { connectionId: id, lanes };
+  return { connectionId: id, lanes: lanes.filter((lane) => {
+    const archivedAt = record.archivedTaskRows?.[lane.sessionId];
+    return typeof archivedAt !== 'number' || (lane.lastActivityAt !== null && lane.lastActivityAt > archivedAt);
+  }) };
 }
 
 /**
@@ -270,6 +274,34 @@ export async function resetBotImConnectionLane(
   }
   log.info(`bot im connection ${id}: lane ...${sessionId.slice(-8)} (${link.kind}) restarted`);
   return listBotImConnectionLanes(id, options);
+}
+
+/** Archive only a connection list row. The underlying session keeps running unchanged. */
+export async function archiveBotImConnectionLane(
+  id: string,
+  sessionId: string,
+  options: BotImLaneListOptions = {},
+): Promise<BotImConnectionLanesPayload> {
+  const owner = activeOwnerScopeKey();
+  const assertCurrent = () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) {
+      throwIpcError('PRECONDITION_FAILED', 'OWNER_CHANGED');
+    }
+  };
+  assertCurrent();
+  const record = requireRecord(id);
+  const link = (await listScopedLinks(record)).find((item) => item.sessionId === sessionId);
+  assertCurrent();
+  const current = requireRecord(id);
+  if (current.botId !== record.botId || current.botContextId !== record.botContextId || current.channel !== record.channel) {
+    throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
+  }
+  if (!link) throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
+  if (!await archiveBotImTaskRow(record, sessionId)) throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
+  assertCurrent();
+  const payload = await listBotImConnectionLanes(id, options);
+  assertCurrent();
+  return payload;
 }
 
 export const __testing = {

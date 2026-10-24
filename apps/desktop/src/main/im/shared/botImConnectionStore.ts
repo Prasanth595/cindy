@@ -10,7 +10,7 @@
 
 import { randomBytes } from 'node:crypto';
 
-import { activeOwnerScopeKey } from '../../appSessionState.js';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessionState.js';
 import { desktopMakerLogger } from '../../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../../maker-host/override-settings-file.js';
 import { ownerScopedImUserDataPath } from '../ownerScopedStorage.js';
@@ -60,6 +60,7 @@ function normalizeRecord(id: string, raw: unknown): Omit<BotImConnectionRecord, 
       ? r.botContextId
       : null;
   const groupActivation = normalizeGroupActivation(r.groupActivation);
+  const archivedTaskRows = normalizeArchivedTaskRows(r.archivedTaskRows);
   return {
     botId: r.botId,
     channel: r.channel,
@@ -67,7 +68,17 @@ function normalizeRecord(id: string, raw: unknown): Omit<BotImConnectionRecord, 
     ...(service ? { service } : {}),
     botContextId,
     ...(groupActivation ? { groupActivation } : {}),
+    ...(archivedTaskRows ? { archivedTaskRows } : {}),
   };
+}
+
+/** Presentation state only: malformed cutoffs cannot hide a row. */
+function normalizeArchivedTaskRows(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const rows = Object.fromEntries(Object.entries(raw).filter(([id, at]) =>
+    /^[A-Za-z0-9_.:-]{1,200}$/.test(id) && typeof at === 'number' && Number.isFinite(at) && at >= 0,
+  )) as Record<string, number>;
+  return Object.keys(rows).length ? rows : undefined;
 }
 
 /** 只认 chatId → 'always'; 'mention' 是缺省, 不落盘。未知值整条丢弃。 */
@@ -162,6 +173,28 @@ export async function updateBotImConnectionRecord(
     },
     { preserveDefaults: true },
   );
+  return next;
+}
+
+/** Archive a row in one connection, without touching its session or route link. */
+export async function archiveBotImTaskRow(
+  expected: BotImConnectionRecord,
+  sessionId: string,
+): Promise<BotImConnectionRecord | null> {
+  const owner = activeOwnerScopeKey();
+  let next: BotImConnectionRecord | null = null;
+  await file.updateAtomic((current) => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('OWNER_CHANGED');
+    const existing = current.value.connections[expected.id];
+    if (!existing || existing.botId !== expected.botId || existing.channel !== expected.channel || existing.botContextId !== expected.botContextId) return current.value;
+    const merged = {
+      ...existing,
+      archivedTaskRows: { ...existing.archivedTaskRows, [sessionId]: Date.now() },
+    };
+    next = { id: expected.id, ...merged };
+    return { connections: { ...current.value.connections, [expected.id]: merged } };
+  }, { preserveDefaults: true });
+  if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('OWNER_CHANGED');
   return next;
 }
 
