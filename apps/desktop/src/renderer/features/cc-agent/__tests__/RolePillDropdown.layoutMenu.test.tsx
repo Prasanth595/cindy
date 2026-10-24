@@ -4,6 +4,8 @@ import { Profiler } from 'react';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
+import { __resetStickySessionOriginForTest } from '@/features/device-link/stickySessionOrigin';
 import type { SessionStatusInfo } from '@/lib/makerChatStore';
 import type { WorkerInfo } from '../hooks/useWorkers';
 import { WorkerListToolbar } from '../RolePillDropdown';
@@ -243,10 +245,12 @@ describe('Worker list task attention', () => {
       clearSessionAttention(id, { intent: 'explicit' });
     __resetWorkerAttentionStoreForTest();
     chat.statuses = new Map();
+    remoteProjectsStore.__resetPinnedOriginsForTest();
+    __resetStickySessionOriginForTest();
   });
 
   it.each(['tabs', 'dropdown'] as const)(
-    '%s：idle Worker 的错误、等待确认与清除同步到行和折叠入口',
+    '%s：本机 Worker 关闭任务错误后，运行态仍 error 也清除列表错误并恢复蓝/绿点',
     (layout) => {
       localStorage.setItem('orca-worker-list-layout-v1', layout);
       const current = worker();
@@ -255,15 +259,15 @@ describe('Worker list task attention', () => {
         sessionId: 'session-b',
         role: 'reviewer',
         focused: false,
-        status: 'done',
+        status: 'error',
       });
+      addSessionAttention(hidden.sessionId, 'error');
       const view = renderToolbar({ worker: current, workers: [current, hidden] });
       const openList = () =>
         fireEvent.click(
           layout === 'tabs' ? menuButton() : screen.getByRole('button', { name: /^developer/ }),
         );
 
-      act(() => addSessionAttention(hidden.sessionId, 'error'));
       // 未展开时：平铺 tab 或折叠入口都必须能看出隐藏 Worker 出错。
       expect(screen.getByLabelText('orca.rolePill.errorBadgeAria')).toBeTruthy();
       openList();
@@ -325,24 +329,29 @@ describe('Worker list task attention', () => {
     },
   );
 
-  it('运行设备 Worker 不读本机同 id 的任务提醒，仍保留运行态 error；错误压过完成未读', () => {
+  it.each(['execution-device', 'remote-worker', 'remote-lead'] as const)('%s 不读本机同 id 的任务提醒，仍保留运行态 error；错误压过完成未读', (location) => {
     const remote = worker({
-      executionDevice: {
+      executionDevice: location === 'execution-device' ? {
         deviceId: 'other-device',
         remoteSessionId: 'remote-session',
         deviceName: 'Other Mac',
         reachable: true,
         workingDir: null,
-      },
+      } : undefined,
     });
+    const leadSessionId = 'remote-lead';
+    if (location !== 'execution-device') {
+      remoteProjectsStore.pinSessionOrigin('other-device', location === 'remote-lead' ? leadSessionId : remote.sessionId);
+    }
     addSessionAttention(remote.sessionId, 'error');
-    const view = renderToolbar({ worker: remote, workers: [remote] });
+    const view = renderToolbar({ worker: remote, workers: [remote], leadSessionId });
     expect(screen.queryByLabelText('orca.rolePill.errorBadgeAria')).toBeNull();
     act(() => addSessionAttention(remote.sessionId, 'awaiting'));
     expect(screen.queryByLabelText('orca.rolePill.awaitingBadgeAria')).toBeNull();
     view.unmount();
     markWorkerAttention(remote.workerId);
     renderToolbar({
+      leadSessionId,
       worker: remote,
       workers: [{ ...remote, focused: false, status: 'error' }],
       selectedWorkerId: null,

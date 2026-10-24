@@ -454,14 +454,16 @@ Worker turn 被 vendor 报终止型 error，但 interrupted-turn auto-resume 仍
    worker done 的绿点由 renderer 进程级 edge-trigger attention store 维护，而不是跟随组件切换重置的局部 state。worker 状态跳变进 `done` 才标 attention；正在查看该 worker 时清除 attention；只切走 / 切回不应让同一轮 done 重新变未读。协同 tab 图标另外显示 Worker 的出错（红）与等待确认（蓝），出错取自 Worker 自己在 `sessionAttentionStore` 的 attention，等待确认取自未处理交互或任务 awaiting；多个 Worker 时按 红 > 蓝 > 绿（完成未读）取最高一档，红 / 蓝在 tab 激活时也显示，绿点仍是激活即视为看到。实现指针：`useOrcaWorkerAttentionWatcher.ts` 的 `computeWorkerAttentionUpdates`，`RolePillDropdown.tsx` 的 selected worker clear effect，`workerAttentionStore.ts` 的 `attentionWorkerIds`，`OrcaWorkersAttentionIcon.tsx` 的 `resolveOrcaWorkersTabTone`。
 
    Worker 列表（`RolePillDropdown.tsx` 的下拉行、平铺 tab、折叠入口）同样读取本机 Worker
-   自己的任务提醒：任务为 `error` 或运行状态为 `error` 时沿用红色描边与 ERR 徽章；没有错误时，
+   自己的任务提醒：仅任务提醒为 `error` 时显示红色描边与 ERR 徽章；关闭错误后即使运行状态
+   仍为 `error`，列表及头像也同步清除错误表达。没有错误时，
    Worker 有未处理交互（AskUserQuestion / 权限 / 计划审阅 / 插件设置 / 代输入）或任务为
    `awaiting` 时，在头像右上显示蓝点，切到 Worker 再切走也保留，直到交互处理完且任务
    awaiting 消失；完成未读绿点仍只在未选中时显示。优先级为
    出错 > 等待确认 > 完成未读。折叠入口也提示被隐藏 Worker 的错误或等待确认，不汇总完成。
-   「运行设备」Worker 不读取本机任务提醒，保留运行状态为 `error` 的既有表达。
+   「运行设备」Worker、远程 Worker 或远程 Lead 下的 Worker 无法读取本机任务提醒，
+   保留运行状态为 `error` 的既有表达；远程供应商不改变任务所在电脑，不属于这一兜底范围。
    `orcaWorkerTaskAttention.ts` 统一为列表、协同 tab、Lead 行及 Dock 派生任务提醒；列表
-   另用 `resolveWorkerListAttention` 保留运行态 error。订阅只在相关 Worker 的 pending 布尔值
+   另用 `resolveWorkerListAttention` 按 `isLocalOrcaWorkerTask` 的同一范围选择错误来源。订阅只在相关 Worker 的 pending 布尔值
    变化时通知下游，primitive 快照避免流式输出或无关任务打穿渲染隔离。
    不写回任何提醒状态，不改变普通任务的被动清除、Worker 运行状态或系统通知发送规则，
    不改变 main / 灵动岛 / 手机端。列表标题的「运行中」仅按

@@ -28,13 +28,22 @@ function hasPendingWorkerInteraction(status: SessionStatusInfo | undefined): boo
   );
 }
 
+/** 与本机任务提醒的可读范围一致；远程供应商不改变任务所在电脑。 */
+export function isLocalOrcaWorkerTask(
+  worker: Pick<WorkerInfo, 'sessionId' | 'executionDevice'>,
+  leadSessionId?: string,
+): boolean {
+  return !worker.executionDevice &&
+    !isRemoteSessionSticky(worker.sessionId) &&
+    !(leadSessionId && isRemoteSessionSticky(leadSessionId));
+}
+
 export function localOrcaWorkerSessionIds(
   workers: readonly Pick<WorkerInfo, 'sessionId' | 'executionDevice'>[],
   leadSessionId?: string,
 ): string[] {
-  if (leadSessionId && isRemoteSessionSticky(leadSessionId)) return [];
   return workers
-    .filter((worker) => !worker.executionDevice && !isRemoteSessionSticky(worker.sessionId))
+    .filter((worker) => isLocalOrcaWorkerTask(worker, leadSessionId))
     .map((worker) => worker.sessionId);
 }
 
