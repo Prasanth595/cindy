@@ -51,7 +51,13 @@ it('reuses one process but queries fresh counters, including concurrent portable
   const second = counter.read(true);
   await vi.advanceTimersByTimeAsync(0);
   const child = children[0];
-  expect((child.stdin as PassThrough).read()?.toString()).toBe('1 0\n2 1\n');
+  // Node may deliver the pipe writes in separate chunks; observe the complete
+  // wire sequence instead of relying on one synchronous stream.read().
+  let requests = '';
+  const collect = (chunk: Buffer) => { requests += chunk.toString(); };
+  child.stdin.on('data', collect);
+  await vi.waitFor(() => expect(requests).toBe('1 0\n2 1\n'));
+  child.stdin.off('data', collect);
   child.stdout.emit('data', '1 10\n2 11\n');
   expect(await first).toBe('10');
   expect(await second).toBe('11');

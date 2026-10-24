@@ -34,6 +34,8 @@ import {
   clearDraft,
   discardDraft,
   getDraft,
+  restoreRemoteOptimisticDraft,
+  saveDraft,
   setComposerDraftOwner,
 } from '@/lib/composerDraftStore';
 import {
@@ -296,6 +298,87 @@ describe('useAttachments inline rejections', () => {
     clearDraft('attachment-session-B');
   });
 
+  // Regression: feature navigation unmounts the hook while attachment IPC is pending.
+  // The rerender-only cases above cannot detect a result written to an unmounted hook.
+  // Unit tier: real hook/store, deferred IPC only; the observable result is the restored draft.
+  it('keeps a delayed file in its draft after the source composer unmounts', async () => {
+    const sessionId = 'unmounted-delayed-file-session';
+    const peek = deferred<{ success: true; actualBytes: number; data: string }>();
+    (window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
+      getFilePath: (file: { name: string }) => `/tmp/${file.name}`,
+      peekFileHeader: vi.fn(() => peek.promise),
+    };
+    const source = renderHook(() => useAttachments(sessionId));
+    let pending!: Promise<void>;
+    act(() => {
+      pending = source.result.current.addFiles(fileListOf([{ name: 'README', size: 5 }]));
+    });
+    source.unmount();
+    await act(async () => {
+      peek.resolve({ success: true, actualBytes: 5, data: 'aGVsbG8=' });
+      await pending;
+    });
+
+    expect(getDraft(sessionId)?.attachments).toEqual([
+      expect.objectContaining({ name: 'README' }),
+    ]);
+    clearDraft(sessionId);
+  });
+
+  it('delivers a delayed image to a remounted composer without replacing newer edits', async () => {
+    const sessionId = 'remounted-delayed-image-session';
+    const cached = deferred<{ url: string }>();
+    (window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
+      getFilePath: (file: { name: string }) => `/tmp/${file.name}`,
+      cacheImageFromBuffer: vi.fn(() => cached.promise),
+    };
+    const source = renderHook(() => useAttachments(sessionId));
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = source.result.current.addClipboardImage({
+        type: 'image/png', size: 1, arrayBuffer: async () => new Uint8Array([1]).buffer,
+      } as Blob);
+      await Promise.resolve();
+    });
+    source.unmount();
+    const current = renderHook(() => useAttachments(sessionId));
+    await act(async () => {
+      await current.result.current.addFiles(fileListOf([{ name: 'newer.pdf', size: 64 }]));
+    });
+    const text = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '/review latest edits' }] }],
+    };
+    const builtInSkillIntent = { name: 'review-skill', commandName: 'review' };
+    act(() => saveDraft(sessionId, {
+      ...getDraft(sessionId)!, text, builtInSkillIntent, pendingGhostId: 'current-plugin',
+    }, { silent: true }));
+    const failedFile = { ...current.result.current.attachments[0], id: 'failed-1', name: 'failed-1.pdf' };
+    act(() => restoreRemoteOptimisticDraft(sessionId, {
+      clientId: 'failed-send-1', text: null, attachments: [failedFile], browserComments: [],
+    }));
+    await act(async () => {
+      cached.resolve({ url: `xdt-image://${sessionId}/late.png` });
+      await pending;
+    });
+
+    expect(current.result.current.attachments.map((file) => file.name)).toEqual([
+      'failed-1.pdf', 'newer.pdf', expect.stringContaining('clipboard-'),
+    ]);
+    expect(getDraft(sessionId)).toMatchObject({ text, builtInSkillIntent, pendingGhostId: 'current-plugin' });
+    // The late attachment is an incremental edit, not a new recovery batch.
+    act(() => restoreRemoteOptimisticDraft(sessionId, {
+      clientId: 'failed-send-2', text: null,
+      attachments: [{ ...failedFile, id: 'failed-2', name: 'failed-2.pdf' }], browserComments: [],
+    }));
+    expect(current.result.current.attachments.map((file) => file.name)).toEqual([
+      'failed-1.pdf', 'failed-2.pdf', 'newer.pdf', expect.stringContaining('clipboard-'),
+    ]);
+    current.unmount();
+    expect(getDraft(sessionId)?.attachments).toHaveLength(4);
+    clearDraft(sessionId);
+  });
+
   it('does not recreate an attachment draft when the session draft is discarded before unmount', async () => {
     const sessionId = 'discarded-attachment-session';
     const { result, unmount } = renderHook(() => useAttachments(sessionId));
@@ -315,7 +398,7 @@ describe('useAttachments inline rejections', () => {
     expect(getDraft(sessionId)).toBeUndefined();
   });
 
-  it('recycles a delayed clipboard cache instead of restoring a discarded session draft', async () => {
+  it.each([false, true])('recycles a delayed clipboard cache instead of restoring a discarded session draft (unmounted=%s)', async (unmounted) => {
     const sessionId = 'discarded-delayed-attachment-session';
     const cached = deferred<{ url: string }>();
     const cleanupCachedImages = vi.fn(async () => undefined);
@@ -337,6 +420,7 @@ describe('useAttachments inline rejections', () => {
       await Promise.resolve();
     });
     act(() => discardDraft(sessionId));
+    if (unmounted) unmount();
     await act(async () => {
       cached.resolve({ url: `xdt-image://${sessionId}/late.png` });
       await pending;
@@ -346,11 +430,11 @@ describe('useAttachments inline rejections', () => {
     expect(getDraft(sessionId)).toBeUndefined();
     expect(cleanupCachedImages).toHaveBeenCalledWith([`xdt-image://${sessionId}/late.png`]);
 
-    unmount();
+    if (!unmounted) unmount();
     expect(getDraft(sessionId)).toBeUndefined();
   });
 
-  it('drops and cleans a cached image when the data owner changes before completion', async () => {
+  it.each([false, true])('drops and cleans a cached image when the data owner changes before completion (unmounted=%s)', async (unmounted) => {
     setDataOwnerGeneration('owner-a');
     setComposerDraftOwner('owner-a');
     const cached = deferred<{ url: string }>();
@@ -374,10 +458,11 @@ describe('useAttachments inline rejections', () => {
       pending = result.current.addClipboardImage(clipboardBlob);
       await Promise.resolve();
     });
+    if (unmounted) unmount();
     act(() => {
       setDataOwnerGeneration('owner-b');
       setComposerDraftOwner('owner-b');
-      rerender();
+      if (!unmounted) rerender();
     });
     await act(async () => {
       cached.resolve({ url: 'xdt-image://owner-a/late.png' });
@@ -388,7 +473,7 @@ describe('useAttachments inline rejections', () => {
     expect(cleanupCachedImages).toHaveBeenCalledWith(['xdt-image://owner-a/late.png']);
     expect(result.current.rejections).toEqual([]);
 
-    unmount();
+    if (!unmounted) unmount();
     clearDraft('owner-boundary-attachment-session');
     setDataOwnerGeneration('owner-a');
     setComposerDraftOwner('owner-a');

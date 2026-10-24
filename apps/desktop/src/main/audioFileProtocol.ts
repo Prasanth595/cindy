@@ -8,9 +8,7 @@
  *   Same as localFileProtocol — the renderer is loaded from http(s)/file://
  *   and chromium blocks cross-scheme `<audio src="file://...">` loads.
  *
- * Why a separate scheme from xdt-file://:
- *   xdt-file:// is image-only by whitelist; mixing audio in would muddy the
- *   "what does this URL render as" mental model and complicate debugging.
+ * This existing scheme keeps local audio URLs compatible with saved messages.
  *
  * URL shape: `xdt-audio://local/?path=<percent-encoded-absolute-path>`
  *   - host fixed to `local` so url.host parsing is stable across platforms
@@ -20,9 +18,10 @@
  * Range request handling: chromium <audio> issues `Range: bytes=0-` on first
  * fetch and seeks with subsequent ranges. parseRangeHeader returns a tagged
  * union so the handler can dispatch 206 / 416 / 200 distinctly:
- *   - { kind: 'range', start, end } → 206 with the requested slice
+ *   - { kind: 'range', start, end } → 206 streaming the requested bytes
  *   - { kind: 'unsatisfiable' }     → 416 (start >= totalSize, etc.)
- *   - null                          → 200 full body (header absent or malformed)
+ *   - null                          → 200 streaming the file (absent/malformed)
+ * Both paths use the shared bounded stream and close on EOF, abort or cancel.
  *
  * Safety model (mirrors localFileProtocol — no base dir, no escape concept):
  *   1. URL.host MUST be 'local' (else 403)
@@ -32,7 +31,7 @@
  *      (getSensitiveMediaBlocklist, shared with xdt-file / device-link media
  *      fetch; else 403) — realpath runs BEFORE the check so a whitelisted-ext
  *      symlink escaping into a credential/browser-profile dir is caught, and
- *      stat/readFile use the realpath (closes the check→open TOCTOU window)
+ *      stat/open use the realpath, then the opened file identity is rechecked
  *   5. file MUST exist as a regular file (dir / ELOOP / ENOENT → 404)
  *
  * Intentionally diverges from localFileProtocol's `normalize === resolve`
@@ -47,10 +46,12 @@
 
 import { protocol, type CustomScheme } from 'electron';
 import * as fs from 'node:fs/promises';
+import { constants } from 'node:fs';
 import * as path from 'node:path';
 
 import { getSensitiveMediaBlocklist, isPathAllowedAgainst } from './filePathPolicy';
 import { createLogger } from './logger';
+import { buildRangedFileResponse } from './cindy-media/rangeResponse';
 
 const log = createLogger('audioFileProtocol');
 
@@ -89,50 +90,12 @@ export const audioFileSchemePrivilege: CustomScheme = {
   },
 };
 
-export type RangeParseResult =
-  | { kind: 'range'; start: number; end: number }
-  | { kind: 'unsatisfiable' }
-  | null;
-
-/** Parse `Range: bytes=START-END` (single range only). Tagged union so the
- *  handler can split 206 / 416 / 200 cleanly:
- *    - null              → header absent or malformed → caller serves 200
- *    - {kind:'range'}    → caller serves 206 with the slice
- *    - {kind:'unsatisfiable'} → caller serves 416
- *  Exported for tests; the protocol handler is the only runtime caller. */
-export function parseRangeHeader(
-  headerValue: string | null,
-  totalSize: number,
-): RangeParseResult {
-  if (!headerValue) return null;
-  const m = /^bytes=(\d*)-(\d*)$/.exec(headerValue.trim());
-  if (!m) return null;
-  const startStr = m[1];
-  const endStr = m[2];
-  let start: number;
-  let end: number;
-  if (startStr === '' && endStr !== '') {
-    // Suffix range: last N bytes.
-    const suffix = parseInt(endStr, 10);
-    if (!Number.isFinite(suffix) || suffix <= 0) return null;
-    if (totalSize === 0) return { kind: 'unsatisfiable' };
-    start = Math.max(0, totalSize - suffix);
-    end = totalSize - 1;
-  } else if (startStr !== '') {
-    start = parseInt(startStr, 10);
-    end = endStr === '' ? totalSize - 1 : parseInt(endStr, 10);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  } else {
-    return null;
-  }
-  if (start > end || start >= totalSize || end >= totalSize) {
-    return { kind: 'unsatisfiable' };
-  }
-  return { kind: 'range', start, end };
-}
+// Retain the existing parser exports for callers of this protocol module.
+export { parseRangeHeader, type RangeParseResult } from './cindy-media/rangeResponse';
 
 export function registerAudioFileProtocolHandler(): void {
   protocol.handle(SCHEME, async (request) => {
+    let file: fs.FileHandle | undefined;
     try {
       const url = new URL(request.url);
       if (url.host !== 'local') return new Response(null, { status: 403 });
@@ -180,63 +143,35 @@ export function registerAudioFileProtocolHandler(): void {
         return new Response(null, { status: 403 });
       }
 
-      const stat = await fs.stat(realPath);
-      if (!stat.isFile()) return new Response(null, { status: 404 });
+      const expected = await fs.stat(realPath, { bigint: true });
+      if (!expected.isFile()) return new Response(null, { status: 404 });
 
-      const buffer = await fs.readFile(realPath);
-      const totalSize = buffer.byteLength;
-      const mimeType = MIME_BY_EXT[ext] ?? 'application/octet-stream';
-      const range = parseRangeHeader(
-        request.headers.get('range'),
-        totalSize,
-      );
-
-      if (range && range.kind === 'unsatisfiable') {
-        return new Response(null, {
-          status: 416,
-          headers: {
-            'Content-Type': mimeType,
-            'Content-Range': `bytes */${totalSize}`,
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-cache',
-          },
-        });
+      // Keep the checked file open for the entire response. O_NONBLOCK prevents
+      // a replacement FIFO from waiting for a writer before fstat can reject it.
+      const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+      const nonBlock = typeof constants.O_NONBLOCK === 'number' ? constants.O_NONBLOCK : 0;
+      file = await fs.open(realPath, constants.O_RDONLY | noFollow | nonBlock);
+      const opened = await file.stat({ bigint: true });
+      if (!opened.isFile()) return new Response(null, { status: 404 });
+      // A zero inode cannot establish identity (for example on some network
+      // filesystems); match the existing preview / attachment read boundary.
+      if (expected.ino === 0n || expected.dev !== opened.dev || expected.ino !== opened.ino) {
+        return new Response(null, { status: 403 });
       }
-
-      if (range && range.kind === 'range') {
-        const slice = buffer.slice(range.start, range.end + 1);
-        const body = slice.buffer.slice(
-          slice.byteOffset,
-          slice.byteOffset + slice.byteLength,
-        ) as ArrayBuffer;
-        return new Response(body, {
-          status: 206,
-          headers: {
-            'Content-Type': mimeType,
-            'Content-Length': String(slice.byteLength),
-            'Content-Range': `bytes ${range.start}-${range.end}/${totalSize}`,
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-cache',
-          },
-        });
-      }
-
-      const body = buffer.buffer.slice(
-        buffer.byteOffset,
-        buffer.byteOffset + buffer.byteLength,
-      ) as ArrayBuffer;
-      return new Response(body, {
-        status: 200,
-        headers: {
-          'Content-Type': mimeType,
-          'Content-Length': String(totalSize),
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'no-cache',
-        },
+      const response = await buildRangedFileResponse({
+        file,
+        totalSize: Number(opened.size),
+        mimeType: MIME_BY_EXT[ext] ?? 'application/octet-stream',
+        rangeHeader: request.headers.get('range'),
+        cacheControl: 'no-cache',
+        signal: request.signal,
       });
+      // The response now owns the descriptor, including EOF, abort and cancel.
+      file = undefined;
+      return response;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === 'ENOENT' || code === 'ELOOP') {
+      if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP') {
         return new Response(null, { status: 404 });
       }
       // Windows surfaces permission denial as EPERM more often than EACCES.
@@ -245,6 +180,8 @@ export function registerAudioFileProtocolHandler(): void {
       }
       log.error('[xdt-audio] handler error:', err);
       return new Response(null, { status: 500 });
+    } finally {
+      await file?.close().catch(() => undefined);
     }
   });
 }

@@ -457,10 +457,41 @@ test("compareWithBaseline only lets counts stay or shrink", () => {
 		git("update-ref", "refs/remotes/origin/main", firstIntroduction);
 		const bootstrap = cli(["--update"]);
 		assert.equal(bootstrap.status, 0, output(bootstrap));
+		assert.match(output(bootstrap), /baseline updated/);
 		assert.equal(cli().status, 0);
 		const trusted = commit();
 		git("update-ref", "refs/remotes/origin/main", trusted);
+		// Both the entrypoint and parser resolution must use the physical repo.
+		// A local dependency link avoids NODE_PATH hiding a broken require anchor.
+		const aliasPath = path.join(root, "hygiene-alias.mjs");
+		let symlinkAvailable = true;
+		try {
+			const modules = path.join(root, "apps", "desktop", "node_modules");
+			fs.mkdirSync(modules, { recursive: true });
+			fs.symlinkSync(path.join(parserModules, "typescript"), path.join(modules, "typescript"), process.platform === "win32" ? "junction" : "dir");
+			fs.symlinkSync(path.relative(root, scriptPath), aliasPath);
+		} catch (error) {
+			if (!["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(error.code)) throw error;
+			symlinkAvailable = false;
+		}
+		const aliasCli = (nodeArgs) => spawnSync(process.execPath, [...nodeArgs, aliasPath], {
+			cwd: root, env: { ...environment, NODE_PATH: "" }, encoding: "utf8",
+		});
+		if (symlinkAvailable) {
+			for (const nodeArgs of [[], ["--preserve-symlinks-main"]]) {
+				const healthy = aliasCli(nodeArgs);
+				assert.equal(healthy.status, 0, output(healthy));
+				assert.match(output(healthy), /PASS/);
+			}
+		}
 		writeReads(2);
+		if (symlinkAvailable) {
+			for (const nodeArgs of [[], ["--preserve-symlinks-main"]]) {
+				const violation = aliasCli(nodeArgs);
+				assert.equal(violation.status, 1, output(violation));
+				assert.match(output(violation), /sourceReads.*sample\.test\.ts/);
+			}
+		}
 		writeBaseline({ [relativeTestPath]: { sourceReads: 2 } });
 		commit();
 		const raised = fs.readFileSync(baselinePath, "utf8");
@@ -469,6 +500,14 @@ test("compareWithBaseline only lets counts stay or shrink", () => {
 			assert.notEqual(result.status, 0, "committed hand-raised baseline must fail");
 			assert.match(output(result), /baseline.*(?:increase|raise)/i);
 			assert.equal(fs.readFileSync(baselinePath, "utf8"), raised);
+		}
+		if (symlinkAvailable) {
+			for (const nodeArgs of [[], ["--preserve-symlinks-main"]]) {
+				const aliased = aliasCli(nodeArgs);
+				assert.notEqual(aliased.status, 0, "a symlink entry must enforce the baseline");
+				assert.match(output(aliased), /baseline.*(?:increase|raise)/i);
+			}
+			fs.unlinkSync(aliasPath);
 		}
 		const eventPath = path.join(root, "github-event.json");
 		for (const [eventName, event] of [["pull_request", { pull_request: { base: { sha: trusted } } }], ["merge_group", { merge_group: { base_sha: trusted } }], ["push", { before: trusted }]]) {

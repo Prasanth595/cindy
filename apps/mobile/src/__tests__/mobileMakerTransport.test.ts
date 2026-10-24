@@ -15,6 +15,7 @@ const fileCache = vi.hoisted(() => ({ readLatest: vi.fn(), readInline: vi.fn(), 
 vi.mock('@/device-link/peerFileCache', () => ({ createPeerFileCache: async () => fileCache }));
 import { isDirectPreviewableMediaUrl, resolveMobileRemoteMedia } from "@/session/remoteMedia";
 import { fetchRemoteAbsFileOnce } from '@/session/remoteAbsFileFetch';
+import { resolveInteractionResilient } from '@/session/interactionModel';
 import {
   setMobileAuthOwner,
   __testing as authOwnerTesting,
@@ -39,6 +40,54 @@ function harness() {
 }
 
 describe("mobile maker transport", () => {
+  // Unit review regression: the panel checked ownership only after resilient
+  // retries finished. Exercise real transport + retry orchestration so ordinary
+  // answers and quiet claims cannot dispatch again under the next account.
+  it.each([
+    ['NOT_CONNECTED', 'ask_user_question'],
+    ['BACKPRESSURE', 'input_handoff'],
+  ])('stops a retired %s %s retry before it leaves the phone', async (code, kind) => {
+    setMobileAuthOwner('interaction-a');
+    const invoke = vi.fn(async () => { throw Object.assign(new Error(code), { code }); });
+    const maker = createMobileMakerTransport({ deviceId: 'shared-host', invoke: invoke as RemoteInvoke });
+    try {
+      await expect(resolveInteractionResilient(maker, 'shared', 'request', { kind }, {
+        sleep: async () => { setMobileAuthOwner('interaction-b'); },
+      })).rejects.toThrow('superseded');
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith('shared-host', 'maker:resolve-interaction', ['request', { kind }]);
+    } finally { authOwnerTesting.reset(); }
+  });
+
+  it('does not send a pending-interaction query after the failed request owner retires', async () => {
+    setMobileAuthOwner('interaction-a');
+    const invoke = vi.fn(async () => { setMobileAuthOwner('interaction-b'); throw new Error('TIMEOUT'); });
+    const maker = createMobileMakerTransport({ deviceId: 'shared-host', invoke: invoke as RemoteInvoke });
+    try {
+      await expect(resolveInteractionResilient(maker, 'shared', 'request', { kind: 'ask_user_question' })).rejects.toThrow('TIMEOUT');
+      expect(invoke).toHaveBeenCalledTimes(1);
+    } finally { authOwnerTesting.reset(); }
+  });
+
+  it.each(['resolve', 'pending'] as const)('rejects a %s reply from a retired owner and blocks a retired caller', async (method) => {
+    setMobileAuthOwner('interaction-a');
+    let release!: (value: unknown) => void;
+    let callerCurrent = true;
+    const invoke = vi.fn(() => new Promise(resolve => { release = resolve; }));
+    const maker = createMobileMakerTransport({ deviceId: 'shared-host', invoke: invoke as RemoteInvoke, isCurrent: () => callerCurrent });
+    const call = () => method === 'resolve' ? maker.resolveInteraction('request', { kind: 'ask_user_question' }) : maker.getPendingInteractions('shared');
+    try {
+      const result = call();
+      setMobileAuthOwner('interaction-b');
+      release(method === 'resolve' ? { accepted: true } : []);
+      await expect(result).rejects.toThrow('superseded');
+      const nextMaker = createMobileMakerTransport({ deviceId: 'shared-host', invoke: invoke as RemoteInvoke, isCurrent: () => callerCurrent });
+      callerCurrent = false;
+      await expect(method === 'resolve' ? nextMaker.resolveInteraction('request', {}) : nextMaker.getPendingInteractions('shared')).rejects.toThrow('superseded');
+      expect(invoke).toHaveBeenCalledTimes(1);
+    } finally { authOwnerTesting.reset(); }
+  });
+
   // Unit: validate the real transport's versioned Host protocol, including an
   // older Host rejection. Creating a side chat is never retried as a new task.
   it('uses versioned side-chat channels and surfaces unsupported hosts without fallback', async () => {

@@ -14,7 +14,7 @@ import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { ModalContentArea } from '@/platform/ModalContentArea';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { fsWatchTopic } from '@cindy/device-link';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowDownAZ,
@@ -59,6 +59,7 @@ import { QuietSyncIndicator } from '@/components/QuietSyncIndicator';
 import { useUnresponsiveDevices } from '@/device-link/unresponsiveDevicesStore';
 import { goBackGuarded } from '@/utils/backGuard';
 import { useAuth } from '@/auth/AuthContext';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { DEVICE_LINK_API_BASE_URL } from '@/config/env';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { onFileBrowserWatchEvent } from '@/device-link/fileBrowserWatch';
@@ -158,6 +159,7 @@ function RemoteFileBrowserContent() {
   const fileWindow = useAdaptiveWindow();
   const screenWidth = fileWindow.width - fileWindow.insets.left - fileWindow.insets.right;
   const auth = useAuth();
+  const draftOwner = useSyncExternalStore(subscribeMobileAuthOwner, getMobileAuthOwner, getMobileAuthOwner);
   const { connectionIssue, openLink, status, subscribe, unsubscribe } = useDeviceLink();
   const maker = useMobileMakerTransport(deviceId);
   const sessions = useRemoteSessions();
@@ -471,6 +473,7 @@ function RemoteFileBrowserContent() {
   }, [absolutePathOf, showNotice, t]);
 
   const sendItemToSession = useCallback((item: FileBrowserGridItem) => {
+    if (!draftOwner.accountKey || !isMobileAuthOwnerCurrent(draftOwner)) return;
     setContextItem(null);
     // 图片以图片附件形式进 composer(agent 直接收图);其余文件仍以 @路径
     // 引用进草稿(agent 自己读文件,对代码/文档更合适)。
@@ -479,7 +482,7 @@ function RemoteFileBrowserContent() {
         size: item.sizeBytes,
       });
       if (attachment) {
-        queueComposerAttachment(sessionId, attachment);
+        queueComposerAttachment(sessionId, attachment, draftOwner);
         router.navigate({
           pathname: '/sessions/[sessionId]',
           params: {
@@ -491,7 +494,7 @@ function RemoteFileBrowserContent() {
         return;
       }
     }
-    const merged = mergePathIntoComposerDraft(sessionId, item.relPath, item.kind);
+    const merged = mergePathIntoComposerDraft(sessionId, item.relPath, item.kind, draftOwner);
     router.navigate({
       pathname: '/sessions/[sessionId]',
       params: {
@@ -501,7 +504,7 @@ function RemoteFileBrowserContent() {
         focusComposerRequestKey: String(Date.now()),
       },
     });
-  }, [absolutePathOf, deviceId, router, sessionId]);
+  }, [absolutePathOf, deviceId, router, sessionId, draftOwner]);
 
   // 进行中的长按「导出/分享」:底栏一直显示到结束并带「取消」;取消或新的导出
   // 接替后,旧一次的结果(含失败)一律丢弃,不再弹分享单。cancelled 给导出轮询与
@@ -633,6 +636,7 @@ function RemoteFileBrowserContent() {
   const lightboxAnnotation = useMemo((): ImageLightboxAnnotationConfig => ({
     submitLabel: t('files.browser.sendToSession'),
     onSubmit: (_image, displayUri, strokes, context) => {
+      if (!draftOwner.accountKey || !isMobileAuthOwnerCurrent(draftOwner)) return;
       queueComposerAnnotationSubmission(sessionId, {
         displayUri,
         strokes,
@@ -640,7 +644,7 @@ function RemoteFileBrowserContent() {
         ...(context.naturalWidth && context.naturalHeight
           ? { naturalWidth: context.naturalWidth, naturalHeight: context.naturalHeight }
           : {}),
-      });
+      }, draftOwner);
       setLightbox(null);
       router.navigate({
         pathname: '/sessions/[sessionId]',
@@ -651,7 +655,7 @@ function RemoteFileBrowserContent() {
         },
       });
     },
-  }), [deviceId, router, sessionId, t]);
+  }), [deviceId, router, sessionId, t, draftOwner]);
 
   /** 标题菜单里的当前目录操作(显式入口,不依赖长按)。 */
   const copyCurrentDirPath = useCallback(() => {
@@ -661,8 +665,9 @@ function RemoteFileBrowserContent() {
   }, [absolutePathOf, relPath, showNotice, t]);
 
   const sendCurrentDirToSession = useCallback(() => {
+    if (!draftOwner.accountKey || !isMobileAuthOwnerCurrent(draftOwner)) return;
     setTitleMenuOpen(false);
-    const merged = mergePathIntoComposerDraft(sessionId, relPath, 'dir');
+    const merged = mergePathIntoComposerDraft(sessionId, relPath, 'dir', draftOwner);
     router.navigate({
       pathname: '/sessions/[sessionId]',
       params: {
@@ -672,7 +677,7 @@ function RemoteFileBrowserContent() {
         focusComposerRequestKey: String(Date.now()),
       },
     });
-  }, [deviceId, relPath, router, sessionId]);
+  }, [deviceId, relPath, router, sessionId, draftOwner]);
 
   const setViewModePersist = useCallback((view: FileBrowserViewMode) => {
     setViewMode(view);

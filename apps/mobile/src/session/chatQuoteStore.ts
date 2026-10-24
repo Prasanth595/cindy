@@ -1,10 +1,8 @@
 /**
  * chatQuoteStore — 会话级「选中文字引用」暂存 store(chat-text-quote)。
  *
- * 对应桌面端 composerDraftStore 的 `quotes` 字段:手机端草稿 store 是纯
- * string,装不下结构化引用,故独立成 sessionId → ChatQuote[] 的单例 store。
- * 聊天流选区浮动按钮 / 文件预览页写入,会话页 composer 胶囊经
- * `useSessionQuotes` 订阅渲染,发送时经 `formatQuotesForSend` 拼进消息正文。
+ * 聊天流选区浮动按钮 / 文件预览页写入,会话页经 `useSessionQuotes` 领取后
+ * 合入结构化草稿。账号、区域与任务共同确定归属,相同共享任务的参与者不共用引用。
  *
  * 持久化:AsyncStorage(JSON 数组),debounce + cleared 标记 + 每会话串行
  * 写队列——全套模式与 composerDraftStore 一致,保证「切走会话 / 杀 app 再
@@ -12,6 +10,8 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useSyncExternalStore } from 'react';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { mobileDraftScopeKey } from './draftOwnerScope';
 import {
   parseChatQuoteSegments,
   type ChatQuote,
@@ -39,35 +39,36 @@ export function truncateQuoteText(text: string): string {
   return text.length > QUOTE_MAX_CHARS ? `${text.slice(0, QUOTE_MAX_CHARS)}…` : text;
 }
 
-const STORAGE_KEY_PREFIX = 'xdt.chatQuotes.v1';
+// Unowned v1 entries remain untouched; they cannot be safely assigned to a login.
+const STORAGE_KEY_PREFIX = 'xdt.chatQuotes.v2';
 const PERSIST_DEBOUNCE_MS = 400;
 const EMPTY_QUOTES: readonly ChatQuote[] = Object.freeze([]);
 
 const quotesBySession = new Map<string, readonly ChatQuote[]>();
 const orderedDraftBySession = new Map<string, OrderedQuoteDraft>();
 const clearedSessions = new Set<string>();
-const hydratedSessions = new Set<string>();
+const hydratedSessions = new Map<string, number>();
 const listenersBySession = new Map<string, Set<() => void>>();
 const pendingPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingStorageOperations = new Map<string, Promise<void>>();
 
 /** 追加一条引用(采集入口)。文本在此处不截断——调用方负责 truncateQuoteText。 */
-export function appendQuote(sessionId: string, quote: ChatQuote): void {
-  const normalized = normalizeSessionId(sessionId);
+export function appendQuote(sessionId: string, quote: ChatQuote, owner = getMobileAuthOwner()): void {
+  const normalized = mobileDraftScopeKey(sessionId, owner);
   if (!normalized || !quote.text) return;
   const next = [...(quotesBySession.get(normalized) ?? []), quote];
   setQuotesInternal(normalized, next);
 }
 
-export function getQuotes(sessionId: string): readonly ChatQuote[] {
-  const normalized = normalizeSessionId(sessionId);
+export function getQuotes(sessionId: string, owner = getMobileAuthOwner()): readonly ChatQuote[] {
+  const normalized = mobileDraftScopeKey(sessionId, owner);
   if (!normalized) return EMPTY_QUOTES;
   return quotesBySession.get(normalized) ?? EMPTY_QUOTES;
 }
 
 /** 整组覆写(发送失败恢复用)。空数组等价于 clearQuotes。 */
-export function setQuotes(sessionId: string, quotes: readonly ChatQuote[]): void {
-  const normalized = normalizeSessionId(sessionId);
+export function setQuotes(sessionId: string, quotes: readonly ChatQuote[], owner = getMobileAuthOwner()): void {
+  const normalized = mobileDraftScopeKey(sessionId, owner);
   if (!normalized) return;
   if (quotes.length === 0) {
     clearQuotesInternal(normalized);
@@ -81,11 +82,12 @@ export function setOrderedQuoteDraft(
   sessionId: string,
   quotes: readonly ChatQuote[],
   draft: OrderedQuoteDraft,
+  owner = getMobileAuthOwner(),
 ): void {
-  const normalized = normalizeSessionId(sessionId);
+  const normalized = mobileDraftScopeKey(sessionId, owner);
   if (!normalized) return;
   if (quotes.length === 0 || !draft.encodedBody || !orderedDraftMatchesQuotes(draft, quotes)) {
-    setQuotes(normalized, quotes);
+    setQuotes(sessionId, quotes, owner);
     return;
   }
   setQuotesInternal(normalized, [...quotes], draft);
@@ -99,8 +101,9 @@ export function resolveOrderedQuoteDraft(
   sessionId: string,
   projectedText: string,
   quotes: readonly ChatQuote[],
+  owner = getMobileAuthOwner(),
 ): OrderedQuoteDraft | null {
-  const normalized = normalizeSessionId(sessionId);
+  const normalized = mobileDraftScopeKey(sessionId, owner);
   const draft = normalized ? orderedDraftBySession.get(normalized) : undefined;
   if (!draft || draft.projectedText !== projectedText) return null;
   const storedQuotes = quotesBySession.get(normalized) ?? EMPTY_QUOTES;
@@ -108,14 +111,14 @@ export function resolveOrderedQuoteDraft(
   return draft;
 }
 
-export function clearQuotes(sessionId: string): void {
-  const normalized = normalizeSessionId(sessionId);
+export function clearQuotes(sessionId: string, owner = getMobileAuthOwner()): void {
+  const normalized = mobileDraftScopeKey(sessionId, owner);
   if (!normalized) return;
   clearQuotesInternal(normalized);
 }
 
-export function subscribeQuotes(sessionId: string, listener: () => void): () => void {
-  const normalized = normalizeSessionId(sessionId);
+export function subscribeQuotes(sessionId: string, listener: () => void, owner = getMobileAuthOwner()): () => void {
+  const normalized = mobileDraftScopeKey(sessionId, owner);
   if (!normalized) return () => undefined;
   let set = listenersBySession.get(normalized);
   if (!set) {
@@ -133,13 +136,17 @@ export function subscribeQuotes(sessionId: string, listener: () => void): () => 
  * 冷启动回填:AsyncStorage 读一次进内存(幂等;内存已有值 / 已清除时不覆盖,
  * 内存态是唯一事实源)。会话页 mount 时调用。
  */
-export async function hydrateQuotes(sessionId: string): Promise<void> {
-  const normalized = normalizeSessionId(sessionId);
-  if (!normalized || hydratedSessions.has(normalized)) return;
-  hydratedSessions.add(normalized);
+export async function hydrateQuotes(sessionId: string, owner = getMobileAuthOwner()): Promise<void> {
+  const normalized = mobileDraftScopeKey(sessionId, owner);
+  if (!normalized || hydratedSessions.get(normalized) === owner.generation) return;
+  hydratedSessions.set(normalized, owner.generation);
   if (quotesBySession.has(normalized) || clearedSessions.has(normalized)) return;
 
   const stored = await AsyncStorage.getItem(storageKeyForSession(normalized)).catch(() => null);
+  if (!isMobileAuthOwnerCurrent(owner)) {
+    if (hydratedSessions.get(normalized) === owner.generation) hydratedSessions.delete(normalized);
+    return;
+  }
   if (!stored) return;
   if (quotesBySession.has(normalized) || clearedSessions.has(normalized)) return;
   const parsed = parseStoredState(stored);
@@ -153,14 +160,14 @@ export async function hydrateQuotes(sessionId: string): Promise<void> {
 
 /** React hook:订阅某会话的引用列表(snapshot 为稳定数组引用)。 */
 export function useSessionQuotes(sessionId: string | null | undefined): readonly ChatQuote[] {
-  const normalized = sessionId ? normalizeSessionId(sessionId) : '';
+  const owner = useSyncExternalStore(subscribeMobileAuthOwner, getMobileAuthOwner, getMobileAuthOwner);
   const subscribe = useCallback(
-    (listener: () => void) => (normalized ? subscribeQuotes(normalized, listener) : () => undefined),
-    [normalized],
+    (listener: () => void) => (sessionId ? subscribeQuotes(sessionId, listener, owner) : () => undefined),
+    [sessionId, owner],
   );
   const getSnapshot = useCallback(
-    () => (normalized ? (quotesBySession.get(normalized) ?? EMPTY_QUOTES) : EMPTY_QUOTES),
-    [normalized],
+    () => (sessionId ? getQuotes(sessionId, owner) : EMPTY_QUOTES),
+    [sessionId, owner],
   );
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
@@ -259,10 +266,6 @@ function orderedDraftMatchesQuotes(
   return sameQuotes(encodedQuotes, quotes);
 }
 
-function normalizeSessionId(sessionId: string): string {
-  return sessionId.trim();
-}
-
 function storageKeyForSession(normalized: string): string {
   return `${STORAGE_KEY_PREFIX}.${encodeURIComponent(normalized)}`;
 }
@@ -323,7 +326,7 @@ function enqueueStorageOperation(
 
 export const __testing = {
   persistDebounceMs: PERSIST_DEBOUNCE_MS,
-  storageKeyForSession,
+  storageKeyForSession: (sessionId: string) => storageKeyForSession(mobileDraftScopeKey(sessionId)),
   storageKeyPrefix: STORAGE_KEY_PREFIX,
   reset(): void {
     for (const timer of pendingPersistTimers.values()) clearTimeout(timer);

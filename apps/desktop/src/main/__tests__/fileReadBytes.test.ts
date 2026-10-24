@@ -157,6 +157,20 @@ describe('readFileBytesForPreview', () => {
     ).toBe('INVALID_PARAMS');
   });
 
+  // Regression: a read-only FIFO open waits for a writer, so the later fstat
+  // check cannot reject it. Unit tier uses the production entry with injected
+  // metadata; the existing non-file case only covers an already-open handle.
+  it('rejects a known non-file before opening it can block filesystem workers', async () => {
+    const open = vi.fn(async () => fakeHandle({ statSize: 0, isFile: false }));
+    expect(
+      await codeOf(readFileBytesForPreview({ filePath: ABS }, deps({
+        stat: async () => statStub(0, false),
+        open,
+      }))),
+    ).toBe('INVALID_PARAMS');
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it('rejects when the fstat size already exceeds the cap (PRECONDITION_FAILED)', async () => {
     expect(
       await codeOf(

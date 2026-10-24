@@ -52,6 +52,8 @@ describe('client wallpaper video protocol streaming', () => {
   it.each([
     [null, 200, '0123456789', null],
     ['bytes=2-5', 206, '2345', 'bytes 2-5/10'],
+    // The shared parser must clamp satisfiable ends past EOF for file streams too.
+    ['bytes=2-999', 206, '23456789', 'bytes 2-9/10'],
     ['bytes=8-', 206, '89', 'bytes 8-9/10'],
     ['bytes=-3', 206, '789', 'bytes 7-9/10'],
     ['bytes=99-', 416, '', 'bytes */10'],

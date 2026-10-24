@@ -240,13 +240,13 @@ describe('mobile session header desktop-first surface', () => {
     expect(source).toContain('<MobileComposerInputRow\n                    key={sessionId}');
     // key 重挂载前必须在 render 阶段把 composer state 归属切到 B；不能先拿 A 文档
     // 创建 B 的 WebView，再等被动 effect 才纠正。同步缓存缺失时 B 首帧为空态。
-    const draftScopeStart = source.indexOf('const activeComposerDraftScopeKey = composerDraftScopeKey(sessionId, routeDraft);');
+    const draftScopeStart = source.indexOf('const activeComposerDraftScopeKey = composerDraftScopeKey(sessionId, routeDraft, outboxOwner);');
     const draftScopeEnd = source.indexOf('// chat-text-quote:', draftScopeStart);
     const draftScope = source.slice(draftScopeStart, draftScopeEnd);
     expect(draftScopeStart).toBeGreaterThan(-1);
     expect(draftScopeEnd).toBeGreaterThan(draftScopeStart);
     expect(draftScope).toContain('if (composerDraftStateKey !== activeComposerDraftScopeKey) {');
-    expect(draftScope).toContain('const nextScope = readImmediateComposerDraftScope(sessionId, routeDraft);');
+    expect(draftScope).toContain('const nextScope = readImmediateComposerDraftScope(sessionId, routeDraft, outboxOwner);');
     expect(draftScope).toContain('setComposerDraftSource(createComposerDraftSource(nextScope.document));');
     expect(draftScope).toContain('draftRef.current = nextDraft;');
     expect(draftScope).toContain('setComposerDraftHydrated(false);');
@@ -257,18 +257,18 @@ describe('mobile session header desktop-first surface', () => {
     const immediateScopeStart = source.indexOf('function readImmediateComposerDraftScope(');
     const immediateScopeEnd = source.indexOf('function composerDraftScopeKey(', immediateScopeStart);
     const immediateScope = source.slice(immediateScopeStart, immediateScopeEnd);
-    expect(immediateScope).toContain('readComposerDraftSync(sessionId) ?? routeDraft ??');
-    expect(immediateScope).toContain('readComposerDocumentDraftSync(sessionId);');
-    expect(immediateScope).toContain('const quotes = getQuotes(sessionId);');
-    expect(immediateScope).toContain('resolveOrderedQuoteDraft(sessionId, visibleText, quotes);');
+    expect(immediateScope).toContain('readComposerDraftSync(sessionId, owner) ?? routeDraft ??');
+    expect(immediateScope).toContain('readComposerDocumentDraftSync(sessionId, owner);');
+    expect(immediateScope).toContain('const quotes = getQuotes(sessionId, owner);');
+    expect(immediateScope).toContain('resolveOrderedQuoteDraft(sessionId, visibleText, quotes, owner);');
 
     // render-phase 换代先把旧 promise 的 key 作废，但保留 null 让 B effect 继续读取
     // 仅磁盘草稿；effect 内原有 live-ref 比对继续保证用户新输入不被迟到读取覆盖。
     const hydrationStart = source.indexOf('useEffect(() => {\n    const key = activeComposerDraftScopeKey;');
     const hydrationEnd = source.indexOf('useEffect(() => {\n    if (!composerDraftHydrated', hydrationStart);
     const hydration = source.slice(hydrationStart, hydrationEnd);
-    expect(hydration).toContain('const immediateScope = readImmediateComposerDraftScope(sessionId, routeDraft);');
-    expect(hydration).toContain('if (cancelled || appliedRouteDraftRef.current !== key) return;');
+    expect(hydration).toContain('const immediateScope = readImmediateComposerDraftScope(sessionId, routeDraft, outboxOwner);');
+    expect(hydration).toContain('if (cancelled || appliedRouteDraftRef.current !== key || !isMobileAuthOwnerCurrent(outboxOwner)) return;');
     expect(hydration).toContain('if (!composerDocumentsEqual(composerDocumentRef.current, immediateDocumentSnapshot)) {');
     const queueCleanupStart = source.indexOf('// 切会话 / 卸载时收尾上一个会话的排队编辑态');
     const queueCleanupEnd = source.indexOf(

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import {
   clearAllInteractionDrafts,
   clearAskUserDraft,
@@ -11,7 +12,32 @@ import {
 
 describe('interactionDraftStore', () => {
   beforeEach(() => {
+    setMobileAuthOwner('interaction-owner', 'global');
     clearAllInteractionDrafts();
+  });
+
+  // Unit: request IDs are shared with the other participants. A delayed form
+  // save or receipt must neither expose nor clear the next account's answer.
+  it.each(['account', 'realm'] as const)('isolates question and plan drafts across %s switches', (scope) => {
+    const owner = getMobileAuthOwner();
+    const answer = { answers: {}, currentIndex: 0, customInput: 'A', selectedLabels: [], showCustomInput: true };
+    const plan = { feedback: 'A', feedbackOpen: true, planText: 'plan' };
+    saveAskUserDraft('shared-request', answer);
+    savePlanReviewDraft('shared-plan', plan);
+    setMobileAuthOwner(scope === 'account' ? 'other-owner' : 'interaction-owner', scope === 'realm' ? 'cn' : 'global');
+    expect(readAskUserDraft('shared-request')).toBeNull();
+    expect(readPlanReviewDraft('shared-plan')).toBeNull();
+    saveAskUserDraft('shared-request', { ...answer, customInput: 'B' });
+    savePlanReviewDraft('shared-plan', { ...plan, feedback: 'B' });
+    saveAskUserDraft('shared-request', answer, owner);
+    savePlanReviewDraft('shared-plan', plan, owner);
+    clearAskUserDraft('shared-request', owner);
+    clearPlanReviewDraft('shared-plan', owner);
+    expect(readAskUserDraft('shared-request')?.customInput).toBe('B');
+    expect(readPlanReviewDraft('shared-plan')?.feedback).toBe('B');
+    setMobileAuthOwner('interaction-owner', 'global');
+    expect(readAskUserDraft('shared-request')?.customInput).toBe('A');
+    expect(readPlanReviewDraft('shared-plan')?.feedback).toBe('A');
   });
 
   it('stores ask-user drafts by request id and returns defensive clones', () => {

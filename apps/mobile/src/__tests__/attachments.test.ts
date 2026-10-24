@@ -14,8 +14,33 @@ import {
 import { isAttachmentOssRef, parseAttachmentOssRef } from '@/session/attachmentOssRef';
 import { OSS_ATTACHMENT_MAX_BYTES, buildPeerAttachmentRef } from '@cindy/device-link';
 import type { RemoteSerializedAttachment } from '@/session/types';
+import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { drainComposerAttachments, drainComposerAnnotationSubmissions, queueComposerAttachment, queueComposerAnnotationSubmission } from '@/session/composerAttachmentInbox';
 
 const SHA256 = 'a'.repeat(64);
+
+// Unit privacy regression: file pages hand off draft attachments through the
+// production inbox. A shared task ID is not an account boundary; prior attachment
+// tests covered serialization only, not another account claiming the same ID.
+it.each(['account', 'realm'] as const)('keeps attachment and annotation handoffs with their %s owner', (scope) => {
+  setMobileAuthOwner('attachment-owner', 'global');
+  const owner = getMobileAuthOwner();
+  const attachment = buildMobileRemoteFileAttachment('/repo/image.png', { id: 'attachment' })!;
+  const annotation = { displayUri: 'file:///fixture/image.png', strokes: [] };
+  queueComposerAttachment('shared', attachment);
+  queueComposerAnnotationSubmission('shared', annotation);
+  setMobileAuthOwner(scope === 'account' ? 'other-owner' : 'attachment-owner', scope === 'realm' ? 'cn' : 'global');
+  expect(drainComposerAttachments('shared')).toEqual([]);
+  expect(drainComposerAnnotationSubmissions('shared')).toEqual([]);
+  queueComposerAttachment('shared', attachment, owner);
+  queueComposerAnnotationSubmission('shared', annotation, owner);
+  expect(drainComposerAttachments('shared')).toEqual([]);
+  expect(drainComposerAnnotationSubmissions('shared')).toEqual([]);
+  setMobileAuthOwner('attachment-owner', 'global');
+  expect(drainComposerAttachments('shared')).toEqual([attachment]);
+  expect(drainComposerAnnotationSubmissions('shared')).toEqual([annotation]);
+  setMobileAuthOwner(null);
+});
 
 describe('mobile remote file attachments', () => {
   it('parses macOS and Windows remote paths without using local platform path rules', () => {

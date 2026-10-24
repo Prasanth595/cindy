@@ -644,13 +644,13 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('readComposerDocumentDraft,');
     expect(source).toContain('readComposerDocumentDraftSync,');
     expect(source).toContain('saveComposerDocumentDraft,');
-    expect(source).toContain('saveComposerDocumentDraft(sessionId, value);');
-    expect(source).toContain('saveComposerDraft(sessionId, projected);');
-    expect(source).toContain('void flushComposerDraftWrites(sessionId);');
-    expect(source).toContain('readComposerDraftSync(sessionId)');
+    expect(source).toContain('saveComposerDocumentDraft(sessionId, value, outboxOwner);');
+    expect(source).toContain('saveComposerDraft(sessionId, projected, outboxOwner);');
+    expect(source).toContain('void flushComposerDraftWrites(sessionId, outboxOwner);');
+    expect(source).toContain('readComposerDraftSync(sessionId, owner)');
     expect(source).toContain('const immediateDocumentSnapshot = immediateDocument;');
     expect(source).toContain('const quoteHydration = immediateQuotes.length > 0');
-    expect(source).toContain(': hydrateQuotes(sessionId);');
+    expect(source).toContain(': hydrateQuotes(sessionId, outboxOwner);');
     expect(source).toContain('quoteHydration,');
     expect(source).toContain('!composerDocumentsEqual(composerDocumentRef.current, immediateDocumentSnapshot)');
     expect(source).toContain('if (canUseRemoteSessionControls) return;');
@@ -774,7 +774,7 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('draft.slice(voiceDraftInsertionEnd)');
     expect(source).toContain('caret.measureLayout(block, (x, y) => {');
     expect(source).toContain('viewRef={voiceDraftCaretRef}');
-    expect(source).toContain('useComposerVoiceDraftWriter(sessionId, (update: ComposerVoiceDraftUpdate) =>');
+    expect(source).toContain('useComposerVoiceDraftWriter(voiceDraftScopeKey, (update: ComposerVoiceDraftUpdate) =>');
     expect(voiceSource).toContain('isMobileRealtimeAudioAvailable()');
     expect(voiceSource.indexOf('isMobileRealtimeAudioAvailable()')).toBeLessThan(
       voiceSource.indexOf('resolveMobileVoiceRecordingPermission({'),

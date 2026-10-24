@@ -250,6 +250,31 @@ iOS 的系统选图器在确认后立即把选中项交给现有附件队列。�
 实现见 `src/session/messageCacheStorage.ts`、`mobileSessionMessageCache.ts`、
 `homeViewPreferenceStore.ts`，回归见 `src/__tests__/` 下对应测试。
 
+### 草稿的账号归属
+
+共享任务在不同参与者账号下沿用同一个任务 ID，草稿不能仅按任务 ID 隔离。
+普通文字、结构化草稿、跨屏引用、问答与计划反馈，以及待注入的附件和标注，均使用
+`authOwnerGeneration` 的区域与账号身份分区。页面回调保留原账号代次；换账号后的
+迟到读取、编辑、语音结果和确认回执不得回填或清除新账号的草稿。卸载只刷出原账号
+已接受的待写内容；返回同一账号仍可恢复其草稿。
+旧协议 Plan 或 `/learn` 在持久发件箱外准备发送时，乐观清空前捕获固定内容、固定账号与任务的
+一次性恢复入口。`/learn` 只捕获被消费的非引用节点，编辑器保留的引用不重复恢复；
+首次调用 `learn:start` 前释放该入口。尚未投递就切账号或离页，仅把该快照恢复到原草稿并保留其后续编辑，
+不放宽普通过期编辑。恢复写入串行；I/O 失败保留原账号内存中的恢复内容并记录不含内容的
+失败提示，再次进入原任务时重试保存。恢复晚于重新进入原账号时，同步更新其当前编辑器；
+正在编辑排队消息时只更新其普通草稿暂存，不覆盖队列编辑内容。开始投递或明确取消后释放该恢复入口，不能把
+不确定的远端回执当成未发送再恢复。交互回答和 pending 对账读取同时在每次出站及回包时
+复核 transport 捕获的 owner；普通回答与静默认领的重试均不能跨账号继续。
+
+正文、结构化文档与引用使用带账号归属的 v2 存储键。旧 v1 数据没有可靠的账号依据，
+保留原字节，不自动认领、覆盖或删除，升级后不在当前编辑器恢复；退回旧版仍只能读到
+旧 v1 草稿，不能读取新版产生的 v2 草稿。持久发件箱继续使用其既有账号归属和恢复流程。
+这项隔离不修改原生配置或 runtime fingerprint。
+
+实现见 `src/session/draftOwnerScope.ts`、`composerDraftStore.ts`、`chatQuoteStore.ts`、
+`interactionDraftStore.ts` 与 `composerAttachmentInbox.ts`；回归见对应 store 测试、
+`attachments.test.ts` 和 `InteractionPanelReceipt.test.tsx`。
+
 ### 中国大陆版微信个人登录
 
 - 仅 iOS 中国大陆版登录页恢复微信入口；开关位于

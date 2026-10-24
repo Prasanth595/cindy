@@ -20,6 +20,32 @@ afterEach(() => {
 });
 
 describe('useGoalStatus session switch', () => {
+  // Unit regression: an in-flight status read can settle after a newer push.
+  // Existing switch cases cover ownership only, not same-session read/push order.
+  it.each(['resolve', 'reject'] as const)('keeps a newer goal push when the initial read later %ss', async (outcome) => {
+    const pushed = goal('A', '继续当前目标');
+    let resolve!: (value: GoalStatusPayload | null) => void;
+    let reject!: (error: Error) => void;
+    let push!: (payload: { sessionId: string; goal: GoalStatusPayload | null }) => void;
+    const getGoalStatus = vi.fn(() => new Promise<GoalStatusPayload | null>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    }));
+    const onGoalStatusChanged = vi.fn((listener: typeof push) => {
+      push = listener;
+      return () => {};
+    });
+    vi.stubGlobal('window', { electronAPI: { maker: { getGoalStatus, onGoalStatusChanged } } });
+    const { result } = renderHook(() => useGoalStatus('A'));
+
+    act(() => push({ sessionId: 'A', goal: pushed }));
+    await act(async () => {
+      if (outcome === 'resolve') resolve(null);
+      else reject(new Error('request failed after push'));
+    });
+    expect(result.current).toEqual(pushed);
+  });
+
   it('clears the previous goal synchronously when sessionId changes, before the new fetch resolves', async () => {
     const goalA = goal('A', '整理 A');
     const goalB = goal('B', '整理 B');

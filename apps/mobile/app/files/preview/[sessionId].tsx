@@ -23,7 +23,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { Image } from 'expo-image';
 import { useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownToLine, Database, File as FileIcon, Info } from 'lucide-react-native';
 import {
@@ -43,6 +43,7 @@ import { goBackGuarded } from '@/utils/backGuard';
 import { errorText, resolvedUrlKind, sanitizeDiagnosticText } from '@/debug/fileDiagnostics';
 import { mobileDebugLog } from '@/debug/mobileDebugLog';
 import { useAuth } from '@/auth/AuthContext';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { DEVICE_LINK_API_BASE_URL } from '@/config/env';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { useUnresponsiveDevices } from '@/device-link/unresponsiveDevicesStore';
@@ -202,6 +203,7 @@ function RemoteFilePreviewContent() {
   const pageWidth = measuredPageWidth ?? Math.max(1, previewWindow.width - previewWindow.insets.left - previewWindow.insets.right);
   const { openLink } = useDeviceLink();
   const auth = useAuth();
+  const draftOwner = useSyncExternalStore(subscribeMobileAuthOwner, getMobileAuthOwner, getMobileAuthOwner);
   const maker = useMobileMakerTransport(deviceId);
   const sessions = useRemoteSessions();
   const knownSession = useMemo(
@@ -589,7 +591,8 @@ function RemoteFilePreviewContent() {
   }, [absolutePathOf, showNotice, t]);
 
   const sendToSession = useCallback((item: FileBrowserGridItem) => {
-    const merged = mergePathIntoComposerDraft(sessionId, item.relPath);
+    if (!draftOwner.accountKey || !isMobileAuthOwnerCurrent(draftOwner)) return;
+    const merged = mergePathIntoComposerDraft(sessionId, item.relPath, 'file', draftOwner);
     router.navigate({
       pathname: '/sessions/[sessionId]',
       params: {
@@ -599,7 +602,7 @@ function RemoteFilePreviewContent() {
         focusComposerRequestKey: String(Date.now()),
       },
     });
-  }, [deviceId, router, sessionId]);
+  }, [deviceId, router, sessionId, draftOwner]);
 
   const lightboxImages = useMemo((): readonly MobileMessageGalleryImage[] => {
     if (!lightboxUrl || !current) return [];
@@ -744,10 +747,11 @@ function RemoteFilePreviewContent() {
               // 「发送到会话」(sendToSession)的图片/路径处理一致(产品决策);
               // 引用在全局 store,导航后 composer 胶囊即时可见。
               onQuoteSelection={(text) => {
+                if (!draftOwner.accountKey || !isMobileAuthOwnerCurrent(draftOwner)) return;
                 appendQuote(sessionId, {
                   text: truncateQuoteText(text),
                   sourcePath: item.relPath,
-                });
+                }, draftOwner);
                 router.navigate({
                   pathname: '/sessions/[sessionId]',
                   params: {

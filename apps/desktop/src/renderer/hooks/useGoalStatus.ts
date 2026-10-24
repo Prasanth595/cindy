@@ -41,17 +41,21 @@ export function useGoalStatus(sessionId: string | null | undefined): GoalStatusP
       return;
     }
     let active = true;
+    // Pushes can arrive while the initial local/remote read is still in flight.
+    let receivedPush = false;
+    const unsub = subscribeGoalStatusChanged(sessionId, (payload) => {
+      if (!active) return;
+      receivedPush = true;
+      setGoal(payload.goal);
+    });
     void goalApiFor(sessionId)
       .getGoalStatus(sessionId)
       .then((g) => {
-        if (active) setGoal(g);
+        if (active && !receivedPush) setGoal(g);
       })
       .catch(() => {
-        if (active) setGoal(null);
+        if (active && !receivedPush) setGoal(null);
       });
-    const unsub = subscribeGoalStatusChanged(sessionId, (payload) => {
-      setGoal(payload.goal);
-    });
     return () => {
       active = false;
       unsub();

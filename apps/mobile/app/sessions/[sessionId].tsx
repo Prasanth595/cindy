@@ -42,7 +42,7 @@ import { SharedTaskEndedState } from '@/session/SharedTaskEndedState';
 import { useSessionResourceCards } from '@/session/useSessionResourceCards';
 import { SessionResourceCards } from '@/session/SessionResourceCards';
 import { mobileDebugLog } from '@/debug/mobileDebugLog';
-import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
 import { mobileDurableOutbox, durableOutboxDisplayItem, getCurrentMobileOutboxRecords, reconcileMobileOutboxDrafts } from '@/session/mobileDurableOutbox';
 import { retainOutboxFile, durableOutboxUploadUri, removeOutboxFiles, outboxAttachmentNeedsLocalBytes } from '@/session/durableOutboxFiles';
 import { isDurableOutboxSettled, isDurableOutboxUnsent, observeDurableOutboxSending, type DurableOutboxRecord } from '@/session/durableOutbox';
@@ -345,6 +345,8 @@ import { DockKeyboardLift, DockKeyboardViewportSpacer } from '@/session/Composer
 import { useComposerPillOpen } from '@/session/useComposerPillOpen';
 import { composerBottomContentPadding, composerGeometry } from '@/session/composerGeometry';
 import {
+  captureComposerDraftRecovery,
+  subscribeComposerDraftRecovery,
   flushComposerDraftWrites,
   readComposerDocumentDraft,
   readComposerDocumentDraftSync,
@@ -957,16 +959,18 @@ function attachmentIdSetsEqual(
 function restoreRecoverableItemsToDraft(
   draftSessionId: string,
   sessionItems: readonly MobileRecoverableDraftItem[],
+  owner: MobileAuthOwnerGeneration,
 ): void {
   {
-    const existingVisibleText = readComposerDraftSync(draftSessionId)?.trim() ?? '';
-    const existingQuotes = [...getQuotes(draftSessionId)];
+    const existingVisibleText = readComposerDraftSync(draftSessionId, owner)?.trim() ?? '';
+    const existingQuotes = [...getQuotes(draftSessionId, owner)];
     const existingOrderedDraft = resolveOrderedQuoteDraft(
       draftSessionId,
       existingVisibleText,
       existingQuotes,
+      owner,
     );
-    const existingDocument = readComposerDocumentDraftSync(draftSessionId)
+    const existingDocument = readComposerDocumentDraftSync(draftSessionId, owner)
       ?? migrateLegacyComposerDraft(existingVisibleText, existingQuotes, existingOrderedDraft?.encodedBody);
     const existingEncodedBody = serializeComposerDocument(existingDocument).text;
     const recovery = recoverOutboxItemsToComposerDraft(sessionItems, {
@@ -976,12 +980,13 @@ function restoreRecoverableItemsToDraft(
       document: existingDocument,
     });
     if (recovery.visibleText || recovery.quotes.length > 0) {
-      saveComposerDraft(draftSessionId, recovery.visibleText);
+      saveComposerDraft(draftSessionId, recovery.visibleText, owner);
       saveComposerDocumentDraft(
         draftSessionId,
         recovery.document,
+        owner,
       );
-      clearQuotes(draftSessionId);
+      clearQuotes(draftSessionId, owner);
     }
   }
 }
@@ -999,11 +1004,12 @@ interface ImmediateComposerDraftScope {
 function readImmediateComposerDraftScope(
   sessionId: string,
   routeDraft: string | null,
+  owner: MobileAuthOwnerGeneration,
 ): ImmediateComposerDraftScope {
-  const visibleText = readComposerDraftSync(sessionId) ?? routeDraft ?? '';
-  const quotes = getQuotes(sessionId);
-  const ordered = resolveOrderedQuoteDraft(sessionId, visibleText, quotes);
-  const storedDocument = readComposerDocumentDraftSync(sessionId);
+  const visibleText = readComposerDraftSync(sessionId, owner) ?? routeDraft ?? '';
+  const quotes = getQuotes(sessionId, owner);
+  const ordered = resolveOrderedQuoteDraft(sessionId, visibleText, quotes, owner);
+  const storedDocument = readComposerDocumentDraftSync(sessionId, owner);
   let document = storedDocument
     ?? migrateLegacyComposerDraft(visibleText, quotes, ordered?.encodedBody);
   if (storedDocument) {
@@ -1014,8 +1020,8 @@ function readImmediateComposerDraftScope(
   return { document, ordered, quotes };
 }
 
-function composerDraftScopeKey(sessionId: string, routeDraft: string | null): string {
-  return JSON.stringify([sessionId, routeDraft ?? '']);
+function composerDraftScopeKey(sessionId: string, routeDraft: string | null, owner: MobileAuthOwnerGeneration): string {
+  return JSON.stringify([owner.accountKey, owner.generation, sessionId, routeDraft ?? '']);
 }
 
 export default function SessionScreen() {
@@ -1069,7 +1075,10 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   useFocusEffect(useCallback(() => {
     rememberRecentTask({ pathname: '/sessions/[sessionId]', params: { deviceId, deviceName, sessionId } });
   }, [deviceId, deviceName, sessionId]));
-  const routeDraft = readRouteParam(params.draft);
+  const rawRouteDraft = readRouteParam(params.draft);
+  // Route text is an input owned by the account that received it, too.
+  const routeDraftOwner = useMemo(getMobileAuthOwner, [rawRouteDraft, sessionId, params.focusComposerRequestKey]);
+  const routeDraft = isMobileAuthOwnerCurrent(routeDraftOwner) ? rawRouteDraft : null;
   const routeFocusClientId = readRouteParam(params.focusClientId);
   const routeFocusComposerRequestKey = readRouteParam(params.focusComposerRequestKey);
   const routeFocusRequestKey = readRouteParam(params.focusRequestKey);
@@ -1207,10 +1216,10 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   const recommendationSession = currentSession;
   const remoteSessionRunStatus = useSessionRunStatus(sessionId);
   const taskUpdates = useSessionTaskUpdates(sessionId);
-  const activeComposerDraftScopeKey = composerDraftScopeKey(sessionId, routeDraft);
+  const activeComposerDraftScopeKey = composerDraftScopeKey(sessionId, routeDraft, outboxOwner);
   const [composerDraftStateKey, setComposerDraftStateKey] = useState(activeComposerDraftScopeKey);
   const [composerDraftSource, setComposerDraftSource] = useState(() =>
-    createComposerDraftSource(readImmediateComposerDraftScope(sessionId, routeDraft).document),
+    createComposerDraftSource(readImmediateComposerDraftScope(sessionId, routeDraft, outboxOwner).document),
   );
   const [composerDraftHydrated, setComposerDraftHydrated] = useState(false);
   const appliedRouteDraftRef = useRef<string | null>(null);
@@ -1221,7 +1230,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   // 被动 effect 水合纠正。沿本页 read-ack 的 render-phase 换代模式同步种入 B 的
   // 内存快照（冷缓存未 hydrate 时为空），React 会丢弃本次旧输出后重渲。
   if (composerDraftStateKey !== activeComposerDraftScopeKey) {
-    const nextScope = readImmediateComposerDraftScope(sessionId, routeDraft);
+    const nextScope = readImmediateComposerDraftScope(sessionId, routeDraft, outboxOwner);
     const nextDraft = composerDocumentProjectedText(nextScope.document);
     setComposerDraftStateKey(activeComposerDraftScopeKey);
     setComposerDraftSource(createComposerDraftSource(nextScope.document));
@@ -1251,9 +1260,9 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   // SelectionQuoteContext value 重建,FlatList 里所有可见 MarkdownSelectableText
   // 跟着重渲(打字等无关 state 变化都触发),长转录会话开销明显(review P2)。
   const handleQuoteSelection = useCallback((quote: { text: string }) => {
-    appendQuote(sessionId, { text: truncateQuoteText(quote.text) });
+    appendQuote(sessionId, { text: truncateQuoteText(quote.text) }, outboxOwner);
     requestAnimationFrame(() => composerInputRef.current?.focus());
-  }, [sessionId]);
+  }, [sessionId, outboxOwner]);
   useEffect(() => {
     shareOperationSeqRef.current += 1;
     setConversationShareBusy(false);
@@ -3241,6 +3250,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     value: ComposerDocument,
     options?: { persist?: boolean },
   ) => {
+    if (!outboxOwner.accountKey || !isMobileAuthOwnerCurrent(outboxOwner)) return;
     composerDocumentRef.current = value;
     const projected = composerDocumentProjectedText(value);
     draftRef.current = projected;
@@ -3252,12 +3262,23 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     composerDraftSource.setDocument(value);
     voiceDictionaryLearningTrackerRef.current?.inspectDraft(projected);
     if (options?.persist !== false) {
-      saveComposerDocumentDraft(sessionId, value);
-      // Keep the legacy string mirror during the one-way migration window so
-      // older builds do not turn a rich draft into an empty composer.
-      saveComposerDraft(sessionId, projected);
+      saveComposerDocumentDraft(sessionId, value, outboxOwner);
+      // Keep the plain-text projection beside the semantic document, in the
+      // same account scope, for consumers that do not read rich drafts.
+      saveComposerDraft(sessionId, projected, outboxOwner);
     }
-  }, [composerDraftSource, sessionId]);
+  }, [composerDraftSource, sessionId, outboxOwner]);
+
+  useEffect(() => subscribeComposerDraftRecovery(sessionId, (document) => {
+    const editing = queueEditingRef.current;
+    if (editing) {
+      const next = { ...editing, stashedDocument: document, stashedDraft: composerDocumentProjectedText(document) };
+      queueEditingRef.current = next;
+      setQueueEditing(next);
+    } else {
+      applyComposerDocument(document, { persist: false });
+    }
+  }, outboxOwner), [applyComposerDocument, sessionId, outboxOwner]);
 
   const applyComposerDraft = useCallback((value: string, options?: { persist?: boolean }) => {
     const document = reconcileComposerProjectedText(composerDocumentRef.current, value);
@@ -3325,7 +3346,8 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     prewarmAgentOnTyping();
   }, [prewarmAgentOnTyping, setComposerDraft]);
 
-  const writeVoiceDraft = useComposerVoiceDraftWriter(sessionId, (update: ComposerVoiceDraftUpdate) => {
+  const voiceDraftScopeKey = JSON.stringify([outboxOwner.accountKey, outboxOwner.generation, sessionId]);
+  const writeVoiceDraft = useComposerVoiceDraftWriter(voiceDraftScopeKey, (update: ComposerVoiceDraftUpdate) => {
     applyRichComposerChange(reconcileComposerVoiceDraft(composerDocumentRef.current, update));
   });
 
@@ -3462,13 +3484,13 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState !== 'active') void flushComposerDraftWrites();
+      if (nextState !== 'active') void flushComposerDraftWrites(sessionId, outboxOwner);
     });
     return () => {
       subscription.remove();
-      void flushComposerDraftWrites();
+      void flushComposerDraftWrites(sessionId, outboxOwner);
     };
-  }, []);
+  }, [sessionId, outboxOwner]);
 
   useEffect(() => {
     extraDirBrowseSeqRef.current += 1;
@@ -3493,7 +3515,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     appliedRouteDraftRef.current = key;
     setComposerDraftHydrated(false);
     let cancelled = false;
-    const immediateScope = readImmediateComposerDraftScope(sessionId, routeDraft);
+    const immediateScope = readImmediateComposerDraftScope(sessionId, routeDraft, outboxOwner);
     const immediateQuotes = immediateScope.quotes;
     const immediateDocument = immediateScope.document;
     const immediateOrdered = immediateScope.ordered;
@@ -3502,23 +3524,23 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     // Synchronously consumed quote-store items are already in the first paint.
     // Clear them before the async hydration window so a concurrent user edit
     // cannot append the same quote a second time when Promise.all settles.
-    if (immediateQuotes.length > 0) clearQuotes(sessionId);
+    if (immediateQuotes.length > 0) clearQuotes(sessionId, outboxOwner);
     // Memory is the source of truth once quotes were synchronously consumed.
     // Skipping storage hydration makes it explicit that hydratedQuotes below
     // can only contain cold-start quotes or quotes arriving after this point.
     const quoteHydration = immediateQuotes.length > 0
       ? Promise.resolve()
-      : hydrateQuotes(sessionId);
+      : hydrateQuotes(sessionId, outboxOwner);
 
     void reconcileMobileOutboxDrafts(sessionId).then(() => Promise.all([
       quoteHydration,
-      readComposerDocumentDraft(sessionId),
-      readComposerDraft(sessionId),
+      readComposerDocumentDraft(sessionId, outboxOwner),
+      readComposerDraft(sessionId, outboxOwner),
     ])).then(([, storedDocument, storedDraft]) => {
-      if (cancelled || appliedRouteDraftRef.current !== key) return;
-      const hydratedQuotes = [...getQuotes(sessionId)];
+      if (cancelled || appliedRouteDraftRef.current !== key || !isMobileAuthOwnerCurrent(outboxOwner)) return;
+      const hydratedQuotes = [...getQuotes(sessionId, outboxOwner)];
       const fallbackText = storedDraft ?? routeDraft ?? '';
-      const ordered = resolveOrderedQuoteDraft(sessionId, fallbackText, hydratedQuotes);
+      const ordered = resolveOrderedQuoteDraft(sessionId, fallbackText, hydratedQuotes, outboxOwner);
       let nextDocument: ComposerDocument;
       let hydratedQuotesIncluded = false;
       if (storedDocument) {
@@ -3549,11 +3571,11 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           nextDocument = appendComposerNode(nextDocument, { type: 'quote', quote });
         }
       }
-      clearQuotes(sessionId);
+      clearQuotes(sessionId, outboxOwner);
       applyComposerDocument(nextDocument);
       setComposerDraftHydrated(true);
     }).catch((error) => {
-      if (cancelled || appliedRouteDraftRef.current !== key) return;
+      if (cancelled || appliedRouteDraftRef.current !== key || !isMobileAuthOwnerCurrent(outboxOwner)) return;
       const message = error instanceof Error ? error.message : String(error);
       // A failed draft handoff must keep send() gated: the composer may still
       // show a message the outbox already owns. Storage failures are different
@@ -3570,17 +3592,17 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     });
     return () => {
       cancelled = true;
-      void flushComposerDraftWrites(sessionId);
+      void flushComposerDraftWrites(sessionId, outboxOwner);
     };
-  }, [activeComposerDraftScopeKey, applyComposerDocument, routeDraft, sessionId]);
+  }, [activeComposerDraftScopeKey, applyComposerDocument, routeDraft, sessionId, outboxOwner]);
 
   useEffect(() => {
     if (!composerDraftHydrated || quotes.length === 0) return;
     let next = composerDocumentRef.current;
     for (const quote of quotes) next = appendComposerNode(next, { type: 'quote', quote });
-    clearQuotes(sessionId);
+    clearQuotes(sessionId, outboxOwner);
     applyComposerDocument(next, queueEditingRef.current ? { persist: false } : undefined);
-  }, [applyComposerDocument, composerDraftHydrated, quotes, sessionId]);
+  }, [applyComposerDocument, composerDraftHydrated, quotes, sessionId, outboxOwner]);
 
   useEffect(() => {
     if (!currentAgentKind || !deviceId) {
@@ -4300,19 +4322,19 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
             : []),
           ...followUps,
         ];
-        if (recoverables.length > 0) restoreRecoverableItemsToDraft(sessionId, recoverables);
+        if (recoverables.length > 0) restoreRecoverableItemsToDraft(sessionId, recoverables, outboxOwner);
         adoptRecoveredAttachments(creationTask.attachments, followUps);
       } else if (followUps.length > 0) {
         // task 已被消费(极端竞态):后续消息仍然要回草稿,不能随 outbox 清空蒸发。
         // 附件走同一条收尾(这条分支原先只恢复文本,附件连带丢掉)。
-        restoreRecoverableItemsToDraft(sessionId, followUps);
+        restoreRecoverableItemsToDraft(sessionId, followUps, outboxOwner);
         adoptRecoveredAttachments([], followUps);
       }
       setError(creationTask?.error ?? t('session.screen.firstMessageNotSent'));
       dismissNewSessionCreation(sessionId);
       void load();
     }
-  }, [creationTask, deviceId, deviceName, load, navigation, router, sessionId, setComposerDraft]);
+  }, [creationTask, deviceId, deviceName, load, navigation, router, sessionId, setComposerDraft, outboxOwner]);
 
   // 排队行里该显示「在途转圈」的 clientId:本页 enqueue 在途的条目,加上新建会话
   // 乐观管线仍在跑(create + 首条 enqueue 都还没确认)时的首条消息——它同样是
@@ -4360,7 +4382,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   useFocusEffect(
     useCallback(() => {
       let composerFocusFrame: number | null = null;
-      const pending = drainComposerAttachments(sessionId);
+      const pending = drainComposerAttachments(sessionId, outboxOwner);
       if (pending.length > 0) {
         // 判据与创建失败恢复共用同一个 helper(去重 + 上限 + 溢出显式返回):同一语义
         // 分散实现过三处,其中两处会静默丢弃溢出附件(review 收敛检查点)。
@@ -4381,13 +4403,14 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       // 提交永不静默丢失。
       const annotationsApi = composerAnnotationsRef.current;
       if (annotationsApi) {
-        const submissions = drainComposerAnnotationSubmissions(sessionId);
+        const submissions = drainComposerAnnotationSubmissions(sessionId, outboxOwner);
         if (submissions.length > 0) {
           // 串行逐条 await(review P1):并发 void 发起会让多条提交在各自第一个
           // await 之前同步读到同一份"入队前"剩余槎位数,绕过附件上限;串行后
           // 每条都等前一条真正落定(含槎位占用生效)才开始,不再有这个窗口。
           void (async () => {
             for (const submission of submissions) {
+              if (!isMobileAuthOwnerCurrent(outboxOwner)) break;
               try {
                 await annotationsApi.submitExternalAnnotation(
                   submission.displayUri,
@@ -4402,7 +4425,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
                 // 弹同一个错)。
                 const retryCount = (submission.retryCount ?? 0) + 1;
                 if (retryCount < 2) {
-                  queueComposerAnnotationSubmission(sessionId, { ...submission, retryCount });
+                  queueComposerAnnotationSubmission(sessionId, { ...submission, retryCount }, outboxOwner);
                 }
               }
             }
@@ -4420,7 +4443,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       return () => {
         if (composerFocusFrame !== null) cancelAnimationFrame(composerFocusFrame);
       };
-    }, [canUseComposer, routeFocusComposerRequestKey, sessionId]),
+    }, [canUseComposer, routeFocusComposerRequestKey, sessionId, outboxOwner]),
   );
 
   useFocusEffect(
@@ -5431,10 +5454,11 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     openCollabSession(row.id);
   }, [deviceId, deviceName, openCollabSession]);
   const createSideChat = useCallback(async (quoteText?: string, draft?: ComposerDocument): Promise<RemoteSession | null> => {
-    if (!canUseSideChats || !currentSession || sideChatCreatingRef.current) return null;
+    if (!canUseSideChats || !currentSession || sideChatCreatingRef.current
+      || !outboxOwner.accountKey || !isMobileAuthOwnerCurrent(outboxOwner)) return null;
     const parentId = currentSession.source === 'side-chat' ? currentSession.parentSessionId : sessionId;
     if (!parentId) return null;
-    const owner = getMobileAuthOwner();
+    const owner = outboxOwner;
     const authority = messageAuthorityRef.current;
     const isCurrent = () => isMobileAuthOwnerCurrent(owner) && outboxSessionAliveRef.current === sessionId
       && messageScreenFocusedRef.current && messageAuthorityRef.current === authority;
@@ -5446,7 +5470,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       remoteSessionStore.upsertDeviceSession(deviceId, deviceName, child);
       if (draft || quoteText) saveComposerDocumentDraft(child.id, draft ?? {
         version: 1, nodes: [{ type: 'quote', quote: { text: truncateQuoteText(quoteText!) } }],
-      });
+      }, owner);
       return child;
     } catch (err) {
       if (isCurrent()) setError(/CHANNEL_NOT_ALLOWED|UNSUPPORTED_CAPABILITY|No handler/.test(String(err))
@@ -5454,7 +5478,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           ? t('session.sideChat.waitForReply') : t('session.sideChat.createFailed'));
       return null;
     } finally { sideChatCreatingRef.current = false; }
-  }, [canUseSideChats, currentSession, deviceId, deviceName, maker, sessionId, t]);
+  }, [canUseSideChats, currentSession, deviceId, deviceName, maker, sessionId, t, outboxOwner]);
   const askInSideChat = useCallback((text?: string) => {
     void createSideChat(text).then(child => {
       if (child && messageScreenFocusedRef.current) openSideChat(child);
@@ -6449,6 +6473,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     documentOverride?: ComposerDocument;
     independentText?: string;
   } = {}) {
+    if (!outboxOwner.accountKey || !isMobileAuthOwnerCurrent(outboxOwner)) return;
     const independent = options.independentText !== undefined;
     let messageAccepted = false;
     // A committed outbox item may still own the draft shown during hydration.
@@ -6504,6 +6529,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     sendInFlightRef.current = true;
     setSending(true);
     const messageWorkLease = remoteSessionStore.acquireSessionMessageWork(sessionId, true);
+    let directDraftRecovery: ReturnType<typeof captureComposerDraftRecovery> = null;
     try {
     // 自动恢复中的 error 也是 outbox 的派发门；先清掉会让刚入队的消息在下一帧
     // 立刻撞回断链。真正恢复后的 load / connection epoch 会负责清理并唤醒 pump。
@@ -6712,14 +6738,36 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       applyComposerDocument(recovery.document);
     };
     let scopeExitDraftRecovered = false;
-    const sendScopeStillAlive = () => outboxSessionAliveRef.current === sessionId;
-    const recoverCapturedDraftForScopeExit = () => {
+    const sendScopeStillAlive = () => outboxSessionAliveRef.current === sessionId
+      && isMobileAuthOwnerCurrent(outboxOwner);
+    const recoverCapturedDraftForScopeExit = async () => {
       if (independent || scopeExitDraftRecovered || !outboxEligible || useDurableOutbox) return;
       scopeExitDraftRecovered = true;
+      if (directDraftRecovery) {
+        try {
+          await directDraftRecovery.restore();
+        } catch (error) {
+          // The original account's memory still owns the recovered document.
+          // Do not leak its failure into the next account's page or reject an
+          // event handler without an observer; reopening retries its persistence.
+          mobileDebugLog('warn', 'recovery', 'Recovered draft persistence failed');
+          if (isMobileAuthOwnerCurrent(outboxOwner)) setError(formatRemoteError(error));
+        }
+        return;
+      }
       // 乐观清空已持久删除 A 草稿；切到 B 后不能再读写共享 composer ref。
       // 直接按捕获的发送快照合并回 A 的草稿库，并保留 A 期间新输入的后续文字。
-      restoreRecoverableItemsToDraft(sessionId, [capturedDraftRecoveryItem()]);
+      restoreRecoverableItemsToDraft(sessionId, [capturedDraftRecoveryItem()], outboxOwner);
     };
+    if (!independent && outboxEligible && (legacyPlanRequiresLiveDispatch || earlyDesktopCommand?.name === 'learn')) {
+      const consumedDocument = earlyDesktopCommand?.name === 'learn'
+        ? normalizeComposerDocument({
+            version: 1,
+            nodes: documentBeforeSend.nodes.filter((node) => node.type !== 'quote'),
+          })
+        : documentBeforeSend;
+      directDraftRecovery = captureComposerDraftRecovery(sessionId, consumedDocument, outboxOwner);
+    }
     if (!independent && text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);
     // A pasted message link is committed to the editor synchronously, while
     // its readable body is fetched from the source device asynchronously.
@@ -6731,7 +6779,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       resolvePastedSessionLinkLabel,
     );
     if (!sendScopeStillAlive()) {
-      recoverCapturedDraftForScopeExit();
+      await recoverCapturedDraftForScopeExit();
       sendInFlightRef.current = false;
       setSending(false);
       return;
@@ -6766,7 +6814,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         if (!independent && hasPastePlaceholders()) {
           await waitForPastePlaceholdersSettled();
           if (!sendScopeStillAlive()) {
-            recoverCapturedDraftForScopeExit();
+            await recoverCapturedDraftForScopeExit();
             return;
           }
         }
@@ -6818,11 +6866,11 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           handoff?.release(true);
           // Durable ownership precedes clearing the composer or deleting annotation sources.
           if (!isMobileAuthOwnerCurrent(ownerAtSend) || !sendScopeStillAlive()) {
-            const stored = readComposerDocumentDraftSync(sessionId);
+            const stored = readComposerDocumentDraftSync(sessionId, outboxOwner);
             if (!independent && stored && composerDocumentsEqual(stored, documentBeforeSend)) {
-              saveComposerDraft(sessionId, '');
-              saveComposerDocumentDraft(sessionId, emptyComposerDocument());
-              clearQuotes(sessionId);
+              saveComposerDraft(sessionId, '', outboxOwner);
+              saveComposerDocumentDraft(sessionId, emptyComposerDocument(), outboxOwner);
+              clearQuotes(sessionId, outboxOwner);
             }
             return messageAccepted;
           }
@@ -6880,7 +6928,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       // 有失败就中止发送——错误文案已由上传回调写入 attachmentError,让用户处理。
       const { failedCount } = independent ? { failedCount: 0 } : await waitForPendingUploads();
       if (!sendScopeStillAlive()) {
-        recoverCapturedDraftForScopeExit();
+        await recoverCapturedDraftForScopeExit();
         return;
       }
       if (failedCount > 0) {
@@ -7080,6 +7128,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         // 普通文本忽略。蒸馏在被控端后台跑,这里以本地系统卡反馈启动结果。
         let cardData: Record<string, unknown>;
         try {
+          directDraftRecovery?.discard();
           const { runId } = await maker.learnStart(
             buildLearnStartRequest(desktopCommand.args, sessionId),
           );
@@ -7147,9 +7196,20 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           deviceId,
         );
       } catch (err) {
+        if (!sendScopeStillAlive()) {
+          await recoverCapturedDraftForScopeExit();
+          return;
+        }
         restoreDirectSendDraftAfterFailure();
         throw err;
       }
+      if (!sendScopeStillAlive()) {
+        await recoverCapturedDraftForScopeExit();
+        return;
+      }
+      // From the first dispatch onward, an uncertain receipt is reconciled by
+      // the existing send path; it must never be restored as an unsent snapshot.
+      directDraftRecovery?.discard();
       // 乐观第二拍:附件落定后立即把 queued 追加进本地 projection,消息气泡当帧上屏、
       // 托盘同帧清空;enqueue 成功后用权威 projection 覆盖 reconcile。
       // previews / mediaAssetAttachments 映射保留到成功后再清:它们不入消息体,失败
@@ -7279,6 +7339,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       setError(formatRemoteError(err));
     }
     } finally {
+      directDraftRecovery?.discard();
       sendInFlightRef.current = false;
       setSending(false);
       messageWorkLease.release();
@@ -9256,8 +9317,9 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           sessionId,
           (target.scope ? null : target.relPath) ?? target.absPath,
           target.kind === 'directory' ? 'dir' : 'file',
+          outboxOwner,
         );
-        const mergedDocument = readComposerDocumentDraftSync(sessionId);
+        const mergedDocument = readComposerDocumentDraftSync(sessionId, outboxOwner);
         if (mergedDocument) {
           applyComposerDocument(mergedDocument, { persist: false });
           composerInputRef.current?.applyDocumentAndSetSelectionToEnd(mergedDocument);
@@ -9284,7 +9346,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         void shareChipFile(target);
         return;
     }
-  }, [applyComposerDocument, applyComposerDraft, deviceId, deviceName, openChatPathTarget, router, sessionId, shareChipFile, showTransientNotice, t]);
+  }, [applyComposerDocument, applyComposerDraft, deviceId, deviceName, openChatPathTarget, router, sessionId, shareChipFile, showTransientNotice, t, outboxOwner]);
   handleChipMenuActionRef.current = handleChipMenuAction;
 
   // 会话菜单元数据操作(重命名 / 置顶 / 归档 / 删除 / 恢复)乐观写:与首页
@@ -9449,20 +9511,21 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
 
 
   const performForkAtMessage = useCallback(async (clientId: string, draft?: MobileMessageDraft) => {
-    if (!deviceId || messageActionBusy) return;
+    if (!deviceId || messageActionBusy || !outboxOwner.accountKey || !isMobileAuthOwnerCurrent(outboxOwner)) return;
     setMessageActionBusy({ clientId, kind: 'fork' });
     setError(null);
     try {
       const forked = await maker.fork(sessionId, clientId);
+      if (!isMobileAuthOwnerCurrent(outboxOwner)) return;
       remoteSessionStore.upsertDeviceSession(deviceId, deviceName, forked);
       const forkDocument = draft?.document ?? migrateLegacyComposerDraft(
         draft?.text,
         draft?.quotes ?? [],
         draft?.orderedBody,
       );
-      saveComposerDocumentDraft(forked.id, forkDocument);
-      saveComposerDraft(forked.id, composerDocumentProjectedText(forkDocument));
-      clearQuotes(forked.id);
+      saveComposerDocumentDraft(forked.id, forkDocument, outboxOwner);
+      saveComposerDraft(forked.id, composerDocumentProjectedText(forkDocument), outboxOwner);
+      clearQuotes(forked.id, outboxOwner);
       router.push({
         pathname: '/sessions/[sessionId]',
         params: { sessionId: forked.id, deviceId, deviceName },
@@ -9475,7 +9538,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     } finally {
       setMessageActionBusy(null);
     }
-  }, [deviceId, deviceName, maker, messageActionBusy, router, sessionId, t]);
+  }, [deviceId, deviceName, maker, messageActionBusy, router, sessionId, t, outboxOwner]);
 
   const forkAtMessage = useCallback((clientId: string, draft?: MobileMessageDraft) => {
     if (!deviceId || messageActionBusy) return;
@@ -9789,7 +9852,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         state.draftQuotes,
         state.draftOrderedBody,
       ));
-      clearQuotes(sessionId);
+      clearQuotes(sessionId, outboxOwner);
       setRewindState({ kind: 'idle' });
       await requestSync({ reason: 'rewind-commit', replaceMessages: true });
     } catch (err) {
@@ -9807,7 +9870,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     } finally {
       if (rewindRequestSeqRef.current === seq) setMessageActionBusy(null);
     }
-  }, [applyComposerDocument, deviceId, maker, messageActionBusy, requestSync, rewindState, sessionId]);
+  }, [applyComposerDocument, deviceId, maker, messageActionBusy, requestSync, rewindState, sessionId, outboxOwner]);
 
   const pendingInteractionDock = sessionOperationLayout.composerSlot === 'pending-interaction';
   const dockKeyboardFollow = Platform.OS === 'ios' && composerDock.enabled && nativeComposerFrameAvailable

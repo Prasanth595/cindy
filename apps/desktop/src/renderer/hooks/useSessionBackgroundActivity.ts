@@ -8,53 +8,76 @@
  * 关闭常驻 CC 子进程,会话可续),成功后本地立即熄灭,广播到达时幂等校正。
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export function useSessionBackgroundActivity(sessionId: string | undefined): {
   active: boolean;
   stopping: boolean;
   stopAll: () => Promise<void>;
 } {
-  const [active, setActive] = useState(false);
-  const [stopping, setStopping] = useState(false);
+  // A reused view must not inherit another task's activity or late stop result.
+  const scopeRef = useRef({ sessionId, revision: 0 });
+  if (scopeRef.current.sessionId !== sessionId) scopeRef.current = { sessionId, revision: 0 };
+  const scope = scopeRef.current;
+  const [activity, setActivity] = useState({ scope, active: false });
+  const pendingStops = useRef(new Set<string>());
+  const [stoppingSessionIds, setStoppingSessionIds] = useState(new Set<string>());
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
-    setActive(false);
     if (!sessionId) return;
     const api = window.electronAPI?.maker;
     if (!api?.getSessionBackgroundActivity) return;
     let disposed = false;
+    const readRevision = scope.revision;
+    const off = api.onSessionBackgroundActivityChanged((payload) => {
+      if (disposed || payload.sessionId !== sessionId) return;
+      scope.revision += 1;
+      setActivity({ scope, active: payload.active });
+    });
     void api
       .getSessionBackgroundActivity(sessionId)
       .then((snap) => {
-        if (!disposed) setActive(snap.active);
+        if (!disposed && scope.revision === readRevision) setActivity({ scope, active: snap.active });
       })
       .catch(() => {
         // maker 未 init 等瞬态:保持 false,push 到达时校正。
       });
-    const off = api.onSessionBackgroundActivityChanged((payload) => {
-      if (payload.sessionId === sessionId) setActive(payload.active);
-    });
     return () => {
       disposed = true;
       off();
     };
-  }, [sessionId]);
+  }, [sessionId, scope]);
 
   const stopAll = useCallback(async () => {
-    if (!sessionId) return;
+    if (!sessionId || pendingStops.current.has(sessionId)) return;
     const api = window.electronAPI?.maker;
     if (!api?.stopSessionBackgroundTasks) return;
-    setStopping(true);
+    pendingStops.current.add(sessionId);
+    setStoppingSessionIds(new Set(pendingStops.current));
+    const revisionAtStop = scope.revision;
     try {
       await api.stopSessionBackgroundTasks(sessionId);
-      setActive(false);
+      // A different task or a newer push owns the view after navigation/restart.
+      if (mounted.current && scopeRef.current === scope && scope.revision === revisionAtStop) {
+        scope.revision += 1;
+        setActivity({ scope, active: false });
+      }
     } catch {
       // 关闭失败时不伪造已停止状态，继续由后台活动 push / turn 事件校正。
     } finally {
-      setStopping(false);
+      pendingStops.current.delete(sessionId);
+      if (mounted.current) setStoppingSessionIds(new Set(pendingStops.current));
     }
-  }, [sessionId]);
+  }, [sessionId, scope]);
 
-  return { active, stopping, stopAll } as const;
+  return {
+    active: activity.scope === scope && activity.active,
+    stopping: Boolean(sessionId && stoppingSessionIds.has(sessionId)),
+    stopAll,
+  } as const;
 }
