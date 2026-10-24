@@ -379,9 +379,6 @@
     "apps/desktop/src/main/plugin-market/__tests__/sources-cache-lease.test.ts": {
       "realWaits": 1
     },
-    "apps/desktop/src/main/plugin-oauth/__tests__/runtimePrompt.test.ts": {
-      "sourceReads": 4
-    },
     "apps/desktop/src/main/plugin-publisher/__tests__/host.test.ts": {
       "resetModules": 1
     },

@@ -150,6 +150,11 @@ async function catalog(input: Input, ctx: Pick<Awaited<ReturnType<typeof context
       description: mcp.transport,
       available: available.has(mcp.id),
     }));
+    items.push(...runtimeCatalog.filter((entry) => entry.source === 'harness').map((entry) => ({
+      id: entry.name, name: entry.name,
+      description: 'Engine-provided connectors; not Cindy tasks, routines or plugins.',
+      available: entry.available !== false,
+    })));
   } else {
     const registry = getPluginRegistry();
     items = await Promise.all(

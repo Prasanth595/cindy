@@ -1728,7 +1728,7 @@ export interface BotRuntimeSkillPolicy {
 
 export interface BotRuntimeMcpEntry {
   name: string;
-  source: 'builtin' | 'custom';
+  source: 'builtin' | 'custom' | 'harness';
   available?: boolean;
 }
 

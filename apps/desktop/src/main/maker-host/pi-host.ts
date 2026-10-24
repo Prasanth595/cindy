@@ -100,6 +100,7 @@ import { hostCredentialEndpointAllowed } from './pi-provider-transport.js';
 import { hasGrokOAuthLogin } from './grok-oauth-login.js';
 import { isOpenAiSubscriptionProviderId } from './codex-account-auth.js';
 import hostSystemPrompt from './host-system-prompt.md?raw';
+import businessOwnershipPrompt from './business-ownership-prompt.md?raw';
 import piSystemPrompt from './pi-system-prompt.md?raw';
 import { createLogger } from '../logger.js';
 import { readMemorySettings } from './memory-settings-store.js';
@@ -867,7 +868,7 @@ function buildDesktopPiRuntimeConfig(): AgentRuntimeConfig {
     // 代输入: sudo / ssh / git password prompts of this task go to the owner.
     taskShellEnv: inputHandoffTaskShellEnv,
     // 保留 host 共用身份段,再追加 Pi 专属行为段；maker-core 会整体追加到 Pi 原生 prompt。
-    systemPrompt: composePiSystemPrompt(hostSystemPrompt, piSystemPrompt),
+    systemPrompt: composePiSystemPrompt(`${hostSystemPrompt.trim()}\n\n${businessOwnershipPrompt.trim()}`, piSystemPrompt),
     answerDeliveryPrompt: ANSWER_DELIVERY_PROMPT,
     // Pi 的 grep 以及 Cindy 覆盖的 find 都固定复用随 Desktop 校验、打包的 rg。
     // 下发绝对路径而非 PATH，避免 Windows 从不受信工作目录优先命中同名 rg.exe。

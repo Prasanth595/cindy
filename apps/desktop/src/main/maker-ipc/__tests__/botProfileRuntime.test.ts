@@ -11,6 +11,16 @@ import {
   withBotHomeAccess,
 } from '../botProfileRuntime';
 import { buildDefaultBotIdentity } from '../../../shared/botProfileDefaults';
+import { buildBotMcpCatalog } from '../../maker-host/botMcpCatalog';
+
+// Unit regression: default inheritance must retain engine connectors while an
+// explicit allowlist can exclude them. Previously Apps was absent from the catalog.
+it('resolves native Apps through the same Bot inheritance and selection rules', () => {
+  const catalog = buildBotMcpCatalog({ agentKind: 'codex', providers: [], builtinNames: [], customServers: [] });
+  expect(resolveBotMcpReferences({ configured: [], mode: 'inherit', catalog })).toEqual({ resolved: ['codex_apps'], unavailable: [] });
+  expect(resolveBotMcpReferences({ configured: [], mode: 'allowlist', catalog })).toEqual({ resolved: [], unavailable: [] });
+  expect(resolveBotMcpReferences({ configured: ['codex_apps'], mode: 'allowlist', catalog })).toEqual({ resolved: ['codex_apps'], unavailable: [] });
+});
 
 describe('Bot Profile runtime prompt', () => {
   it('uses the SOUL source verbatim as the complete identity slot', () => {
