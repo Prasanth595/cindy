@@ -16,10 +16,11 @@ const flush = async () => {
 
 // The system cursor, which the local user can move between the viewer's batches.
 let cursor = { x: 0, y: 0 };
+let displays = [{ id: 1, scaleFactor: 1, bounds: { x: 0, y: 0, width: 100, height: 100 } }];
 vi.mock('electron', () => ({
   app: {},
   screen: {
-    getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 100, height: 100 } }],
+    getAllDisplays: () => displays,
     dipToScreenPoint: (point: unknown) => point,
     getCursorScreenPoint: () => cursor,
   },
@@ -438,6 +439,7 @@ it('keeps Linux whole-desktop coordinates normalized and releases input before r
   const c = childProcess();
   const host = new DesktopInputHost(vi.fn(), {
     platform: 'linux',
+    linuxBackend: 'wayland',
     resolveBinary: async () => '/test/linux-helper',
     spawn: () => {
       queueMicrotask(() => c.child.stdout.emit('data', Buffer.from('ready\n')));
@@ -488,6 +490,60 @@ it('keeps Linux whole-desktop coordinates normalized and releases input before r
   } finally {
     host.stop();
     c.exit();
+  }
+});
+
+// X11 inputHost integration: real start/input/release with in-memory native I/O.
+// Existing Wayland coverage cannot catch X11 display rejection, wrong geometry,
+// or stale coordinates after the selected screen moves (unit tier).
+// Standalone file duration on Windows: 0.661 s (18 tests).
+it('starts X11 on the selected root rectangle and refuses stale layout before injection', async () => {
+  const c = childProcess();
+  const previousDisplays = displays;
+  displays = [
+    { id: 1, scaleFactor: 2, bounds: { x: 0, y: 0, width: 100, height: 100 } },
+    { id: 2, scaleFactor: 2, bounds: { x: 100, y: 0, width: 200, height: 100 } },
+  ];
+  const spawn = vi.fn(() => {
+    queueMicrotask(() => c.child.stdout.emit('data', Buffer.from('ready\n')));
+    return c.typed;
+  });
+  const host = new DesktopInputHost(vi.fn(), {
+    platform: 'linux',
+    linuxBackend: 'x11',
+    resolveBinary: async () => '/test/x11-helper',
+    spawn,
+  });
+  try {
+    await expect(host.start('wayland-portal')).rejects.toThrow('DESKTOP_DISPLAY_MISSING');
+    expect(spawn).not.toHaveBeenCalled();
+    await host.start('2');
+    expect(spawn).toHaveBeenCalledExactlyOnceWith('/test/x11-helper', [
+      '--geometry',
+      '200',
+      '0',
+      '400',
+      '200',
+    ]);
+    const events = [{ kind: 'move' as const, x: 0.25, y: 0.75 }];
+    host.input(events);
+    await flush();
+    expect(c.child.stdin.write.mock.calls[0][0]).toBe(JSON.stringify(events) + '\n');
+    c.child.stdout.emit('data', Buffer.from('ok\n'));
+    await flush();
+    displays[1] = { ...displays[1], bounds: { ...displays[1].bounds, x: 110 } };
+    expect(() => host.input(events)).toThrow('DESKTOP_DISPLAY_MISSING');
+    expect(c.child.stdin.write).toHaveBeenCalledOnce();
+    const released = host.release();
+    expect(c.child.stdin.end).toHaveBeenCalledWith('[{"kind":"release"}]\n');
+    await expect(withAgentDesktopInput(async () => {})).rejects.toThrow('input is active');
+    c.exit();
+    await released;
+    await expect(withAgentDesktopInput(async () => {})).resolves.toBeUndefined();
+  } finally {
+    host.stop();
+    c.exit();
+    displays = previousDisplays;
   }
 });
 

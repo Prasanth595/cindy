@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   wayland: false,
   hyprland: false,
   linuxInput: false,
+  x11: false,
   linuxAudio: false,
   unlocked: vi.fn(async () => true),
   powerHandlers: new Map<string, () => void>(),
@@ -58,7 +59,10 @@ vi.mock('../waylandCapture', async (original) => ({
   ...(await original<typeof import('../waylandCapture')>()),
   isWaylandDesktop: () => h.wayland,
 }));
-vi.mock('../linuxInput', () => ({ readLinuxDesktopInputSupport: async () => h.linuxInput }));
+vi.mock('../linuxInput', () => ({
+  readLinuxDesktopInputSupport: async () => h.linuxInput,
+  linuxInputBackend: () => (h.x11 ? 'x11' : null),
+}));
 vi.mock('../linuxDesktop', () => ({
   supportsLinuxDisplay: () => h.hyprland,
   supportsLinuxLock: () => false,
@@ -181,8 +185,8 @@ vi.mock('../controller', () => ({
     isBackgroundViewing(value: string) {
       return value === h.lease && h.background;
     }
-    stop() {
-      h.stop();
+    stop(...args: unknown[]) {
+      h.stop(...args);
       h.deps.stopVideo();
     }
     stopByUser() {
@@ -268,6 +272,7 @@ beforeEach(() => {
   h.background = false;
   h.hyprland = false;
   h.linuxInput = false;
+  h.x11 = false;
   h.linuxAudio = false;
   h.unlocked.mockReset().mockResolvedValue(true);
   h.audioRead.mockClear();
@@ -309,6 +314,15 @@ it.each([false, true])('only stops on added displays with privacy masks active=%
   h.screenHandlers.get('display-added')({}, { id: 2 });
   expect(h.stop).toHaveBeenCalledTimes(active ? 1 : 0);
 });
+
+it.each(['display-added', 'display-removed', 'display-metrics-changed'])(
+  'retires X11 input mapping when another output changes: %s',
+  (event) => {
+    h.x11 = true;
+    h.screenHandlers.get(event)({}, { id: 2, size: { width: 100, height: 100 } }, ['bounds']);
+    expect(h.stop).toHaveBeenCalledExactlyOnceWith(undefined, undefined, 'display-changed');
+  },
+);
 
 it.each(['resolution', 'restoreResolution'])(
   'waits for native completion and projection on %s',
@@ -1049,6 +1063,46 @@ it.each([true, false])(
         { id: 1, bounds: { x: 0, y: 0, width: 1600, height: 1000 } },
       ] as any);
       expect((await h.deps.capabilities()).canControl).toBe(supported);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: platform });
+    }
+  },
+);
+
+// Production capabilities/startInput previously refused every X11 desktop even
+// with a working input helper. Unit: same authorized host seam as Wayland below.
+// Standalone file duration on Windows: 3.81 s (59 tests).
+it.each([false, true])(
+  'uses the X11 native probe for control advertisement and admission: %s',
+  async (supported) => {
+    const platform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    try {
+      h.wayland = h.hyprland = false;
+      h.x11 = true;
+      const { screen } = await import('electron');
+      vi.spyOn(screen, 'getAllDisplays').mockReturnValue([
+        {
+          id: 1,
+          size: { width: 1600, height: 1000 },
+          bounds: { x: 0, y: 0, width: 1600, height: 1000 },
+        },
+      ] as any);
+      h.linuxInput = supported;
+      h.startInput.mockClear();
+      const settings = await import('../../device-link/settings-store');
+      vi.spyOn(settings, 'readDeviceLinkSettings').mockReturnValue({
+        remoteDesktopEnabled: true,
+        remoteControlEnabled: true,
+      } as any);
+      expect((await h.deps.capabilities()).canControl).toBe(supported);
+      if (supported) {
+        await h.deps.startInput('1');
+        expect(h.startInput).toHaveBeenCalledExactlyOnceWith('1');
+      } else {
+        await expect(h.deps.startInput('1')).rejects.toThrow('DESKTOP_INPUT_UNSUPPORTED');
+        expect(h.startInput).not.toHaveBeenCalled();
+      }
     } finally {
       Object.defineProperty(process, 'platform', { value: platform });
     }

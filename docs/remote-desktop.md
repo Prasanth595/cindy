@@ -605,12 +605,80 @@ clone ownership and bounded JPEG size. Real compositor/phone validation still ne
 the running build: select a screen locally, check video and JPEG fallback, retry
 video without another picker, then stop sharing and verify capture terminates.
 
+## X11 input backend
+
+Native Linux X11 sessions can use XTEST for keyboard and mouse input. This does
+not introduce RDP, VNC, SSH, another network listener or privileged input devices:
+video and input transport still use the existing WebRTC/device-link paths. The
+host selects `cindy-linux-x11-desktop-input` only with `DISPLAY` in a native X11
+session, never merely because XWayland exports `DISPLAY` in a Wayland session.
+The helper also rejects an X server advertising the `XWAYLAND` extension.
+Its read-only `--check` must connect to the user's X server and find XTEST before
+the host advertises control. Existing opt-ins, controller authorization, leases,
+input ownership, acknowledgements and disconnect release remain unchanged.
+
+When starting Cindy over SSH, use the actual graphical session's environment,
+including its `DISPLAY`, `XAUTHORITY`, session bus and `XDG_SESSION_TYPE`.
+Forwarding only `DISPLAY` can leave `XDG_SESSION_TYPE=tty` inherited from SSH:
+the native helper's `--check` may report `ready`, but the host correctly refuses
+to advertise X11 input for that session type. Restore `x11` only after confirming
+the target is a native X11 session; do not force it for Wayland/XWayland.
+
+The selected monitor's Electron bounds are converted into an X root pixel
+rectangle. The helper validates that rectangle against the live root; pointer
+fractions stay within it, preserving any positive framebuffer margins. Mixed-scale
+or negative-origin/DIP-relative monitor layouts are not advertised as controllable
+until native RandR reconciliation is available, rather than guessing root coordinates.
+Any output layout change retires
+this desktop lease, without resetting device-link or other peers. This path
+requires an already running, authorized user X session; it does not provide
+pre-login access, lock-screen bypass, X11 privacy screens or new clipboard/audio
+capabilities. Other Wayland compositors retain their existing view-only behavior.
+
+The X11 helper uses XKB physical key names and XTEST event injection. Committed
+text travels only over its private stdin, not the clipboard, process arguments or
+logs. Text is limited to characters expressible by the current X keymap; an
+unsupported character rejects the batch before injection. Arbitrary Unicode text
+(such as Chinese text on a US keymap) is not supported by this backend. It never
+temporarily changes the global keymap: restoring a map after a fixed delay cannot
+prove the focused client consumed the character. Physical local input and other
+applications remain outside Cindy's input-ownership guard.
+
+Build dependencies for this backend are `cc`, `pkg-config`, and development
+headers/libraries for `x11`, `xtst`, `xkbcommon` and `json-c`. Forge builds and packages both
+Linux input helpers; source builds compile only the selected backend into the
+existing userData native cache. On Debian/Ubuntu the additional X11 packages are
+`libx11-dev`, `libxtst-dev` and `libxkbcommon-dev`; the Xvfb test also needs
+`xvfb` and `xauth`.
+Explicit native integration check, using a disposable X server rather than the
+user's desktop:
+
+```sh
+xvfb-run -a node --test apps/desktop/native/remote-desktop/linux-input/x11-test.mjs
+```
+
+The native test observes actual X events, unchanged keymaps, runtime key-name
+updates and unsupported-text rejection, not only helper ACKs. Linux CI runs it separately from unit tests, alongside the existing Wayland
+parser check. Windows-hosted unit tests cover backend selection, capability and
+control admission, selected-monitor mapping, stale-layout refusal and release.
+Native compilation and both explicit input tests passed on Ubuntu 26.04 x86_64
+with Node 22.23.1 and Xvfb 21.1.23 in an isolated Nix build environment. The
+parser check also covers json-c 0.18's signed-byte strict parsing issue: valid
+raw UTF-8 is normalized to equivalent JSON Unicode escapes, while malformed
+UTF-8 and invalid JSON escapes remain rejected. A locally packaged Global Linux
+x64 build was also started in an isolated profile on XFCE/Xorg, and a user
+confirmed remote desktop operation from a Windows Desktop viewer after restoring
+the graphical session environment. That build depends on the host's Nix libraries;
+it is not a portable release artifact. Mobile end-to-end operation, other desktop
+environments and portable release packages remain unverified. Xvfb success alone
+does not establish that a particular real desktop or packaged build is controllable.
+
 ## Platform and verification limits
 
 macOS uses a signed Swift helper; Windows uses a Rust helper with Win32 SendInput.
 Forge builds and packages them through the existing tools signing paths. Linux
-Hyprland uses the Wayland virtual input helper described above; other Linux
-paths remain view-only. No helper bypasses OS security boundaries:
+Hyprland uses the Wayland virtual input helper described above; native X11 uses
+the XTEST backend. Other Linux Wayland paths remain view-only. No helper bypasses OS security boundaries:
 Windows secure desktop/UAC and elevated applications can reject input, and
 macOS lock/login screens and protected surfaces are not guaranteed controllable.
 System audio and explicit clipboard transfers are supported when advertised by the host. Virtual displays and remote power-on are not included. The phone keyboard sends committed text directly; the computer keyboard supplies modifiers and special keys.

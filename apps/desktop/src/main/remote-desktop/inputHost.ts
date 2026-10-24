@@ -10,7 +10,12 @@ import type {
   RemoteDesktopDisplayMode,
 } from '@cindy/device-link';
 import { HumanDesktopInput } from './inputOwnership';
-import { resolveLinuxInputBinary } from './linuxInput';
+import {
+  linuxInputBackend,
+  linuxX11Geometry,
+  resolveLinuxInputBinary,
+  type LinuxInputBackend,
+} from './linuxInput';
 import { readLinuxUnlockState } from './linuxCredentials';
 import { WAYLAND_DISPLAY_ID } from './waylandCapture';
 import {
@@ -214,12 +219,14 @@ export class DesktopInputHost {
   private stopping: Promise<void> = Promise.resolve();
   private privacyPaused = false;
   private linuxPoint: ((x: number, y: number) => { x: number; y: number }) | null = null;
+  private x11Geometry: string[] | null = null;
   /** 代输入 live view: the helper confines input to this window and maps 0–1 fractions itself. */
   private window: { windowId: number; pid: number } | null = null;
   constructor(
     private readonly onFailure: () => void,
     private readonly runtime: {
       platform?: NodeJS.Platform;
+      linuxBackend?: LinuxInputBackend;
       resolveBinary(): Promise<string>;
       spawn(binary: string, args?: string[]): ChildProcessWithoutNullStreams;
     } = {
@@ -248,12 +255,17 @@ export class DesktopInputHost {
         window.pid <= 0)
     )
       throw new Error('DESKTOP_INPUT_UNSUPPORTED');
-    if (
-      platform === 'linux' &&
-      displayId !== WAYLAND_DISPLAY_ID &&
-      !/^hyprland:[A-Za-z0-9_.-]{1,80}$/.test(displayId)
-    )
-      throw new Error('DESKTOP_DISPLAY_MISSING');
+    const linuxBackend =
+      platform === 'linux' ? (this.runtime.linuxBackend ?? linuxInputBackend(platform)) : null;
+    if (platform === 'linux') {
+      if (!linuxBackend) throw new Error('DESKTOP_INPUT_UNSUPPORTED');
+      if (
+        linuxBackend === 'wayland' &&
+        displayId !== WAYLAND_DISPLAY_ID &&
+        !/^hyprland:[A-Za-z0-9_.-]{1,80}$/.test(displayId)
+      )
+        throw new Error('DESKTOP_DISPLAY_MISSING');
+    }
     // A replacement helper is not usable until its ready handshake completes.
     // In particular, canceling a privacy confirmation must keep dropping input
     // throughout teardown, binary preparation and startup, without losing control.
@@ -263,7 +275,9 @@ export class DesktopInputHost {
     if (generation !== this.generation) throw new Error('DESKTOP_LEASE_EXPIRED');
     this.activity = new HumanDesktopInput();
     try {
-      if (platform === 'linux' && displayId !== WAYLAND_DISPLAY_ID) {
+      this.x11Geometry =
+        linuxBackend === 'x11' ? linuxX11Geometry(screen.getAllDisplays(), displayId) : null;
+      if (linuxBackend === 'wayland' && displayId !== WAYLAND_DISPLAY_ID) {
         this.linuxPoint = linuxInputMapping(await linuxMonitors(), displayId);
         if (generation !== this.generation) throw new Error('DESKTOP_LEASE_EXPIRED');
       } else this.linuxPoint = null;
@@ -288,7 +302,9 @@ export class DesktopInputHost {
       if (generation !== this.generation) throw new Error('DESKTOP_LEASE_EXPIRED');
       const child = window
         ? this.runtime.spawn(binary, ['--window', String(window.windowId), String(window.pid)])
-        : this.runtime.spawn(binary);
+        : this.x11Geometry
+          ? this.runtime.spawn(binary, this.x11Geometry)
+          : this.runtime.spawn(binary);
       this.child = child;
       this.displayId = displayId;
       this.window = window ? { windowId: window.windowId, pid: window.pid } : null;
@@ -347,7 +363,13 @@ export class DesktopInputHost {
     if (this.privacyPaused) return;
     if ((this.runtime.platform ?? process.platform) === 'linux') {
       if (!this.child) throw new Error('DESKTOP_INPUT_UNAVAILABLE');
-      // Native text is paced for Wayland clients/IMEs. Bound each acknowledged
+      if (
+        this.x11Geometry &&
+        linuxX11Geometry(screen.getAllDisplays(), this.displayId).join(',') !==
+          this.x11Geometry.join(',')
+      )
+        throw new Error('DESKTOP_DISPLAY_MISSING');
+      // Native text is paced for desktop clients/IMEs. Bound each acknowledged
       // command so long phone pastes cannot exceed the helper heartbeat timeout.
       let pending: DesktopInput[] = [];
       const flush = () => {
@@ -371,7 +393,7 @@ export class DesktopInputHost {
         }
       }
       flush();
-      return; // Wayland's virtual pointer maps normalized coordinates to the output layout.
+      return; // The backend maps fractions to the selected X11 rectangle or Wayland layout.
     }
     if (this.window) {
       // The helper places fractions on the window's live frame and drops what falls outside.
@@ -499,6 +521,8 @@ export class DesktopInputHost {
     this.generation++;
     this.privacyPaused = false;
     this.window = null;
+    this.linuxPoint = null;
+    this.x11Geometry = null;
     this.acknowledge?.(new Error('DESKTOP_LEASE_EXPIRED'));
     const windows = this.windows;
     const writing = this.writing;

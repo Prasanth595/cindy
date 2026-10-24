@@ -1003,16 +1003,23 @@ function buildRemoteDesktopInput(platform: ForgePlatform, arch: ForgeArch): void
       throw new Error('Linux desktop input requires a native architecture build');
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-linux-input-'));
     try {
-      const result = spawnSync(
-        process.execPath,
-        [path.join(__dirname, 'native', 'remote-desktop', 'linux-input', 'build.mjs'), temporary],
-        { stdio: 'inherit' },
-      );
-      if (result.error || result.status !== 0) throw new Error('Linux desktop input build failed');
-      fs.copyFileSync(
-        path.join(temporary, 'cindy-linux-desktop-input'),
-        path.join(destDir, 'cindy-linux-desktop-input'),
-      );
+      for (const [backend, binary] of [
+        ['wayland', 'cindy-linux-desktop-input'],
+        ['x11', 'cindy-linux-x11-desktop-input'],
+      ]) {
+        const result = spawnSync(
+          process.execPath,
+          [
+            path.join(__dirname, 'native', 'remote-desktop', 'linux-input', 'build.mjs'),
+            temporary,
+            backend,
+          ],
+          { stdio: 'inherit' },
+        );
+        if (result.error || result.status !== 0)
+          throw new Error(`Linux desktop input build failed (${backend})`);
+        fs.copyFileSync(path.join(temporary, binary), path.join(destDir, binary));
+      }
       const capture = spawnSync(
         process.execPath,
         [path.join(__dirname, 'native', 'remote-desktop', 'linux-capture', 'build.mjs'), temporary],

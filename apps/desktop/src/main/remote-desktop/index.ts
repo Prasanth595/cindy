@@ -60,7 +60,7 @@ import { encodeDesktopFrame, encodeNativeRelayFrame } from './frame';
 import { transferDesktopClipboard, transferDesktopClipboardContent } from './clipboard';
 import { NativeDesktopCapture } from './nativeCapture';
 import { HyprlandCapture, supportsHyprlandCapture } from './hyprlandCapture';
-import { readLinuxDesktopInputSupport } from './linuxInput';
+import { linuxInputBackend, readLinuxDesktopInputSupport } from './linuxInput';
 import { LinuxDesktopAudio, supportsLinuxAudio } from './linuxAudio';
 import { isLinuxDesktopUnlocked } from './linuxSessionLock';
 import { supportsLinuxClipboard, stopLinuxClipboardWriter } from './linuxClipboardNative';
@@ -758,7 +758,9 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
       canControl:
         process.platform === 'darwin' ||
         process.platform === 'win32' ||
-        (enabled && nativeWayland() && (await readLinuxDesktopInputSupport())),
+        (enabled &&
+          (nativeWayland() || linuxInputBackend() === 'x11') &&
+          (await readLinuxDesktopInputSupport())),
       platform: process.platform,
       ...(enabled ? { permissions: await permissions.read() } : {}),
       displays:
@@ -921,7 +923,8 @@ export const remoteDesktop: RemoteDesktopController = new RemoteDesktopControlle
     // Never allow a forged control request to drive that view-only fallback.
     if (
       process.platform === 'linux' &&
-      (!nativeWayland() || !(await readLinuxDesktopInputSupport()))
+      ((!nativeWayland() && linuxInputBackend() !== 'x11') ||
+        !(await readLinuxDesktopInputSupport()))
     )
       throw new Error('DESKTOP_INPUT_UNSUPPORTED');
     if (window) await input.start(displayId, { windowId: window.windowId, pid: window.pid });
@@ -987,7 +990,14 @@ export function registerRemoteDesktopIpc(
   });
   onQuit('remote-desktop-restore', () => remoteDesktop.stopAndRestore(), 'async');
   const linuxLayoutChanged = () => {
-    if (!nativeWayland() || remoteDesktop.changingDisplay || !remoteDesktop.displayId) return;
+    if (remoteDesktop.changingDisplay || !remoteDesktop.displayId) return;
+    if (linuxInputBackend() === 'x11') {
+      // Any output moving changes the root-pixel mapping, even if the selected
+      // display kept its size. Retire only this desktop lease before new input.
+      remoteDesktop.stop(undefined, undefined, 'display-changed');
+      return;
+    }
+    if (!nativeWayland()) return;
     const generation = offerGeneration,
       id = remoteDesktop.displayId;
     // The virtual pointer covers the entire layout: even another output moving
