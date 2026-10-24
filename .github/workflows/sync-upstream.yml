@@ -1,0 +1,27 @@
+name: Sync from upstream
+on:
+  schedule:
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge upstream changes
+        run: |
+          set -e
+          git remote add upstream "https://github.com/makecindy/cindy.git" 2>/dev/null || true
+          git fetch upstream --prune
+          BRANCH=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+          git checkout "$BRANCH"
+          if git merge --ff-only "upstream/$BRANCH"; then
+            echo "Fast-forwarded to upstream"
+          else
+            git merge "upstream/$BRANCH" -m "chore: sync with upstream $(date -u +%Y-%m-%d)"
+          fi
+          git push origin "$BRANCH"
