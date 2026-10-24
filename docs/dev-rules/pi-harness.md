@@ -494,7 +494,9 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
       (已知形态:Console Go / OpenCode Zen-Go 的 GLM 上游拒收 `prompt_cache_retention`,提示改用
       `prompt_cache_options`;自定义政企/内网网关只拒 `prompt_cache_key`
       ，见 issue #5878),Pi translator 打稳定 reason `unsupported-request-option`。
-      仅接受被点名字段与明确拒收关系；普通 400、鉴权、限流、其他参数错误不学习。
+      仅接受被点名字段与明确拒收关系；结构化错误的 `param` 缺省或为 null 均表示未指定参数，
+      非 null 时仍须指向这两个缓存字段之一（含 null 的标准错误体见 issue #6570）。
+      普通 400、鉴权、限流、其他参数错误不学习。
       Desktop 先将 `supportsLongCacheRetention: false` 原子记入
       `<userData>/pi-native-compat-overrides.json` 的 `routes` 表；键为 JSON 数组
       `[连接 ID, wire 模型 ID, SHA256(协议 + 真实端点)]`，端点包含路径、端口、查询参数，
