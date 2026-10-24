@@ -281,6 +281,8 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
     for (const ch of [
       'worktree:detect-cwd',
       'worktree:list-branches',
+      'worktree:branch-sync-status',
+      'worktree:sync-branch',
       'worktree:suggest-name',
       'worktree:create',
       'worktree:discard-precreated',

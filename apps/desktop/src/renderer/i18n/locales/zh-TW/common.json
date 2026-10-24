@@ -11330,6 +11330,35 @@
           "prompt": "幫我為這封郵件寫一份回覆草稿，結合郵件往來和我的想法，先不寄送。"
         }
       }
+    },
+    "branchSync": {
+      "action": "從 {{remote}} 取得 {{remoteBranch}} 的最新提交，並更新本機 {{branch}}",
+      "remoteAction": "從 {{remote}} 取得 {{remoteBranch}} 的最新提交",
+      "checkedOut": "{{branch}} 正在「{{directory}}」中使用，那裡的檔案會一起更新，你尚未提交的變更不受影響",
+      "fetching": "正在從 {{remote}} 取得更新…",
+      "updated": "已更新 {{count}} 個提交",
+      "current": "已是最新",
+      "keptAhead": "本機有 {{count}} 個提交尚未推送，保留本機版本",
+      "failed": "上次取得更新失敗：{{reason}}，點擊重試",
+      "diverged": "本機 {{branch}} 和 {{remote}} 上的 {{remoteBranch}} 各有新提交，無法自動更新。新 worktree 會使用本機 {{branch}}",
+      "conflict": "尚未提交的變更與遠端更新涉及相同檔案，無法更新。請先提交，或使用 git stash 收起變更",
+      "missing-remote": "{{remote}} 上沒有 {{remoteBranch}}",
+      "no-remote": "這個專案沒有設定遠端儲存庫",
+      "not-local": "請先選擇本機分支或遠端主分支",
+      "ahead": "領先 {{remote}} {{count}} 個提交",
+      "behind": "落後 {{remote}} {{count}} 個提交",
+      "dirty": "尚未提交 {{count}} 個檔案",
+      "remoteGroup": "遠端",
+      "localGroup": "本機分支",
+      "errors": {
+        "git": "Git 無法更新分支，請檢查儲存庫存取權限後重試",
+        "timeout": "Git 操作逾時，請檢查網路連線後重試",
+        "auth": "Git 認證失敗，請檢查遠端儲存庫憑證",
+        "network": "無法連線至遠端儲存庫，請檢查網路連線",
+        "missing": "遠端分支已不存在",
+        "busy": "儲存庫正在更新或已變更，請等其他 Git 操作完成後重試",
+        "changed": "檢出的分支已變更，請重試"
+      }
     }
   },
   "onboarding": {

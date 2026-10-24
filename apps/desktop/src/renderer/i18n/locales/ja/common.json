@@ -11330,6 +11330,35 @@
           "prompt": "このメールへの返信の下書きを作って。これまでのやり取りと私の考えを踏まえて、まだ送信しないで。"
         }
       }
+    },
+    "branchSync": {
+      "action": "{{remote}} から {{remoteBranch}} の最新コミットを取得し、ローカルの {{branch}} を更新",
+      "remoteAction": "{{remote}} から {{remoteBranch}} の最新コミットを取得",
+      "checkedOut": "{{branch}} は「{{directory}}」で使用中です。そのファイルも更新されます。未コミットの変更は保持されます。",
+      "fetching": "{{remote}} から取得中…",
+      "updated": "{{count}} コミット更新しました",
+      "current": "すでに最新です",
+      "keptAhead": "未プッシュの {{count}} コミットを含むローカル版を保持します",
+      "failed": "前回の取得に失敗：{{reason}}。クリックして再試行。",
+      "diverged": "ローカルの {{branch}} と {{remote}}/{{remoteBranch}} は分岐しており、自動更新できません。新しい worktree はローカルの {{branch}} を使用します。",
+      "conflict": "未コミットの変更とリモートの更新が同じファイルにあります。先にコミットするか、git stash で変更を退避してください。",
+      "missing-remote": "{{remote}} に {{remoteBranch}} がありません",
+      "no-remote": "このプロジェクトにリモートリポジトリはありません",
+      "not-local": "ローカルブランチまたはリモートの既定ブランチを選択してください",
+      "ahead": "{{remote}} より {{count}} コミット先行",
+      "behind": "{{remote}} より {{count}} コミット遅れ",
+      "dirty": "未コミットのファイル {{count}} 件",
+      "remoteGroup": "リモート",
+      "localGroup": "ローカルブランチ",
+      "errors": {
+        "git": "Git でブランチを更新できません。リポジトリへのアクセスを確認して再試行してください。",
+        "timeout": "Git がタイムアウトしました。接続を確認して再試行してください。",
+        "auth": "Git の認証に失敗しました。リモートの認証情報を確認してください。",
+        "network": "リモートリポジトリに接続できません。接続を確認してください。",
+        "missing": "リモートブランチは存在しません。",
+        "busy": "リポジトリが変更されたか使用中です。他の Git 操作の完了後に再試行してください。",
+        "changed": "チェックアウト中のブランチが変更されました。再試行してください。"
+      }
     }
   },
   "onboarding": {

@@ -11330,6 +11330,35 @@
           "prompt": "帮我为这封邮件写一份回复草稿，结合邮件往来和我的想法，先不发送。"
         }
       }
+    },
+    "branchSync": {
+      "action": "从 {{remote}} 拉取 {{remoteBranch}} 的最新提交，并更新本地 {{branch}}",
+      "remoteAction": "从 {{remote}} 拉取 {{remoteBranch}} 的最新提交",
+      "checkedOut": "{{branch}} 正在「{{directory}}」里使用，那里的文件会一起更新，你没提交的改动不受影响",
+      "fetching": "正在从 {{remote}} 拉取…",
+      "updated": "已更新 {{count}} 个提交",
+      "current": "已是最新",
+      "keptAhead": "本地有 {{count}} 个提交还没推送，保留本地版本",
+      "failed": "上次拉取失败：{{reason}}，点击重试",
+      "diverged": "本地 {{branch}} 和 {{remote}} 上的 {{remoteBranch}} 各有新提交，没法自动更新。新 worktree 会用本地 {{branch}}",
+      "conflict": "你还没提交的改动和远程的更新涉及同一批文件，没法更新。可以先提交，或者用 git stash 把改动收起来",
+      "missing-remote": "{{remote}} 上没有 {{remoteBranch}}",
+      "no-remote": "这个项目没有设置远程仓库",
+      "not-local": "请先选择本地分支或远程主分支",
+      "ahead": "领先 {{remote}} {{count}} 个提交",
+      "behind": "落后 {{remote}} {{count}} 个提交",
+      "dirty": "未提交 {{count}} 个文件",
+      "remoteGroup": "远程",
+      "localGroup": "本地分支",
+      "errors": {
+        "git": "Git 无法更新分支，请检查仓库访问权限后重试",
+        "timeout": "Git 操作超时，请检查网络连接后重试",
+        "auth": "Git 认证失败，请检查远程仓库凭证",
+        "network": "无法连接远程仓库，请检查网络连接",
+        "missing": "远程分支已不存在",
+        "busy": "仓库正在更新或已发生变化，请等其它 Git 操作完成后重试",
+        "changed": "检出的分支已变化，请重试"
+      }
     }
   },
   "onboarding": {

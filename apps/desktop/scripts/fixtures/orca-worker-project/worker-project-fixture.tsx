@@ -191,7 +191,10 @@ void mountPage({
         },
       },
     },
+    worktreeBranchSyncStatus: async ({ branch }: { branch: string }) => ({ branch, remote: 'origin', remoteBranch: branch, remoteOnly: false, ahead: 0, behind: 3, dirtyFiles: 2, checkoutPath: inherited.directory }),
+    worktreeSyncBranch: async ({ branch }: { branch: string }) => ({ updated: 3, status: { branch, remote: 'origin', remoteBranch: branch, remoteOnly: false, ahead: 0, behind: 0, dirtyFiles: 2 } }),
     worktreeListBranches: async () => ({
+      remoteDefaultBranch: 'refs/remotes/origin/main',
       branches: ['main', 'feat/worker-project-picker', 'release/v2'],
     }),
   }),

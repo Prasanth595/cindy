@@ -356,6 +356,7 @@ const PATH_GUARDED_CHANNELS: ReadonlyMap<string, 'workingDir' | 'baseRepo'> = ne
   // 协同远端 Worker 指定本机目录时同口径收敛；不指定则由本机分配任务目录。
   [ORCA_REMOTE_WORKER_OPEN_CHANNEL, 'workingDir'],
   ['worktree:create', 'baseRepo'],
+  ['worktree:sync-branch', 'baseRepo'],
 ]);
 
 type RemoteWorkingDirGuardValue = boolean | RemoteWorkingDirCheckResult;

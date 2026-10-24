@@ -11365,6 +11365,35 @@
           "prompt": "Draft a reply to this email, taking the conversation and my thoughts into account. Don't send it yet."
         }
       }
+    },
+    "branchSync": {
+      "action": "Fetch the latest commits for {{remoteBranch}} from {{remote}} and update local {{branch}}",
+      "remoteAction": "Fetch the latest commits for {{remoteBranch}} from {{remote}}",
+      "checkedOut": "{{branch}} is checked out in “{{directory}}”. Its files will also update; your uncommitted changes will be preserved.",
+      "fetching": "Fetching from {{remote}}…",
+      "updated": "Updated by {{count}} commits",
+      "current": "Already up to date",
+      "keptAhead": "Keeping the local version with {{count}} unpushed commits",
+      "failed": "Last fetch failed: {{reason}}. Click to retry.",
+      "diverged": "Local {{branch}} and {{remote}}/{{remoteBranch}} have diverged and cannot update automatically. The new worktree will use local {{branch}}.",
+      "conflict": "Your uncommitted changes overlap the remote updates. Commit them or use git stash before updating.",
+      "missing-remote": "{{remoteBranch}} does not exist on {{remote}}",
+      "no-remote": "This project has no remote repository",
+      "not-local": "Select a local branch or the remote default branch",
+      "ahead": "{{count}} commits ahead of {{remote}}",
+      "behind": "{{count}} commits behind {{remote}}",
+      "dirty": "{{count}} uncommitted files",
+      "remoteGroup": "Remote",
+      "localGroup": "Local branches",
+      "errors": {
+        "git": "Git could not update the branch. Check repository access and retry.",
+        "timeout": "Git timed out. Check the connection and retry.",
+        "auth": "Git authentication failed. Check remote credentials.",
+        "network": "Could not connect to the remote repository. Check the connection.",
+        "missing": "The remote branch no longer exists.",
+        "busy": "The repository changed or is busy. Retry after the other Git operation finishes.",
+        "changed": "The checked-out branch changed. Retry."
+      }
     }
   },
   "onboarding": {
