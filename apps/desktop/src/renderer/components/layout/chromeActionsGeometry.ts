@@ -10,6 +10,9 @@ export const CHROME_ACTIONS_GEOMETRY = {
   defaultLeft: 8,
   /** macOS 非全屏时，按钮簇为红绿灯预留空间后的左偏移。 */
   macTrafficLightLeft: 78,
-  /** 两个 28px 按钮加 4px 间距的总宽度。 */
-  clusterWidth: 60,
+  /**
+   * 四个 28px 按钮加 4px 间距的总宽度：折叠、菜单、浏览历史后退与前进。
+   * 加删按钮时同步改这里，挖洞与占位都跟着它。
+   */
+  clusterWidth: 124,
 } as const;

@@ -6091,6 +6091,14 @@
           "label": "Toggle sidebar",
           "description": "Collapse or expand the session list sidebar"
         },
+        "session-history-back": {
+          "label": "Previous task",
+          "description": "Go back to the task you viewed before"
+        },
+        "session-history-forward": {
+          "label": "Next task",
+          "description": "Go forward to the task you viewed next"
+        },
         "open-settings": {
           "label": "Open settings",
           "description": "Open the settings page"
@@ -8193,6 +8201,10 @@
   },
   "titleBar": {
     "menu": "Menu",
+    "historyBack": "Back to previous task",
+    "historyForward": "Forward to next task",
+    "historyBackUnavailable": "No previous task",
+    "historyForwardUnavailable": "No next task",
     "minimize": "Minimize",
     "maximizeOrRestore": "Maximize or Restore Window",
     "close": "Close",

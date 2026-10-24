@@ -6060,6 +6060,14 @@
           "label": "사이드바 전환",
           "description": "왼쪽 세션 목록을 접거나 펼칩니다"
         },
+        "session-history-back": {
+          "label": "이전 세션",
+          "description": "탐색 순서대로 이전에 열었던 세션으로 돌아갑니다"
+        },
+        "session-history-forward": {
+          "label": "다음 세션",
+          "description": "탐색 순서대로 다음에 열었던 세션으로 이동합니다"
+        },
         "open-settings": {
           "label": "설정 열기",
           "description": "설정 페이지를 엽니다"
@@ -8161,6 +8169,10 @@
   },
   "titleBar": {
     "menu": "메뉴",
+    "historyBack": "이전 세션으로 돌아가기",
+    "historyForward": "다음 세션으로 이동",
+    "historyBackUnavailable": "이전 세션이 없습니다",
+    "historyForwardUnavailable": "다음 세션이 없습니다",
     "minimize": "최소화",
     "maximizeOrRestore": "창 최대화 또는 복원",
     "close": "닫기",

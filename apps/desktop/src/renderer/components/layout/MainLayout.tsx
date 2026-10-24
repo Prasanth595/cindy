@@ -1703,8 +1703,9 @@ export function MainLayout() {
                 }}
               >
                 {/* showCollapsedActions: 完全隐藏(isSidebarCollapsed)**和** rail 态(isRailMode)
-                    都要为浮动 ChromeActions 簇预留 68px 占位 —— rail 下侧栏仅 64px,chrome 簇
-                    贴在 rail 右缘(见上方 sidebarWidth),不留占位会压住会话标题左侧。 */}
+                    都要为浮动 ChromeActions 簇预留占位(CHROME_ACTIONS_GEOMETRY.clusterWidth + 8)
+                    —— rail 下侧栏仅 64px,chrome 簇贴在 rail 右缘(见上方 sidebarWidth),
+                    不留占位会压住会话标题左侧。 */}
                 {/* rail 态在 sidebarVisible 口径里视同"不可见"(codex review): 否则 mac 无
                     headerContent 路由下 ContentHeader 会因 sidebarVisible=true 提前 return null,
                     我们为 rail 浮动 chrome 预留的 spacer 不渲染、按钮悬空。 */}

@@ -6060,6 +6060,14 @@
           "label": "切換側邊欄",
           "description": "收起或展開左側任務列表"
         },
+        "session-history-back": {
+          "label": "上一個任務",
+          "description": "依瀏覽順序回到上一個開啟的任務"
+        },
+        "session-history-forward": {
+          "label": "下一個任務",
+          "description": "依瀏覽順序前往下一個任務"
+        },
         "open-settings": {
           "label": "開啟設定",
           "description": "開啟設定頁面"
@@ -8161,6 +8169,10 @@
   },
   "titleBar": {
     "menu": "選單",
+    "historyBack": "瀏覽上一個任務",
+    "historyForward": "瀏覽下一個任務",
+    "historyBackUnavailable": "沒有上一個任務",
+    "historyForwardUnavailable": "沒有下一個任務",
     "minimize": "最小化",
     "maximizeOrRestore": "最大化或還原視窗",
     "close": "關閉",

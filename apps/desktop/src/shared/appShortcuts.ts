@@ -34,6 +34,8 @@ export type AppShortcutScope = 'app' | 'workdir-doc' | 'browser' | 'composer';
 
 export const APP_SHORTCUT_IDS = [
   'toggle-sidebar',
+  'session-history-back',
+  'session-history-forward',
   'open-settings',
   'new-maker',
   'close-tab-or-window',
@@ -156,6 +158,25 @@ export const APP_SHORTCUT_DEFINITIONS: ReadonlyArray<AppShortcutDefinition> = [
     descriptionKey: 'settings.shortcuts.items.toggle-sidebar.description',
     rebindable: true,
     getDefaultCombos: (platform) => [modCombo('KeyB', platform)],
+  },
+  // 任务浏览栈的前进/后退: 与浏览器同一惯例 (⌘[ / ⌘]), 在 ChromeActions
+  // 的左上按钮簇里消费。raw 按键在 macOS 上不会被系统菜单吃掉
+  // (keyboardReserved 不含 Bracket*), webview 内的 ⌘[ 留给浏览器自己的后退。
+  {
+    id: 'session-history-back',
+    scope: 'app',
+    labelKey: 'settings.shortcuts.items.session-history-back.label',
+    descriptionKey: 'settings.shortcuts.items.session-history-back.description',
+    rebindable: true,
+    getDefaultCombos: (platform) => [modCombo('BracketLeft', platform)],
+  },
+  {
+    id: 'session-history-forward',
+    scope: 'app',
+    labelKey: 'settings.shortcuts.items.session-history-forward.label',
+    descriptionKey: 'settings.shortcuts.items.session-history-forward.description',
+    rebindable: true,
+    getDefaultCombos: (platform) => [modCombo('BracketRight', platform)],
   },
   {
     id: 'cycle-permission-mode',

@@ -164,18 +164,21 @@ export function ContentHeader({
       {/* 折叠态占位 spacer：真实按钮在 MainLayout 的 ChromeActions 浮层里
           （钉死左上角、不随折叠重建的常驻实例）。本 spacer 以与侧栏宽度动画
           相同的时长/缓动伸缩，把标题平滑推到浮动按钮右侧（项目规则 8）。
-          68px = 折叠按钮 28 + gap 4 + 菜单 28 + 与标题间隙 8。
+          簇宽 + 8 = 折叠 / 菜单 / 后退 / 前进四个 28px 按钮 + 与标题间隙 8，
+          跟 CHROME_ACTIONS_GEOMETRY 一起变。
           ⚠️ spacer 自身必须 no-drag：Electron 的拖拽区域挖洞只在"drag 元素
           自己的后代"上可靠生效，浮层（非后代）的 no-drag 不被计入 ——
           否则浮层按钮点击会被窗口拖拽吞掉。 */}
       <div
         aria-hidden
-        className={cn(
-          'h-full shrink-0 overflow-hidden',
-          'transition-[max-width] duration-[250ms] ease-[cubic-bezier(0.4,0,0.2,1)]',
-          showCollapsedActions ? 'max-w-[68px] w-[68px]' : 'max-w-0 w-[68px]',
-        )}
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        className="h-full shrink-0 overflow-hidden transition-[max-width] duration-[250ms] ease-[cubic-bezier(0.4,0,0.2,1)]"
+        style={
+          {
+            WebkitAppRegion: 'no-drag',
+            width: CHROME_ACTIONS_GEOMETRY.clusterWidth + 8,
+            maxWidth: showCollapsedActions ? CHROME_ACTIONS_GEOMETRY.clusterWidth + 8 : 0,
+          } as React.CSSProperties
+        }
       />
 
       {/* 中部：feature 注入的 slot 内容。容器保持 drag，注入内容里的交互
