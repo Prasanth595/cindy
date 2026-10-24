@@ -413,7 +413,29 @@ interface PendingBatchEntry {
 }
 // workingDir → (href → waiters). Swapped for a fresh Map on each flush.
 let pendingBatch = new Map<string, Map<string, PendingBatchEntry>>();
+// Same shape for re-checks of cached negative answers; flushed in the same
+// microtask as one `revalidateNegative` IPC per workingDir.
+let pendingRevalidateBatch = new Map<string, Map<string, PendingBatchEntry>>();
 let flushScheduled = false;
+
+function enqueueBatch(
+  batches: Map<string, Map<string, PendingBatchEntry>>,
+  workingDir: string,
+  href: string,
+  resolve: (result: SmartResolveResult) => void,
+): void {
+  let hrefMap = batches.get(workingDir);
+  if (!hrefMap) {
+    hrefMap = new Map();
+    batches.set(workingDir, hrefMap);
+  }
+  let entry = hrefMap.get(href);
+  if (!entry) {
+    entry = { resolvers: [] };
+    hrefMap.set(href, entry);
+  }
+  entry.resolvers.push(resolve);
+}
 
 /** Convert one main-process batch entry into a SmartResolveResult. */
 function smartResultFromBatch(
@@ -455,6 +477,7 @@ function settleSmartResult(
   const key = smartResolveCacheKey(workingDir, href);
   storeSmartResult(key, result);
   smartResolveInflight.delete(key);
+  smartRevalidateInflight.delete(key);
   const entry = hrefMap.get(href);
   if (entry) for (const resolve of entry.resolvers) resolve(result);
 }
@@ -462,6 +485,7 @@ function settleSmartResult(
 async function runBatchForDir(
   workingDir: string,
   hrefMap: Map<string, PendingBatchEntry>,
+  revalidateNegative = false,
 ): Promise<void> {
   const hrefs = [...hrefMap.keys()];
   const api = (typeof window !== 'undefined' ? window.electronAPI : undefined) as
@@ -487,18 +511,28 @@ async function runBatchForDir(
   const lookups = [...new Set(lookupOf.values())];
 
   try {
-    const raw = await api.resolvePathBatch({ hrefs: lookups, workingDir });
+    const raw = await api.resolvePathBatch({
+      hrefs: lookups,
+      workingDir,
+      ...(revalidateNegative ? { revalidateNegative: true } : {}),
+    });
     for (const href of hrefs) {
       const result = smartResultFromBatch(href, workingDir, raw[lookupOf.get(href)!]);
       settleSmartResult(workingDir, href, hrefMap, result);
     }
   } catch {
-    // IPC failure shouldn't break clicks — every href falls back to legacy.
+    // IPC failure shouldn't break clicks — every href falls back to legacy. A
+    // failed re-check keeps the answer it was re-checking.
     for (const href of hrefs) {
-      settleSmartResult(workingDir, href, hrefMap, {
-        status: 'none',
-        fallbackAbsPath: resolveLocalPath(href, workingDir),
-      });
+      const kept = revalidateNegative
+        ? smartResolveCache.get(smartResolveCacheKey(workingDir, href))
+        : undefined;
+      settleSmartResult(
+        workingDir,
+        href,
+        hrefMap,
+        kept ?? { status: 'none', fallbackAbsPath: resolveLocalPath(href, workingDir) },
+      );
     }
   }
 }
@@ -506,9 +540,14 @@ async function runBatchForDir(
 function flushSmartResolveBatch(): void {
   flushScheduled = false;
   const batches = pendingBatch;
+  const rechecks = pendingRevalidateBatch;
   pendingBatch = new Map();
+  pendingRevalidateBatch = new Map();
   for (const [workingDir, hrefMap] of batches) {
     void runBatchForDir(workingDir, hrefMap);
+  }
+  for (const [workingDir, hrefMap] of rechecks) {
+    void runBatchForDir(workingDir, hrefMap, true);
   }
 }
 
@@ -536,17 +575,7 @@ export async function resolveLocalPathSmartCached(
   if (inflight) return inflight;
 
   const promise = new Promise<SmartResolveResult>((resolve) => {
-    let hrefMap = pendingBatch.get(workingDir);
-    if (!hrefMap) {
-      hrefMap = new Map();
-      pendingBatch.set(workingDir, hrefMap);
-    }
-    let entry = hrefMap.get(href);
-    if (!entry) {
-      entry = { resolvers: [] };
-      hrefMap.set(href, entry);
-    }
-    entry.resolvers.push(resolve);
+    enqueueBatch(pendingBatch, workingDir, href, resolve);
   });
   smartResolveInflight.set(key, promise);
   scheduleSmartResolveFlush();
@@ -558,7 +587,9 @@ export async function resolveLocalPathSmartCached(
  * before it is written, so negative answers are not final for embedded media:
  * callers re-check at their own boundaries (new mount, stream end, window
  * focus). The main process skips its TTL cache for these hrefs too, otherwise
- * it would hand back the same stale answer for 30s. Returns null when there is
+ * it would hand back the same stale answer for 30s. Re-checks registered within
+ * one microtask share one IPC (and one workspace walk) per workingDir, like the
+ * initial batch. Returns null when there is
  * nothing to re-check: no cached answer, a unique match, or a negative answer
  * from the last `NEGATIVE_RECHECK_MIN_MS`.
  */
@@ -577,17 +608,11 @@ export function revalidateNegativeLocalPathSmart(
     | undefined;
   if (!api?.resolvePathBatch) return null;
 
-  const lookup = href.startsWith('file://') ? resolveLocalPath(href, workingDir) : href;
-  const promise = api
-    .resolvePathBatch({ hrefs: [lookup], workingDir, revalidateNegative: true })
-    .then((raw) => smartResultFromBatch(href, workingDir, raw[lookup]))
-    .catch(() => cached)
-    .then((result) => {
-      storeSmartResult(key, result);
-      smartRevalidateInflight.delete(key);
-      return result;
-    });
+  const promise = new Promise<SmartResolveResult>((resolve) => {
+    enqueueBatch(pendingRevalidateBatch, workingDir, href, resolve);
+  });
   smartRevalidateInflight.set(key, promise);
+  scheduleSmartResolveFlush();
   return promise;
 }
 
@@ -598,6 +623,7 @@ export function _clearSmartResolveCache(): void {
   smartResolveCheckedAt.clear();
   smartRevalidateInflight.clear();
   pendingBatch = new Map();
+  pendingRevalidateBatch = new Map();
   flushScheduled = false;
 }
 

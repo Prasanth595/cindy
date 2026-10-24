@@ -351,6 +351,13 @@ interface MarkdownRendererProps {
    *  paths like TextLightbox bypass the throttle entirely). */
   isStreaming?: boolean;
   /**
+   * Whether the message holding embedded media is still streaming, when it differs
+   * from `isStreaming`: a cindy-ui image renders its Markdown statically inside a
+   * streaming answer. Missing media are re-checked when this turns false.
+   * Defaults to `isStreaming`.
+   */
+  mediaStreaming?: boolean;
+  /**
    * Stable identity of the streaming message. Keeps the word-fade timeline
    * across task-view remounts so already-rendered text cannot replay.
    */
@@ -1719,6 +1726,7 @@ const MarkdownRendererBase = memo(function MarkdownRendererBase({
   workingDir,
   content,
   isStreaming = false,
+  mediaStreaming,
   streamFadeKey,
   localFileRefs,
   currentSessionId,
@@ -1726,6 +1734,7 @@ const MarkdownRendererBase = memo(function MarkdownRendererBase({
   allowPrivilegedLinks = true,
   emitSourceLines = false,
 }: MarkdownRendererProps) {
+  const embeddedMediaStreaming = mediaStreaming ?? isStreaming;
   // Cap markdown re-parse + syntax highlight cost during streaming.
   // Static callers (TextLightbox) leave isStreaming undefined → false,
   // so the throttle is fully bypassed — same behavior as before.
@@ -1819,7 +1828,7 @@ const MarkdownRendererBase = memo(function MarkdownRendererBase({
             src={typeof rawLocalSrc === 'string' ? rawLocalSrc : src}
             workingDir={workingDir}
             enabled={resolveMediaInWorkspace}
-            streaming={isStreaming}
+            streaming={embeddedMediaStreaming}
           >
             {(localSrc) => {
               const normalized = normalizeMarkdownImageSrc(localSrc, workingDir, allowPrivilegedLinks);
@@ -1981,6 +1990,7 @@ const MarkdownRendererBase = memo(function MarkdownRendererBase({
       allowPrivilegedLinks,
       remoteMediaOrigin,
       resolveMediaInWorkspace,
+      embeddedMediaStreaming,
     ],
   );
 
@@ -2047,7 +2057,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer(props: MarkdownRe
   const sessionFileCtx = useChatSessionFile();
   const source = useStreamingThrottle(props.content, props.isStreaming ?? false);
   const renderMedia = (node: RichNode) => {
-    if (node.kind === 'image') return <MarkdownRendererBase {...props} content={richMarkdown(node) ?? ''} isStreaming={false} />;
+    if (node.kind === 'image') return <MarkdownRendererBase {...props} content={richMarkdown(node) ?? ''} isStreaming={false} mediaStreaming={props.isStreaming ?? false} />;
     const raw = richMediaSource(node);
     if (!raw) return null;
     if (node.kind === 'video' && youtubeVideo(raw)) return <VideoSitePreview src={raw} title={richString(node, 'alt', 'YouTube')} />;

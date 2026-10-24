@@ -87,7 +87,7 @@ describe('MarkdownRenderer managed video targets', () => {
 // 嵌入的播放器和图片就是坏的（路径 chip 却能靠任务目录搜索点亮）。本机会话里媒体要复用同一套
 // 解析：唯一命中换成真实文件，没有命中保持原拼接；远程会话不在本机搜索远端路径。
 describe('MarkdownRenderer workspace-relative media in local sessions', () => {
-  const richNode = (kind: 'video' | 'audio', src: string) => '```cindy-ui\n' + JSON.stringify({
+  const richNode = (kind: 'video' | 'audio' | 'image', src: string) => '```cindy-ui\n' + JSON.stringify({
     version: 1, seq: 1, op: 'create', id: 'm', kind, props: { src, alt: 'clip' },
   }) + '\n```';
   const richVideo = richNode('video', 'renders/out/clip.mp4');
@@ -183,6 +183,39 @@ describe('MarkdownRenderer workspace-relative media in local sessions', () => {
       expect(resolvePathBatch).toHaveBeenLastCalledWith({ hrefs: ['renders/out/clip.mp4'], workingDir: '/task', revalidateNegative: true });
     },
   );
+
+  // cindy-ui 图片在流式回答里按静态 Markdown 渲染，流式结束的时机要单独交给它。
+  it('finds a file written after the first lookup for a cindy-ui image when streaming ends', async () => {
+    const image = richNode('image', 'renders/out/still.png');
+    const { view, renderWith, resolvePathBatch } = mount(image, LOCAL, { 'renders/out/still.png': { status: 'none', candidates: [] } });
+    view.rerender(renderWith(undefined, true));
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/renders/out/still.png')));
+
+    later();
+    resolvePathBatch.mockResolvedValue(unique('renders/out/still.png'));
+    view.rerender(renderWith(undefined, false));
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/still.png')));
+  });
+
+  // 同一次重查里的多个媒体共用一次请求（主进程一次目录遍历），不按媒体个数各自遍历。
+  it('re-checks several missing media of one task in a single request', async () => {
+    const hrefs = ['renders/out/a.mp4', 'renders/out/b.mp4'];
+    const content = '```cindy-ui\n' + hrefs.map((src, i) => JSON.stringify({
+      ...(i === 0 ? { version: 1 } : {}), seq: i + 1, op: 'create', id: `m${i}`, kind: 'video', props: { src, alt: 'clip' },
+    })).join('\n') + '\n```';
+    const sources = (container: HTMLElement) =>
+      [...container.querySelectorAll('[data-testid="markdown-video"]')].map((el) => el.getAttribute('data-src'));
+    const { view, resolvePathBatch } = mount(content, LOCAL, Object.fromEntries(hrefs.map((h) => [h, { status: 'none', candidates: [] }])));
+    await waitFor(() => expect(sources(view.container)).toEqual(hrefs.map((h) => toLocalFileUrl(`/task/${h}`))));
+    expect(resolvePathBatch).toHaveBeenCalledTimes(1);
+
+    later();
+    resolvePathBatch.mockResolvedValue({ ...unique(hrefs[0]), ...unique(hrefs[1]) });
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(sources(view.container)).toEqual(hrefs.map((h) => toLocalFileUrl(`/task/film/${h}`))));
+    expect(resolvePathBatch).toHaveBeenCalledTimes(2);
+    expect(resolvePathBatch).toHaveBeenLastCalledWith({ hrefs, workingDir: '/task', revalidateNegative: true });
+  });
 
   it('does not search again for a unique match', async () => {
     const { view, resolvePathBatch } = mount(richVideo, LOCAL, unique('renders/out/clip.mp4'));
