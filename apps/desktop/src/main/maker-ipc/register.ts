@@ -1186,6 +1186,12 @@ import { refreshAnthropicModelsFromProbe } from '../maker-host/model-discovery/a
 import { refreshOpenAiMediaModels } from '../maker-host/model-discovery/openai-media.js';
 import { refreshXaiMediaModels } from '../maker-host/model-discovery/xai-media.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
+import {
+  readProviderAccountUsage,
+  setAccountUsageKeyReader,
+  setAccountUsageOwnerStampReader,
+  setAccountUsageProviderReader,
+} from '../maker-host/provider-account-usage.js';
 import { fetchProviderModels, fetchSavedOAuthProviderModels } from '../maker-host/provider-model-fetch.js';
 import { detectProviderDeployment } from '../maker-host/provider-detection.js';
 import {
@@ -1220,6 +1226,7 @@ import {
 } from '../maker-host/custom-provider-store.js';
 import {
   readCustomProviderHeadersForMutation,
+  readCustomProviderKey,
   readCustomProviderKeyForMutation,
   removeCustomProviderHeaders,
   removeCustomProviderKey,
@@ -7219,6 +7226,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     userDataDir: app.getPath('userData'),
   });
 
+  // 账户余额查询接线：目录读 active-catalog，key 与路由/诊断同源（provider_key_<id>_<agent>），
+  // 账号身份戳与订阅卡同源——换号后缓存整体失效。
+  setAccountUsageProviderReader((providerId) =>
+    getActiveCatalog().providers.find((p) => p.id === providerId));
+  setAccountUsageKeyReader((providerId, agent) => readCustomProviderKey(providerId, agent));
+  setAccountUsageOwnerStampReader(() => {
+    const session = getActiveAppSession();
+    return { dataOwnerId: session.dataOwnerId, generation: session.generation };
+  });
+
   registerProviderHandlers(createElectronIpcHandlerRegistry(), {
     listProviders: (opts) => getDesktopProviderService().listProviders(opts),
     isOrganizationManagedProviderId: (providerId) =>
@@ -7257,6 +7274,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getModelCatalog: () => getActiveCatalog(),
     testConnection: (input, signal) => testProviderConnection(input, undefined, signal),
     detectProvider: detectProviderDeployment,
+    accountUsage: (input) => readProviderAccountUsage(input),
     fetchModels: async (spec) => {
       if (spec.savedProviderId && subscriptionAccountKind(spec.savedProviderId)) {
         return { ok: await refreshSubscriptionAccountModels(spec.savedProviderId), models: [] };
