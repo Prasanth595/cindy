@@ -592,8 +592,62 @@ describe('retirement migration from the original plugin', () => {
     );
   });
 
+  // Unit regression, #7014 discussion_r4365645907: after the rename the real
+  // retirement action must reuse the old installed ID in the market namespace,
+  // including offline root installs, rather than offering a second installation.
+  it.each([
+    ['offline-legacy', false], ['offline-legacy', true],
+    ['offline', false], ['offline', true],
+    ['public', false], ['public', true],
+    ['organization', false], ['organization', true],
+  ] as const)('reuses the %s legacy replacement (enabled=%s)', async (source, enabled) => {
+    const namespace = source === 'organization' ? 'acme' : null;
+    const legacyManifest = {
+      ...replacement.manifest, id: 'baguette-simulator',
+      panel: { html: 'panel.html', position: 'tab' as const },
+    };
+    const installed = {
+      ...replacement, manifest: legacyManifest, namespace, enabled,
+      dir: source === 'offline-legacy' ? path.join('plugins', 'baguette-simulator')
+        : path.join('plugins', '_ns', namespace ?? '_root', 'baguette-simulator'),
+    };
+    const wrongNamespace = { ...installed, namespace: 'other', enabled: true,
+      dir: path.join('plugins', '_ns', 'other', 'baguette-simulator') };
+    const bridge = installFixture([old, wrongNamespace, installed]);
+    const install = vi.fn();
+    Object.assign(bridge.pluginMarket, { install });
+    bridge.pluginMarket.snapshot = async () => ({
+      items: source.startsWith('offline') ? [] : [{
+        ...detail, pluginId: 'cb93909aaa6ac600bbc2f6b8a',
+        ghostId: 'cindy-simulator', namespace,
+        scope: source === 'organization' ? 'organization' : 'public',
+        organizationId: namespace, manifest: replacement.manifest,
+      }],
+      unavailableReason: null, customSourceNames: [], unavailableCustomSourceNames: [],
+    });
+    render(page('/plugins?retired=ios-simulator'));
+    fireEvent.click(await screen.findByRole('button', {
+      name: `settings.ghosts.retirement.${enabled ? 'open' : 'enable'}`,
+    }));
+    if (enabled) {
+      expect((await screen.findByTestId('replacement-panel')).textContent).toBe('baguette-simulator');
+    } else {
+      await waitFor(() => expect(bridge.ghosts.setEnabled).toHaveBeenCalledWith(
+        namespace ? '_ns__acme__baguette-simulator' : source === 'offline-legacy'
+          ? 'baguette-simulator' : '_root__baguette-simulator',
+        true, 'approved:' + installed.approval.revision,
+      ));
+    }
+    expect(install).not.toHaveBeenCalled();
+    expect(loadDetail).not.toHaveBeenCalled();
+  });
+
   it('opens an enabled replacement panel from the retirement notice', async () => {
     installFixture([old, {
+      ...replacement, namespace: null, enabled: true,
+      dir: path.join('plugins', 'baguette-simulator'),
+      manifest: { ...replacement.manifest, id: 'baguette-simulator', panel: { html: 'panel.html', position: 'tab' } },
+    }, {
       ...replacement, enabled: true,
       manifest: { ...replacement.manifest, panel: { html: 'panel.html', position: 'tab' } },
     }]);
