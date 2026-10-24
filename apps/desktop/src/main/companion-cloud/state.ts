@@ -41,6 +41,8 @@ const bot = z.object({
   pendingRebuild: z.boolean().optional(),
   /** The never-synced local copy was backed up before a take-over; retries do not back it up again. */
   backedUp: z.boolean().optional(),
+  /** The take-over finished without the cloud avatar (it could not be downloaded); the local avatar must not be published over it. */
+  avatarPending: z.boolean().optional(),
   /** Deleted here while this computer was the home; disable the cloud actor until it succeeds. */
   retirePending: z.boolean().optional(),
 });
@@ -78,6 +80,7 @@ export function createCompanionCloudState(options: {
   return {
     bot: (botId: string): CompanionBotState | null => load().bots[botId] ?? null,
     isDemoted: (botId: string) => load().bots[botId]?.demoted === true,
+    isAvatarPending: (botId: string) => load().bots[botId]?.avatarPending === true,
     demotedBotIds: (): string[] => Object.entries(load().bots).flatMap(([botId, entry]) => entry.demoted ? [botId] : []),
     botForRoom: (roomId: string): string | null =>
       Object.entries(load().bots).find(([, entry]) => entry.roomId === roomId)?.[0] ?? null,

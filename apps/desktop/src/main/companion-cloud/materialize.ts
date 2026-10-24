@@ -31,6 +31,8 @@ export interface CompanionMaterializeHost {
   /** The cloud avatar must be restored (an image that cannot be downloaded fails the call). */
   createProfile: (input: {
     id: string; name: string; description: string; identitySource: string; userContextSource: string; avatar: string | null;
+    /** Do not fail on an undownloadable cloud avatar: use the default avatar instead. */
+    avatarFallback?: boolean;
   }, fence: CompanionWriteFence) => Promise<void>;
   /**
    * Also makes the profile active again. Undefined fields stay unchanged; a cloud avatar replaces
@@ -38,6 +40,8 @@ export interface CompanionMaterializeHost {
    */
   updateProfile: (input: {
     id: string; name: string; description?: string; identitySource?: string; userContextSource?: string; avatar: string | null;
+    /** Do not fail on an undownloadable cloud avatar: keep the local avatar instead. */
+    avatarFallback?: boolean;
   }, fence: CompanionWriteFence) => Promise<void>;
   writeSystemPrompt: (botId: string, text: string, fence: CompanionWriteFence) => Promise<void>;
   /** Copy the companion's Home (identity, prompt, user file, memories, skills) aside; returns where. */
@@ -145,12 +149,22 @@ export async function materializeCompanion(input: {
     state.update(botId, actor.id, entry => { entry.backedUp = true; });
   }
   const name = text(profile?.name)?.trim() || actor.name || local?.displayName || '伙伴';
-  if (!local) {
-    await step(() => host.createProfile({ id: botId, name, description: text(profile?.description) ?? '',
-      identitySource: text(profile?.soul) ?? '', userContextSource: text(profile?.user) ?? '', avatar: actor.avatar }, fence));
-  } else {
-    await step(() => host.updateProfile({ id: botId, name, description: text(profile?.description),
-      identitySource: text(profile?.soul), userContextSource: text(profile?.user), avatar: actor.avatar }, fence));
+  const writeProfile = (avatarFallback: boolean) => step(() => local
+    ? host.updateProfile({ id: botId, name, description: text(profile?.description),
+      identitySource: text(profile?.soul), userContextSource: text(profile?.user), avatar: actor.avatar, ...(avatarFallback ? { avatarFallback } : {}) }, fence)
+    : host.createProfile({ id: botId, name, description: text(profile?.description) ?? '',
+      identitySource: text(profile?.soul) ?? '', userContextSource: text(profile?.user) ?? '', avatar: actor.avatar, ...(avatarFallback ? { avatarFallback } : {}) }, fence));
+  try {
+    await writeProfile(false);
+    if (known?.avatarPending) state.update(botId, actor.id, entry => { delete entry.avatarPending; });
+  } catch (error) {
+    if (errorCode(error) !== 'AVATAR_UNAVAILABLE') throw error;
+    // The avatar is cosmetic: it must not keep the whole companion (memories, skills, history)
+    // from coming over. The copy stays without the cloud avatar, and the local one is never
+    // published over it (publishActorProfile checks avatarPending).
+    state.update(botId, actor.id, entry => { entry.avatarPending = true; });
+    log?.warn('Companion avatar could not be restored; continuing without it', { actorId: actor.id });
+    await writeProfile(true);
   }
   const systemPrompt = text(profile?.systemPrompt);
   if (systemPrompt !== undefined) await step(() => host.writeSystemPrompt(botId, systemPrompt, fence));

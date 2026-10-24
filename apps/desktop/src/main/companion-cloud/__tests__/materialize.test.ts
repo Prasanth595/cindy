@@ -227,17 +227,32 @@ describe('materializeCompanion', () => {
     expect(backupHome).toHaveBeenCalledTimes(1);
   });
 
-  it('stays demoted when the cloud avatar cannot be restored, and backs the copy up only once', async () => {
+  it('finishes the take-over without the cloud avatar when it cannot be restored, and publishes none over it', async () => {
     const { api } = cloud([profilePref]);
     const backupHome = vi.fn(async () => '/backup');
-    const local = fakeLocal({ backupHome, updateProfile: vi.fn(async () => { throw new Error('AVATAR_UNAVAILABLE'); }) });
+    const updateProfile = vi.fn(async (input: { avatarFallback?: boolean }) => {
+      if (!input.avatarFallback) throw new Error('AVATAR_UNAVAILABLE');
+    });
+    const local = fakeLocal({ backupHome, updateProfile: updateProfile as never });
     local.setProfile({ status: 'active', displayName: 'Old', description: '' });
     const { state } = memoryState();
-    const run = () => materializeCompanion({ api, state, host: local.host, actor: { ...actor, avatar: 'https://cdn/a.png' }, roomId: async () => ROOM });
-    await expect(run()).rejects.toThrow('AVATAR_UNAVAILABLE');
-    await expect(run()).rejects.toThrow('AVATAR_UNAVAILABLE');
-    expect(state.bot('bot_mia')?.demoted).toBe(true);
+    await materializeCompanion({ api, state, host: local.host, actor: { ...actor, avatar: 'https://cdn/a.png' }, roomId: async () => ROOM });
+    expect(updateProfile).toHaveBeenCalledTimes(2);
+    expect(updateProfile.mock.calls[1]?.[0]).toMatchObject({ avatar: 'https://cdn/a.png', avatarFallback: true });
+    expect(state.bot('bot_mia')?.demoted).toBeUndefined();
+    expect(state.bot('bot_mia')?.avatarPending).toBe(true);
+    expect(state.isAvatarPending('bot_mia')).toBe(true);
     expect(backupHome).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the pending avatar once a later take-over restores it', async () => {
+    const { api } = cloud([profilePref]);
+    const local = fakeLocal();
+    local.setProfile({ status: 'active', displayName: 'Old', description: '' });
+    const { state } = memoryState();
+    state.update('bot_mia', actor.id, entry => { entry.avatarPending = true; entry.demoted = true; });
+    await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(state.isAvatarPending('bot_mia')).toBe(false);
   });
 
   it('stays demoted until the home has uploaded a profile snapshot', async () => {

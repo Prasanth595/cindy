@@ -718,6 +718,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // Only the confirmed home installation publishes (same predicate as claiming work).
     if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id)
       || !companion?.installConfirmed(profile.id))) return;
+    // The cloud avatar could not be restored here: keep what the cloud has instead of publishing the stand-in.
+    if (companion?.isAvatarPending?.(profile.id)) {
+      if (found.name === profile.displayName) return;
+      await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar: found.avatar ?? null, avatarSource: found.avatarSource ?? null });
+      found.name = profile.displayName;
+      return;
+    }
     const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
     let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
     if (source && found.avatarSource !== source) {
