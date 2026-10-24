@@ -24,6 +24,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const chatWindow = vi.hoisted(() => ({ url: 'file:///app/index.html#/bots/groups/group-1' }));
+vi.mock('../deepLink', () => ({
+  getDeepLinkMainWindow: () => ({ isFocused: () => true, isVisible: () => true, webContents: { getURL: () => chatWindow.url } }),
+  openMainWindowChatMessage: vi.fn(),
+}));
+vi.mock('../agent-island/companionIdentity', () => ({ companionAvatarThumbnail: async () => undefined }));
+
 type IpcHandler = (event: unknown, payload: unknown) => Promise<void> | void;
 
 // 捕获被注册的 IPC handlers。每个用例 freshModule 后重置。
@@ -191,6 +198,14 @@ const baseDeps = (feishuIm: FakeFeishuIM) => ({
 });
 
 describe('notificationService — channels 分发', () => {
+  it('does not suppress an unread thread merely because its group is focused', async () => {
+    const { showDesktopChatMessage } = await freshService();
+    const payload = { groupId: 'group-1', groupName: 'Group', messageId: 'message-1', senderName: 'Other', avatar: '', preview: 'Reply' };
+    await showDesktopChatMessage(payload, () => true);
+    expect(notificationCtor).not.toHaveBeenCalled();
+    await showDesktopChatMessage({ ...payload, threadRootId: 'thread-2' }, () => true);
+    expect(notificationCtor).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ title: 'Group', body: 'Other: Reply' }));
+  });
   beforeEach(() => {
     // 每个用例重新注册 handler,避免相互污染。
   });

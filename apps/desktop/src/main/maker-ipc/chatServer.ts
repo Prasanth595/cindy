@@ -29,6 +29,8 @@ import { prepareBotGroupTaskPost, type BotGroupTaskPostSnapshot } from './botGro
 import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import { markdownPreviewText } from '../../shared/markdownPreviewText.js';
+import { createChatMessageNotifications } from './chatMessageNotifications.js';
 import WebSocket from 'ws';
 import { z } from 'zod';
 import { and, asc, eq, gt } from 'drizzle-orm';
@@ -72,7 +74,7 @@ interface Room {
   created_at: string; updated_at: string; revision: number; archived: boolean; dissolved_at?: string | null; organizer_id?: string | null; kind?: string;
 }
 /** `reads`: this reader's read position per Thread (`thread_key` = root ID, `main` for the main timeline); older servers omit it. */
-interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string; reads?: Array<{ thread_key: string; read_seq: string; following?: boolean }> }
+interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string; reads?: Array<{ thread_key: string; read_seq: string; following?: boolean; muted?: boolean }> }
 interface Execution {
   id: string; conversation_id: string; source_message_id: string; bot_id: string;
   requester_id?: string;
@@ -492,6 +494,23 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // Local writes always notify: HTTP can finish before the server handles subscribe,
   // even on an open socket. Nearby realtime echoes join the same bounded window.
   const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
+  const chatNotifications = deps.onChatMessageNotification ? createChatMessageNotifications<Message>({
+    current, selfId: () => selfId,
+    message: (groupId, messageId) => api<Message>(`/conversations/${groupId}/messages/${messageId}`),
+    snapshot: async groupId => {
+      const snapshot = await api<Snapshot>(`/conversations/${groupId}/snapshot`);
+      if (personalList.hidden(groupId)) throw new Error('CHAT_HIDDEN');
+      return snapshot;
+    },
+    present: async (groupId, message) => {
+      const snapshot = await recentSnapshot(groupId);
+      const member = snapshot.members.find(member => member.id === message.authorId);
+      const view = messageView(message, snapshot.members);
+      return { senderName: view.authorName, avatar: member?.avatar ?? localBot(message.authorId)?.avatar ?? '',
+        preview: markdownPreviewText(botGroupMessageSummaryText(view) || mediaNames(message)).slice(0, 160) };
+    },
+    notify: deps.onChatMessageNotification,
+  }) : undefined;
   const changed = (roomId: string) => {
     if (!current()) return;
     invalidate(roomId);
@@ -900,6 +919,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             if ((event.changes ?? []).some((change: { type?: string; data?: { dissolvedAt?: unknown } }) => change.type === 'conversation.updated' && change.data?.dissolvedAt)) retirePlanning(roomId);
             if (rooms.has(roomId)) advanceRoom(roomId, event.cursor);
             for (const change of event.changes ?? []) {
+              if (change.type === 'message.created' && typeof change.entityId === 'string' && id.safeParse(change.entityId).success)
+                chatNotifications?.enqueue(roomId, change.entityId);
               if (change.type === 'message.updated' || change.type === 'message.deleted') threads.invalidate(roomId, change.entityId);
               if (change.type === 'reaction.changed' && typeof change.entityId === 'string') bumpMessageReactions(roomId, change.entityId);
             }
@@ -1036,7 +1057,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const joined = !m.deleted && m.threadRootId === null ? m.content.find(b => b.type === 'card' &&
         b.namespace === 'cindy.membership' && b.schemaRevision === 1 && b.data?.type === 'member.joined' &&
         id.safeParse(b.data.actorId).success && typeof b.data.displayName === 'string' && b.data.displayName.trim()) : undefined;
-      return { id: m.id, sequence: Number(m.seq), kind: 'notice', authorKind: 'system', isSelf: false,
+      return { id: m.id, sequence: Number(m.seq), serverSequence: m.seq, kind: 'notice', authorKind: 'system', isSelf: false,
         authorBotId: null, authorName: joined ? String(joined.data!.displayName) : '', content: displayText(m),
         threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
         noticeCode: joined ? 'member-joined' : null, planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
@@ -1044,7 +1065,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const notice = m.origin === 'integration' && !m.deleted ? m.content.find(b => b.namespace === 'cindy.group-notice' && b.schemaRevision === 1) : undefined;
     const noticeCode = notice?.data?.noticeCode;
     if (noticeCode === 'member-failed' || noticeCode === 'member-timeout' || noticeCode === 'plan-failed') return {
-      id: m.id, sequence: Number(m.seq), kind: 'notice', authorKind: 'system', isSelf: false,
+      id: m.id, sequence: Number(m.seq), serverSequence: m.seq, kind: 'notice', authorKind: 'system', isSelf: false,
       authorBotId: localBot(m.authorId)?.id ?? null, authorName: members.find(member => member.id === m.authorId)?.name ?? '',
       content: displayText(m), threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
       noticeCode, planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt),
@@ -1053,17 +1074,17 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const planCard = m.content.find(b => b.namespace === 'cindy.plan');
     const legacy = m.origin === 'import' ? m.content.find(b => b.namespace === 'cindy.local-history')?.data : undefined;
     const runtimeFailureCode = readImportedBotGroupRuntimeFailureCode(m);
-    if (runtimeFailureCode) return { id: m.id, sequence: Number(m.seq), kind: 'notice', authorKind: 'system', isSelf: false,
+    if (runtimeFailureCode) return { id: m.id, sequence: Number(m.seq), serverSequence: m.seq, kind: 'notice', authorKind: 'system', isSelf: false,
       authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: typeof legacy?.authorName === 'string' ? legacy.authorName : '',
       content: '', threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
       noticeCode: runtimeFailureCode === 'RUNTIME_TIMEOUT' ? 'member-timeout' : 'member-failed', runtimeFailureCode,
       planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
     const quote = m.deleted || planCard ? null : readBotGroupQuote(m.content);
     const task = m.deleted || planCard ? null : taskCardOf(m);
-    return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
+    return { id: m.id, sequence: Number(m.seq), serverSequence: m.seq, deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
       isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}), ...(task ? { task } : {}),
       authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: displayText(m),
-      mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
+      mentions: { all: false, botIds: (m.mentions ?? []).map(actorId => localBot(actorId)?.id ?? actorId) }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
   /**
    * When the newest (up to 99) messages from someone else arrived, oldest first: Bots and other
@@ -1315,7 +1336,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const messages = summaryOnly ? [] : await messageViews(roomId, page, s.members);
     const shares = summaryOnly ? undefined : await decorateThreads(roomId, messages, page, s.messages, s.members, true, o.shownShares);
     const threadShareUpdates = shares?.updates;
-    const reads = summaryOnly ? null : threadReads(s);
+    const reads = threadReads(s);
+    const unread = reads ? s.messages.filter(m => !m.deleted && m.origin !== 'system' && m.origin !== 'import' && m.authorId !== selfId
+      && (!m.threadRootId || m.mentions?.includes(selfId) || s.reads?.some(read => read.thread_key === m.threadRootId && read.following))
+      && BigInt(m.seq) > (reads.get(m.threadRootId ?? 'main') ?? 0n)) : null;
     if (reads) for (const view of messages) if (!view.threadRootId && (view.replyCount ?? 0) > 0) view.threadUnread = threadUnread(view.id, s.messages, reads);
     const threadList = reads ? threadSummaries(roomId, s, page, reads) : undefined;
     messages.sort((a, b) => a.sequence - b.sequence);
@@ -1338,11 +1362,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       // Only servers that tell a 分工 from a queue (kind) can hand one on by itself.
       ...(singleSpeaker ? { autoContinue: workspace?.autoContinue === true } : {}), lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
-        preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
+        preview: lastIsShare ? '' : markdownPreviewText(botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null, ...(open.kind ? { kind: open.kind } : {}) } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
       incomingMessageTimes: incomingMessageTimes(s.messages, s.members),
+      ...(unread ? { serverUnread: { count: Math.min(99, unread.length), mentioned: unread.some(m => m.mentions?.includes(selfId)) } } : {}),
       createdAt: Date.parse(s.room.created_at), updatedAt: Date.parse(s.room.updated_at ?? s.room.created_at),
       messages, executionFailures, ...(threadShareUpdates && Object.keys(threadShareUpdates).length ? { threadShareUpdates } : {}),
       ...(shares ? { threadShareVersion: shares.version } : {}), ...(threadList ? { threads: threadList } : {}), hasMoreBefore: page.length === (o.limit ?? 100), plans,
@@ -2319,6 +2344,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const target = await resolveGroup(id.parse(input.groupId));
       const actorAction = z.object({ actorId: id });
       const action = z.discriminatedUnion('type', [
+        z.object({ type: z.literal('read'), messageId: id }).strict(),
         z.object({ type: z.literal('update'), name: z.string().trim().min(1).max(40), topic: z.string().max(250), description: z.string().max(2000), responseMode: z.enum(['all', 'mentioned']).optional(), speakingMode: z.enum(['auto', 'sequential']).optional(), expectedRevision: z.number().int().positive() }).strict(),
         actorAction.extend({ type: z.literal('avatar'), avatar: z.discriminatedUnion('type', [
           z.object({ type: z.literal('keep') }).strict(), z.object({ type: z.literal('reset') }).strict(),
@@ -2332,6 +2358,19 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         z.object({ type: z.literal('dissolve'), expectedRevision: z.number().int().positive() }).strict(),
         z.object({ type: z.literal('archive'), archived: z.boolean(), expectedRevision: z.number().int().positive() }).strict(),
       ]).parse(input.action);
+      if (action.type === 'read') {
+        const snapshot = await recentSnapshot(target);
+        if (!snapshot.reads) return {};
+        const message = snapshot.messages.find(m => m.id === action.messageId)
+          ?? await api<Message>(`/conversations/${target}/messages/${action.messageId}`);
+        if (message.threadRootId) throw new Error('MAIN_MESSAGE_REQUIRED');
+        const read = snapshot.reads.find(entry => entry.thread_key === 'main')?.read_seq ?? '0';
+        if (BigInt(message.seq) > BigInt(read)) {
+          await api(`/conversations/${target}/read`, 'POST', { operationId: `read-main:${message.seq}`, readSeq: message.seq });
+          changed(target);
+        }
+        return {};
+      }
       if (action.type === 'avatar') {
         if (!supportsMemberAvatar) throw new Error('CHAT_UNAVAILABLE');
         const snapshot = await groupSnapshot(target);
@@ -2894,6 +2933,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     continuePlan: input => safe(() => actPlan(input, 'continue')), retryPlan: input => safe(() => actPlan(input, 'retry')),
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
+      chatNotifications?.dispose();
       disposed = true; threads.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); clearTimeout(claimTrigger); socket?.close();
       companion?.dispose(); companion = undefined; deps.companionCloud?.homes.reset();
       for (const refresh of attachmentRefreshes.values()) clearTimeout(refresh);

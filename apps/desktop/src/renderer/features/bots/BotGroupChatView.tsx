@@ -31,6 +31,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { attachGhostMediaToSession, getGhostMediaHandoverFromDataTransfer } from '@/cindy-brain/ghostMediaHandover';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
+import { NewMessageIndicator } from '@/components/chat/NewMessageIndicator';
 import { shareSelectionStore, useShareSelectionActive } from '@/components/chat/shareSelectionStore';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { Button } from '@/components/ui/button';
@@ -101,6 +102,7 @@ import {
 import {
   BOT_GROUP_SETTINGS_PARAM,
   botGroupComposerPlanState,
+  botGroupNewMessageCount,
   botGroupErrorKey,
   botGroupMemberNames,
   botGroupPlanFollowUp,
@@ -206,6 +208,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const controlledBannerCollapsed = useComposerCollapsed(controlledBannerKey);
   const navigate = useNavigate();
   const location = useLocation();
+  const notificationTarget = useMemo(() => {
+    const query = new URLSearchParams(location.search);
+    const messageId = query.get('messageId');
+    const threadRootId = query.get('threadRootId');
+    return messageId && /^[0-9a-f-]{36}$/i.test(messageId)
+      && (!threadRootId || /^[0-9a-f-]{36}$/i.test(threadRootId)) ? { messageId, threadRootId } : null;
+  }, [location.search]);
+  const handledNotification = useRef<string | null>(null);
   const [state, setState] = useState<GroupViewState>({ kind: 'loading' });
   const stateRef = useRef(state); stateRef.current = state;
   const [reloadVersion, setReloadVersion] = useState(0);
@@ -218,6 +228,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+  const [seenThrough, setSeenThrough] = useState<string | null>(null);
   const readOwner = useRef(getDataOwnerGeneration());
   const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
   const attachmentScope = botGroupAttachmentScope(groupId);
@@ -508,10 +519,33 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       ? Math.max(latest, message.createdAt) : latest, 0), [realMessages]);
   const latestIncomingRef = useRef(latestIncomingAt);
   latestIncomingRef.current = latestIncomingAt;
+  const latestSequence = realMessages.reduce((latest, message) => {
+    const position = message.serverSequence ?? String(message.sequence);
+    return BigInt(position) > BigInt(latest) ? position : latest;
+  }, '0');
+  const latestSequenceRef = useRef(latestSequence);
+  latestSequenceRef.current = latestSequence;
+  useEffect(() => {
+    if (state.kind === 'ready') setSeenThrough(previous => previous ?? latestSequence);
+  }, [state.kind, latestSequence]);
+  const newMessageCount = botGroupNewMessageCount(realMessages, seenThrough);
+  const readRequest = useRef<string | null>(null);
+  const readMessages = useRef(realMessages); readMessages.current = realMessages;
   const acknowledge = useCallback(() => {
     if (!isDataOwnerGenerationCurrent(readOwner.current) || !stickToBottomRef.current || document.visibilityState !== 'visible' || !document.hasFocus()) return;
+    const element = scrollRef.current;
+    if (!element || element.scrollHeight - element.scrollTop - element.clientHeight >= STICK_TO_BOTTOM_PX) return;
+    setSeenThrough(latestSequenceRef.current);
     const at = latestIncomingRef.current;
     if (at > 0) markBotRead(botGroupReadKey(groupId), at);
+    const current = stateRef.current;
+    const latest = readMessages.current.at(-1);
+    if (current.kind === 'ready' && current.group.serverUnread && latest && readRequest.current !== latest.id) {
+      readRequest.current = latest.id;
+      void window.electronAPI.maker.chatServer.manage({ groupId, action: { type: 'read', messageId: latest.id } })
+        .then(result => { if (!result.ok && readRequest.current === latest.id) readRequest.current = null; })
+        .catch(() => { if (readRequest.current === latest.id) readRequest.current = null; });
+    }
   }, [groupId]);
   const lastAcknowledgeRef = useRef(0);
   const acknowledgeTimerRef = useRef<number | null>(null);
@@ -536,7 +570,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     window.addEventListener('focus', acknowledge);
     document.addEventListener('visibilitychange', acknowledge);
     return () => { cancelAnimationFrame(frame); window.removeEventListener('focus', acknowledge); document.removeEventListener('visibilitychange', acknowledge); };
-  }, [acknowledge, latestIncomingAt]);
+  }, [acknowledge, latestIncomingAt, latestSequence]);
 
   const plans = useMemo(
     () => (state.kind === 'ready' ? mergeBotGroupPlans(state.olderPlans, state.group.plans) : []),
@@ -766,7 +800,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
    * Goes to a quoted message in this group's main timeline, paging back a bounded number
    * of times. A deleted or unreachable original says so instead of jumping anywhere else.
    */
-  const locateQuoted = async (quote: BotGroupQuoteView) => {
+  const locateQuoted = async (quote: Pick<BotGroupQuoteView, 'messageId' | 'sequence'>) => {
     if (locatingRef.current) return;
     const find = (list: readonly BotGroupMessageView[]) => list.find(message => message.id === quote.messageId && !message.threadRootId);
     const settle = (original: BotGroupMessageView | undefined) => {
@@ -953,6 +987,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     setThreadFocus(focusMessageId ? { messageId: focusMessageId, nonce: Date.now() } : null);
   }, []);
   const onSending = useCallback(() => { stickToBottomRef.current = true; }, []);
+  const locateNotification = useRef(locateQuoted); locateNotification.current = locateQuoted;
+  useEffect(() => {
+    if (state.kind !== 'ready' || !notificationTarget || handledNotification.current === location.key) return;
+    handledNotification.current = location.key;
+    stickToBottomRef.current = false;
+    if (notificationTarget.threadRootId) onOpenThread(notificationTarget.threadRootId, notificationTarget.messageId);
+    else void locateNotification.current({ messageId: notificationTarget.messageId, sequence: null });
+  }, [state.kind, notificationTarget, location.key, onOpenThread]);
 
   const planById = useMemo(() => new Map(plans.map((plan) => [plan.id, plan])), [plans]);
   const layout = useMemo(() => layoutBotGroupTimeline(rows), [rows]);
@@ -1106,6 +1148,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         data-testid="bot-group-timeline"
         onScroll={(event) => {
           const element = event.currentTarget;
+          if (stickToBottomRef.current) setSeenThrough(latestSequenceRef.current);
           stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < STICK_TO_BOTTOM_PX;
           if (stickToBottomRef.current) acknowledgeSoon();
         }}
@@ -1213,6 +1256,15 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             ? <BotGroupSpeakerInteraction key={`${speaker.member.botId}:${speaker.activity}`} speaker={speaker} />
             : <BotGroupSpeakingLine key={`${speaker.member.botId}:${speaker.activity}`} speaker={speaker} />))}
         </div>
+      </div>
+      <div className="relative h-0 shrink-0" inert={newMessageCount <= 0}>
+        <NewMessageIndicator visible={newMessageCount > 0} count={newMessageCount} bottomOffset={12} onClick={() => {
+          const element = scrollRef.current;
+          if (!element) return;
+          stickToBottomRef.current = true;
+          element.scrollTop = element.scrollHeight;
+          acknowledge();
+        }} />
       </div>
       {hasControlledBanner && (
         // Like teammate chats, keep the collapsed breathing light above the composer.

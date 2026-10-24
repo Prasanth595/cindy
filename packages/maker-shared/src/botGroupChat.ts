@@ -156,6 +156,8 @@ export interface BotGroupMessageView {
   reactions?: Array<{ emoji: string; count: number; me: boolean }>;
   id: string;
   sequence: number;
+  /** Stable decimal server position; presentation indices can change when history is loaded. */
+  serverSequence?: string;
   kind: BotGroupMessageKind;
   authorKind: BotGroupAuthorKind;
   authorBotId: string | null;
@@ -445,6 +447,8 @@ export interface BotGroupRoundView {
 
 export interface BotGroupSummary {
   serverBacked?: boolean;
+  /** Authoritative unread window for this account, including followed thread replies. */
+  serverUnread?: { count: number; mentioned: boolean };
   /** Explicit server capabilities; absent on old servers/hosts. */
   supportsDissolve?: boolean;
   /** Upgraded host forwards leave explicitly; absent on old compatibility hosts. */
@@ -675,6 +679,7 @@ export const BOT_GROUP_MEMBER_LINK_REL = 'member';
  */
 export type BotGroupRemoteActionId =
   | 'create'
+  | 'read'
   | 'send'
   | 'continue'
   | 'stop'
@@ -698,6 +703,8 @@ export type BotGroupRemoteActionId =
  */
 export interface BotGroupRemoteChatData extends BotGroupDetail {
   projectDirName: string | null;
+  /** Host forwards a measured main-timeline read to the chat server. Older hosts omit it. */
+  supportsReadReceipts?: boolean;
   /**
    * The computer accepts attachments on `send` (absent on older computers, which would
    * drop them). Attachment `path`s are always null here.
@@ -794,6 +801,7 @@ export interface ChatInvitePreview {
   reusable?: boolean;
 }
 export type ChatGroupAction =
+  | { type: 'read'; messageId: string }
   | { type: 'update'; name: string; topic: string; description: string; expectedRevision: number; responseMode?: BotGroupReplyMode; speakingMode?: BotGroupSpeakingMode }
   | { type: 'nickname'; actorId: string; nickname: string | null }
   | { type: 'avatar'; actorId: string; avatar: { type: 'keep' | 'reset' } | { type: 'set'; data: Uint8Array; mimeType: string } }

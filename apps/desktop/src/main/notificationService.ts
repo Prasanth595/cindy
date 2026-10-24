@@ -29,6 +29,9 @@ import * as path from 'node:path';
 import { markSessionNeedsAttention } from './appBadgeService';
 import { getMobileNotifyGeneration, sendMobileSessionNotify } from './device-link';
 import { notificationPreview } from './notificationPreview';
+import { companionAvatarThumbnail } from './agent-island/companionIdentity';
+import { getDeepLinkMainWindow, openMainWindowChatMessage } from './deepLink';
+import type { ChatMessageNotification } from './maker-ipc/chatMessageNotifications';
 import { readSessionNotificationPreview, type SessionNotificationPreview } from './localDb/sessionNotificationPreview';
 import { drainSessionActiveTurnWrites, getSessionNotificationTurnSignal } from './localDb/sessionActiveTurn';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from './device-link/broadcast-tap';
@@ -51,6 +54,40 @@ let desktopNotificationsEnabled = true;
 /** Renderer owns persistence; main keeps the current value for scheduler-originated toasts. */
 export function getDesktopNotificationsEnabled(): boolean {
   return desktopNotificationsEnabled;
+}
+
+/** Chat uses the same system permission and global desktop preference as task notifications. */
+export async function showDesktopChatMessage(payload: ChatMessageNotification, current: () => boolean): Promise<void> {
+  const visible = () => {
+    // A group URL cannot tell which side-panel thread is being read. Thread
+    // notifications rely on the consumer's authoritative read-receipt check.
+    if (payload.threadRootId) return false;
+    const window = getDeepLinkMainWindow();
+    if (!window?.isFocused() || !window.isVisible()) return false;
+    try { return new URL(window.webContents.getURL()).hash.split('?')[0] === `#/bots/groups/${payload.groupId}`; }
+    catch { return false; }
+  };
+  if (!current() || !desktopNotificationsEnabled || visible() || !Notification.isSupported()) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const thumbnail = await Promise.race([
+    companionAvatarThumbnail(payload.avatar).catch(() => undefined),
+    new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 600); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!current() || !desktopNotificationsEnabled || visible()) return;
+  const icon = thumbnail ? nativeImage.createFromBuffer(Buffer.from(thumbnail, 'base64')) : undefined;
+  const notification = new Notification({ title: payload.groupName,
+    body: `${payload.senderName}: ${payload.preview}`,
+    ...(icon && !icon.isEmpty() ? { icon } : devNotificationIcon ? { icon: devNotificationIcon } : {}),
+  });
+  liveNotifications.add(notification);
+  const release = () => { liveNotifications.delete(notification); };
+  notification.on('click', () => {
+    release();
+    if (current()) openMainWindowChatMessage(payload.groupId, payload.messageId, payload.threadRootId);
+  });
+  notification.on('close', release);
+  notification.on('failed', release);
+  notification.show();
 }
 
 // dev 下 electron.exe / Electron.app 自带的是默认图标，notification toast 没有
