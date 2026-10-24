@@ -991,7 +991,9 @@ import {
 } from './orcaUiAssignmentHistoryGate.js';
 import { orcaModelDiscoveryFailure, throwOrcaServiceFailure } from './orcaServiceFailure.js';
 import {
+  captureOrcaDeliveryBaselines,
   createOrcaTeamService,
+  evaluateOrcaDeliveryScope,
   findFocusTargetWorker,
   type InterruptWorkerResult,
   type ListWorkerQueuedMessagesResult,
@@ -15125,6 +15127,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   const orcaTeamService = createOrcaTeamService(orcaRemoteWorkers.wrapTeamDeps({
     captureControlAuthority: async (leadSessionId) => (await captureOrcaPluginAuthority(leadSessionId)).assertCurrent,
+    // Queued dispatch acceptance and terminal-time retries land after this turn is gone.
+    captureDeliveryAuthority: (leadSessionId) => captureOrcaDeliveryAuthority(leadSessionId),
     withSessionSendLock: withSendToSessionLock,
     getWorkerLinkBySessionId: (workerSessionId) => getWorkerLink({ workerSessionId }),
     getWorkerLinkByWorkerId: (workerId) => getWorkerLink({ workerId }),
@@ -15478,6 +15482,61 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     };
     await assertCurrent();
     return { permissionMode: pluginId === null ? undefined : 'auto' as const, assertCurrent };
+  };
+
+  /**
+   * Delivery-scope authority for Orca callbacks that can settle after the caller's turn ended
+   * (queued acceptance, terminal-time retries). Durable facts only: the round-scoped guard from
+   * `captureOrcaPluginAuthority` is already expired there, and a released runtime is not a
+   * revocation. See docs/dev-rules/orca-team-architecture.md「派发与排队」#10.
+   */
+  const captureOrcaDeliveryAuthority = async (leadSessionId: string) => {
+    const epoch = getCurrentDbClientSnapshot();
+    if (!epoch) throw new PluginTaskError('HOST_NOT_READY', 'Task storage unavailable', true);
+    const store = createPluginTaskStore(epoch.client);
+    const receipt = await store.get(leadSessionId);
+    const pluginId = receipt?.operation === 'create' && !hasRevokedPluginTaskOwnership(receipt) ? receipt.pluginId : null;
+    const readSessionRow = async () => {
+      const [row] = await epoch.client.drizzle
+        .select({
+          status: sessions.status,
+          clearedAt: sessions.clearedAt,
+          permissionMode: sessions.permissionMode,
+          planModeEnabled: sessions.planModeEnabled,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, leadSessionId))
+        .limit(1);
+      return row ?? null;
+    };
+    const sessionAtCapture = await readSessionRow();
+    const baselines = captureOrcaDeliveryBaselines({
+      row: sessionAtCapture,
+      live: maker.getSession(leadSessionId) ?? null,
+    });
+    return async () => {
+      if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
+      if (isAppSessionBoundaryPending()) throw new PluginTaskError('HOST_NOT_READY', 'Account is switching');
+      const current = await store.get(leadSessionId);
+      const currentPluginId = current?.operation === 'create' && !hasRevokedPluginTaskOwnership(current) ? current.pluginId : null;
+      if (epoch !== getCurrentDbClientSnapshot() || currentPluginId !== pluginId) throw new PluginTaskError('PERMISSION_DENIED', 'Orca task ownership changed');
+      const row = await readSessionRow();
+      const verdict = evaluateOrcaDeliveryScope({
+        ...baselines,
+        row,
+        live: maker.getSession(leadSessionId) ?? null,
+      });
+      if (verdict === 'task-gone')
+        throw new PluginTaskError('PERMISSION_DENIED', 'Orca task is no longer deliverable');
+      if (verdict === 'permissions-changing')
+        throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions are changing');
+      if (verdict === 'permissions-changed')
+        throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions changed before delivery');
+      if (pluginId === null) return;
+      const task = await pluginTaskServiceForCurrentOwner!().get(pluginId, leadSessionId);
+      if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
+      assertPluginWorkerAutoAuthorized(pluginId, task);
+    };
   };
 
   async function discardWorkerWorktree(sessionId: string): Promise<void> {

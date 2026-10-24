@@ -8,7 +8,9 @@ import { AcceptedCallbackDispatchCancelled, runAcceptedCallback } from '../accep
 
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
 import {
+  captureOrcaDeliveryBaselines,
   createOrcaTeamService,
+  evaluateOrcaDeliveryScope,
   findFocusTargetWorker,
   type DispatchWorkerMessageResult,
   type OrcaTeamServiceDeps,
@@ -525,6 +527,12 @@ function createDeps(overrides: Partial<OrcaTeamServiceDeps> = {}) {
     },
     ...overrides,
   };
+  // Acceptance may settle after the caller's turn: default the delivery guard to the same
+  // authority the caller wired, so a revocation still cancels unless a test splits them.
+  deps.captureDeliveryAuthority = overrides.captureDeliveryAuthority
+    ?? (deps.captureControlAuthority
+      ? async (leadSessionId) => deps.captureControlAuthority!(leadSessionId)
+      : undefined);
 
   return {
     calls,
@@ -1517,6 +1525,154 @@ describe('OrcaTeamService', () => {
       }
     },
   );
+
+  it('delivers a queued dispatch after the issuing turn is gone', async () => {
+    let delayed: (() => void | Promise<void>) | undefined;
+    let turnAlive = true;
+    const roundGuard = vi.fn(async () => {
+      if (!turnAlive) throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+    });
+    const deliveryGuard = vi.fn(async () => {});
+    const h = createDeps({
+      captureControlAuthority: async () => roundGuard,
+      captureDeliveryAuthority: async () => deliveryGuard,
+      dispatchWorkerMessage: vi.fn(async (params) => {
+        delayed = () =>
+          runAcceptedCallback(params.onAccepted, params.targetSessionId, 'queued-input', h.deps.log);
+        return {
+          ok: true as const,
+          mode: 'queued' as const,
+          clientId: 'queued-input',
+          dispatchOutcome: {
+            kind: 'session-dispatch' as const,
+            source: params.dispatchMeta.source,
+            dispatched: true as const,
+            wakeKind: 'queued' as const,
+          },
+          targetTitle: 'Worker',
+          targetLastUserSendAt: null,
+        };
+      }),
+    });
+
+    await expect(
+      h.service.sendToWorker({
+        callerLeadSessionId: 'lead-1',
+        targetSessionId: 'worker-session-1',
+        message: 'queued while the worker was busy',
+      }),
+    ).resolves.toMatchObject({ wakeKind: 'queued' });
+
+    // The worker drains its queue much later: the issuing turn is long over.
+    turnAlive = false;
+    await expect(delayed!()).resolves.toBeUndefined();
+
+    expect(deliveryGuard).toHaveBeenCalled();
+    expect(h.getWorker().status).toBe('running');
+  });
+
+  it('cancels a queued dispatch when delivery authority is revoked', async () => {
+    let delayed: (() => void | Promise<void>) | undefined;
+    let deliverable = true;
+    const h = createDeps({
+      captureControlAuthority: async () => async () => {},
+      captureDeliveryAuthority: async () => async () => {
+        if (!deliverable) throw new Error('Orca task is no longer deliverable');
+      },
+      dispatchWorkerMessage: vi.fn(async (params) => {
+        delayed = () =>
+          runAcceptedCallback(params.onAccepted, params.targetSessionId, 'queued-input', h.deps.log);
+        return {
+          ok: true as const,
+          mode: 'queued' as const,
+          clientId: 'queued-input',
+          dispatchOutcome: {
+            kind: 'session-dispatch' as const,
+            source: params.dispatchMeta.source,
+            dispatched: true as const,
+            wakeKind: 'queued' as const,
+          },
+          targetTitle: 'Worker',
+          targetLastUserSendAt: null,
+        };
+      }),
+    });
+
+    await h.service.sendToWorker({
+      callerLeadSessionId: 'lead-1',
+      targetSessionId: 'worker-session-1',
+      message: 'queued before the team ended',
+    });
+    deliverable = false;
+
+    await expect(delayed!()).rejects.toBeInstanceOf(AcceptedCallbackDispatchCancelled);
+    expect(h.getWorker().status).toBe('idle');
+  });
+
+  it('retries a deferred done acknowledgement after the issuing turn ended', async () => {
+    let turnRunning = true;
+    let roundAlive = true;
+    let deliverable = true;
+    const deliveryGuard = vi.fn(async () => {
+      if (!deliverable) throw new Error('Orca task is no longer deliverable');
+    });
+    const h = createDeps({
+      getLiveSession: vi.fn(() => ({ isTurnRunning: () => turnRunning })),
+      captureDeliveryAuthority: async () => deliveryGuard,
+    });
+    h.setWorker(createWorker({ status: 'done' }));
+
+    await expect(
+      h.service.idleWorker(
+        { callerLeadSessionId: 'lead-1', workerId: 'worker-1', expectedStatus: 'done' },
+        {
+          assertCurrent: async () => {
+            if (!roundAlive) throw new Error('TASK_ACTION_AUTHORIZATION_EXPIRED');
+          },
+          assertDeliveryCurrent: deliveryGuard,
+        },
+      ),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'WORKER_STATE_CHANGED' });
+
+    // The issuing turn ends before the worker's terminal boundary.
+    turnRunning = false;
+    roundAlive = false;
+    await h.service.handleWorkerTerminalTurn({
+      sessionId: 'worker-session-1',
+      status: 'done',
+      finalText: 'finished',
+    });
+
+    expect(deliveryGuard).toHaveBeenCalled();
+    expect(h.getWorker().status).toBe('idle');
+  });
+
+  it('does not acquire delivery authority for an independent UI acknowledgement', async () => {
+    let turnRunning = true;
+    const captureDeliveryAuthority = vi.fn(async () => async () => {
+      throw new Error('Orca task is no longer deliverable');
+    });
+    const h = createDeps({
+      getLiveSession: vi.fn(() => ({ isTurnRunning: () => turnRunning })),
+      captureDeliveryAuthority,
+    });
+    h.setWorker(createWorker({ status: 'done' }));
+
+    // A renderer confirmation carries no caller guard, so it keeps the no-credential semantics.
+    await expect(
+      h.service.idleWorker({ callerLeadSessionId: 'lead-1', workerId: 'worker-1', expectedStatus: 'done' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'WORKER_STATE_CHANGED' });
+
+    turnRunning = false;
+    await h.service.handleWorkerTerminalTurn({
+      sessionId: 'worker-session-1',
+      status: 'done',
+      finalText: 'finished',
+    });
+
+    expect(captureDeliveryAuthority).not.toHaveBeenCalled();
+    expect(h.getWorker().status).toBe('idle');
+  });
 
   it('does not let an older provisional rollback overwrite a newer manual interrupt', async () => {
     let accepted: (() => void | Promise<void>) | undefined;
@@ -3641,4 +3797,80 @@ it('release closes under its own send fence and fails closed on close error',asy
  vi.mocked(deps.archiveWorkerSession).mockClear();vi.mocked(deps.closeWorkerSessionIfIdle).mockRejectedValue(new Error('close failed'));
  expect((await service.archiveWorker({callerLeadSessionId:'lead-1',workerId:'worker-1',onlyIfIdle:true})).ok).toBe(false);
  expect(deps.archiveWorkerSession).not.toHaveBeenCalled();
+});
+
+describe('Orca delivery scope', () => {
+  const permission = (mode: string, planEnabled = false) => ({ mode, planEnabled });
+  const row = (overrides: Partial<{
+    status: string; clearedAt: number | null; permissionMode: string; planModeEnabled: boolean;
+  }> = {}) => ({
+    status: 'active',
+    clearedAt: 100,
+    permissionMode: 'bypassPermissions',
+    planModeEnabled: false,
+    ...overrides,
+  });
+  const live = (mode: string, planEnabled = false) => ({
+    stablePermissionModeState: { mode },
+    stablePlanModeState: { enabled: planEnabled },
+  });
+  const evaluate = (
+    overrides: Partial<Parameters<typeof evaluateOrcaDeliveryScope>[0]> = {},
+  ) => evaluateOrcaDeliveryScope({
+    clearedAtAtCapture: 100,
+    persistedAtCapture: permission('bypassPermissions'),
+    liveAtCapture: permission('bypassPermissions'),
+    row: row(),
+    live: live('bypassPermissions'),
+    ...overrides,
+  });
+
+  it('accepts a rehydrated runtime and a released one', () => {
+    // Idle release + rehydrate keeps the same semantics; in-memory generation counters are
+    // intentionally not part of the comparison.
+    expect(evaluate({ live: live('bypassPermissions') })).toBe('ok');
+    expect(evaluate({ live: null })).toBe('ok');
+  });
+
+  it('captures the two permission baselines from their own sources', () => {
+    expect(captureOrcaDeliveryBaselines({
+      row: row({ permissionMode: 'ask' }),
+      live: live('bypassPermissions'),
+    })).toEqual({
+      clearedAtAtCapture: 100,
+      persistedAtCapture: { mode: 'ask', planEnabled: false },
+      liveAtCapture: { mode: 'bypassPermissions', planEnabled: false },
+    });
+  });
+
+  it('keeps a resumed runtime mode that the persisted row does not carry', () => {
+    // Cold resume can run a mode the row never recorded; releasing the runtime must not turn
+    // that into a revocation.
+    expect(evaluate({
+      row: row({ permissionMode: 'ask' }),
+      persistedAtCapture: permission('ask'),
+      liveAtCapture: permission('bypassPermissions'),
+      live: null,
+    })).toBe('ok');
+  });
+
+  it('rejects a switch in flight or a changed permission', () => {
+    expect(evaluate({
+      live: { stablePermissionModeState: null, stablePlanModeState: { enabled: false } },
+    })).toBe('permissions-changing');
+    expect(evaluate({ live: live('ask') })).toBe('permissions-changed');
+    expect(evaluate({ live: live('bypassPermissions', true) })).toBe('permissions-changed');
+  });
+
+  it('compares the persisted mode when the runtime is gone', () => {
+    expect(evaluate({ live: null, row: row({ permissionMode: 'ask' }) })).toBe('permissions-changed');
+    expect(evaluate({ live: null, row: row({ planModeEnabled: true }) })).toBe('permissions-changed');
+    expect(evaluate({ live: null, persistedAtCapture: null })).toBe('permissions-changed');
+  });
+
+  it('rejects a task that was cleared, deleted or removed', () => {
+    expect(evaluate({ row: row({ clearedAt: 200 }) })).toBe('task-gone');
+    expect(evaluate({ row: row({ status: 'deleted' }) })).toBe('task-gone');
+    expect(evaluate({ row: null })).toBe('task-gone');
+  });
 });

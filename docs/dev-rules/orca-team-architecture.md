@@ -433,6 +433,21 @@ Worker turn 被 vendor 报终止型 error，但 interrupted-turn auto-resume 仍
    释放该 clientId 排队时登记的 Orca 回调（不运行，理由见 1b）。排序同样遵守编辑锁：
    用户正在编辑的行不可移动（`MESSAGE_CONSUMING`）。
 
+10. **轮次结束后才落地的 accepted 只能用交付级凭证（状态：不变量，2026-10-24）**<br>
+    排队消息的 accepted 回调要等目标排空队列才跑，此时发起它的那一轮早已结束；因此它只能复核
+    交付级不变量（账号 epoch、会话行仍 active 且 `cleared_at` 未变、任务归属未变、权限档未被撤销、
+    Worker 仍属于该 Lead 的活跃团队），不能复用轮次级凭证（本轮输入来源、`turnOrigin`）。
+    运行时被释放／重建本身不算撤销：运行时在时比 live 档位、运行时不在时比持久化的
+    permission mode / Plan，两条基线各自取自对应来源（冷启恢复可能跑着与库不同的档位，混用会
+    误取消）；不能比 live 会话的 generation 计数——它随实例重建归零。权限档正在切换（stable
+    快照为空）时拒绝投递。独立 UI 的 done 确认不带调用方凭证，不取交付凭证。
+    只有身份／归属／权限真的变了才取消，并按既有 rollback 恢复；accepted 里的状态写与广播
+    失败仍走既有失败路径（簿记失败是否该取消投递是另一个议题，另单处理）。同步控制面（归档、结束团队、
+    改名、切焦点、队列增删改）仍用轮次凭证。实现指针：`register.ts` 的 `captureOrcaPluginAuthority`（轮次）与
+    `captureOrcaDeliveryAuthority`（交付）、`orcaTeamService.ts` 的
+    `dispatchResolvedWorker.onAccepted` 与 `deferDoneAcknowledgement`；回归见
+    `orcaTeamService.test.ts` 的 queued／deferred 用例。
+
 #### Worker 运行态
 
 1. **worker 终态不被失败回滚覆盖（状态：不变量）**<br>

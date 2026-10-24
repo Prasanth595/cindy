@@ -268,9 +268,90 @@ export interface WorkerTerminalTurnCapture {
   autoBridgeIdentity: object | null;
 }
 
+export interface OrcaDeliveryPermissionBaseline {
+  mode: string;
+  planEnabled: boolean;
+}
+
+export interface OrcaDeliverySessionRowSnapshot {
+  status: string;
+  clearedAt: number | null;
+  permissionMode: string;
+  planModeEnabled: boolean;
+}
+
+export interface OrcaDeliveryLiveSnapshot {
+  stablePermissionModeState: { mode: string | null } | null;
+  stablePlanModeState: { enabled: boolean } | null;
+}
+
+export type OrcaDeliveryVerdict = 'ok' | 'task-gone' | 'permissions-changing' | 'permissions-changed';
+
+/**
+ * Baselines captured at admission, each tagged with the source it belongs to: a resumed runtime
+ * can run a permission mode the persisted row does not carry, so they must never be shared.
+ */
+export function captureOrcaDeliveryBaselines(input: {
+  row: OrcaDeliverySessionRowSnapshot | null;
+  live: OrcaDeliveryLiveSnapshot | null;
+}): {
+  clearedAtAtCapture: number | null;
+  persistedAtCapture: OrcaDeliveryPermissionBaseline | null;
+  liveAtCapture: OrcaDeliveryPermissionBaseline | null;
+} {
+  const livePermission = input.live?.stablePermissionModeState;
+  const livePlan = input.live?.stablePlanModeState;
+  return {
+    clearedAtAtCapture: input.row?.clearedAt ?? null,
+    persistedAtCapture: input.row
+      ? { mode: input.row.permissionMode, planEnabled: input.row.planModeEnabled }
+      : null,
+    liveAtCapture: livePermission?.mode && livePlan
+      ? { mode: livePermission.mode, planEnabled: livePlan.enabled }
+      : null,
+  };
+}
+
+/**
+ * Delivery-scope decision for a dispatch accepted after the caller's turn ended.
+ * Durable facts only, and each permission baseline is compared against its own source: a resumed
+ * runtime may run a mode the persisted row does not carry, so mixing baselines cancels valid work.
+ */
+export function evaluateOrcaDeliveryScope(input: {
+  /** Cleared boundary captured at admission (`null` when the row was already missing). */
+  clearedAtAtCapture: number | null;
+  persistedAtCapture: OrcaDeliveryPermissionBaseline | null;
+  liveAtCapture: OrcaDeliveryPermissionBaseline | null;
+  row: OrcaDeliverySessionRowSnapshot | null;
+  live: OrcaDeliveryLiveSnapshot | null;
+}): OrcaDeliveryVerdict {
+  const { row, live } = input;
+  if (!row || row.status === 'deleted' || row.clearedAt !== input.clearedAtAtCapture) return 'task-gone';
+  if (live) {
+    const permission = live.stablePermissionModeState;
+    const plan = live.stablePlanModeState;
+    // A permission/Plan switch in flight is a live revocation: never start work on the old one.
+    if (!permission?.mode || !plan) return 'permissions-changing';
+    if (!input.liveAtCapture
+      || permission.mode !== input.liveAtCapture.mode
+      || plan.enabled !== input.liveAtCapture.planEnabled) return 'permissions-changed';
+    return 'ok';
+  }
+  // A released runtime is not a revocation by itself, but the row is then the only authority.
+  if (!input.persistedAtCapture
+    || row.permissionMode !== input.persistedAtCapture.mode
+    || row.planModeEnabled !== input.persistedAtCapture.planEnabled) return 'permissions-changed';
+  return 'ok';
+}
+
 /** service 的 I/O 边界。register.ts 只负责把 DB、Maker、IPC broadcast 作为依赖组合进来。 */
 export interface OrcaTeamServiceDeps {
   captureControlAuthority?(leadSessionId: string): Promise<() => Promise<void>>;
+  /**
+   * Delivery-scope authority for callbacks that may settle after the caller's turn ended
+   * (queued acceptance, terminal-time retries). Round-scoped authority is already expired there.
+   */
+  captureDeliveryAuthority?(leadSessionId: string): Promise<() => Promise<void>>;
   getWorkerLinkBySessionId(workerSessionId: string): Promise<OrcaWorkerLinkSnapshot | null>;
   getWorkerLinkByWorkerId(workerId: string): Promise<OrcaWorkerLinkSnapshot | null>;
   listWorkersByLead(leadSessionId: string): Promise<OrcaWorkerRecordSnapshot[]>;
@@ -412,7 +493,7 @@ export interface OrcaTeamService {
     callerLeadSessionId: string;
     workerId: string;
     expectedStatus?: 'done';
-  }, opts?: { deferredRetry?: boolean; assertCurrent?: () => Promise<void> }): Promise<OrcaOkResult>;
+  }, opts?: { deferredRetry?: boolean; assertCurrent?: () => Promise<void>; assertDeliveryCurrent?: () => Promise<void> }): Promise<OrcaOkResult>;
   /** 外部调用边界：按 caller lead 校验 worker 可见性。 */
   archiveWorker(params: { callerLeadSessionId: string; workerId: string; onlyIfIdle?: boolean; beforeArchive?: () => Promise<void> }): Promise<OrcaOkResult>;
   /** 外部调用边界：修改 worker 的展示角色名(role)与 team 内唯一标识(label)，不改执行单元本身。 */
@@ -554,12 +635,28 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
    * 下一次 done 广播仍会走 renderer 的可见性 ack 路径。done 的产品语义是
    * 「保持到用户看到为止」,所以只在 renderer 已尝试过确认时补收口,不做无条件自动 ack。
    */
-  const deferredDoneAcknowledgements = new Map<string, { assertCurrent?: () => Promise<void> }>();
-  const deferDoneAcknowledgement = (workerId: string, assertCurrent?: () => Promise<void>) => {
+  const deferredDoneAcknowledgements = new Map<string, { assertDeliveryCurrent?: () => Promise<void> }>();
+  const deferDoneAcknowledgement = (workerId: string, assertDeliveryCurrent?: () => Promise<void>) => {
     // An independent UI acknowledgement must not acquire a model caller's guard.
-    if (!deferredDoneAcknowledgements.has(workerId) || deferredDoneAcknowledgements.get(workerId)?.assertCurrent) {
-      deferredDoneAcknowledgements.set(workerId, { assertCurrent });
+    if (!deferredDoneAcknowledgements.has(workerId) || deferredDoneAcknowledgements.get(workerId)?.assertDeliveryCurrent) {
+      deferredDoneAcknowledgements.set(workerId, { assertDeliveryCurrent });
     }
+  };
+
+  /**
+   * Deferred retries run at a later terminal boundary, where the issuing turn's guard is gone.
+   * A failed snapshot capture keeps the existing guard rather than failing the call.
+   */
+  const captureDeferredAuthority = async (
+    leadSessionId: string,
+    opts?: { assertCurrent?: () => Promise<void>; assertDeliveryCurrent?: () => Promise<void> },
+  ): Promise<(() => Promise<void>) | undefined> => {
+    // An independent UI acknowledgement carries no caller authority: it must keep the
+    // no-credential semantics, otherwise a later permission change strands the worker on done.
+    if (!opts?.assertCurrent && !opts?.assertDeliveryCurrent) return undefined;
+    return opts.assertDeliveryCurrent
+      ?? await deps.captureDeliveryAuthority?.(leadSessionId).catch(() => undefined)
+      ?? opts.assertCurrent;
   };
 
   async function withWorkerTransition<T>(
@@ -906,6 +1003,8 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       ...(params.imagePaths ? { imagePaths: params.imagePaths } : {}),
       dispatchMeta: params.dispatchMeta,
       assertCurrent,
+      // Creation can queue its first task too; acceptance then lands after this call.
+      assertDeliveryCurrent: await deps.captureDeliveryAuthority?.(link.leadSessionId),
     });
     return mapNormalDispatchResult(target, execution);
   }
@@ -967,6 +1066,8 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     imagePaths?: string[];
     dispatchMeta: DispatchWorkerTaskParams['dispatchMeta'];
     assertCurrent?: () => Promise<void>;
+    /** Rechecked when the target accepts, possibly after the caller's turn is over. */
+    assertDeliveryCurrent?: () => Promise<void>;
   }): Promise<ResolvedWorkerDispatchExecution> {
     const { worker: target, link } = params.resolved;
     await reserveWorkerDispatch(target.id);
@@ -1036,13 +1137,19 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
         settled?.resolveSettlement({ outcome: 'committed' });
       };
       const onAccepted = async (): Promise<void> => {
+        // Fail closed: without a delivery guard, keep the round check instead of skipping it.
+        const assertAcceptedCurrent = params.assertDeliveryCurrent ?? params.assertCurrent;
         try {
-          await params.assertCurrent?.();
+          // Acceptance can land after the caller's turn ended (queued item, cold resume).
+          await assertAcceptedCurrent?.();
           await withWorkerTransition(target.id, async () => {
             const currentWorkers = await deps.listWorkersByLead(link.leadSessionId);
             const currentWorker = currentWorkers.find((worker) => worker.id === target.id);
+            // The store lists only active teams and worker sessions: absence is a real
+            // revocation (team ended / worker archived), not a stale turn.
+            if (!currentWorker) throw new Error('worker no longer belongs to an active team');
             acceptedSnapshot = {
-              previousStatus: currentWorker?.status ?? target.status,
+              previousStatus: currentWorker.status,
               previousPending: autoBridge.get(target.sessionId),
               previousManualInterrupt: deps.getManualInterrupt(target.sessionId),
             };
@@ -1067,7 +1174,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
             deps.broadcastOrcaWorkerChanged(link.leadSessionId);
             await markPendingReady(target.sessionId, currentPending);
           });
-          await params.assertCurrent?.();
+          await assertAcceptedCurrent?.();
         } catch (err) {
           try {
             await rollbackAccepted();
@@ -1212,6 +1319,9 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       };
     }
     const assertCurrent = captured ?? await deps.captureControlAuthority?.(params.callerLeadSessionId);
+    // A queued item is accepted only when the worker drains it, which can be long after this
+    // turn ended: that callback must use the delivery guard instead.
+    const assertDeliveryCurrent = await deps.captureDeliveryAuthority?.(params.callerLeadSessionId);
     const resolved = await resolveWorkerRef(params.callerLeadSessionId, params.targetSessionId);
     if (!resolved.ok) {
       return {
@@ -1230,6 +1340,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       ...(params.delivery ? { delivery: params.delivery } : {}),
       ...(params.imagePaths ? { imagePaths: params.imagePaths } : {}),
       assertCurrent,
+      assertDeliveryCurrent,
       dispatchMeta: {
         source: 'maker-ipc/collab',
         context:
@@ -1282,7 +1393,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
      * 否则 fire-once 契约被打破,且该 terminal 边界之后未必还有下一个 terminal
      * 事件来消费,worker 会带着悬置登记卡回 done(正是本机制要修的状态)。
      */
-    opts?: { deferredRetry?: boolean; assertCurrent?: () => Promise<void> },
+    opts?: { deferredRetry?: boolean; assertCurrent?: () => Promise<void>; assertDeliveryCurrent?: () => Promise<void> },
   ): Promise<OrcaOkResult> {
     const found = await resolveWorkerRef(params.callerLeadSessionId, params.workerId);
     if (!found.ok) return workerRefFailureForControl(params.workerId, found);
@@ -1310,7 +1421,8 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
         // 回报 settle 先落库、worker 自己的 turn 还在收尾:登记后由 terminal 边界重试(#3153)。
         // terminal 重试自身被拒时不登记(见 idleWorker 的 opts 注释)。
         if (params.expectedStatus === 'done' && !opts?.deferredRetry) {
-          deferDoneAcknowledgement(worker.id, opts?.assertCurrent);
+          // The retry runs at a later terminal boundary: keep the delivery guard, not the turn's.
+          deferDoneAcknowledgement(worker.id, await captureDeferredAuthority(params.callerLeadSessionId, opts));
         }
         return {
           ok: false,
@@ -1320,7 +1432,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       }
       if (params.expectedStatus && deps.hasSendToSessionLock(worker.sessionId)) {
         if (params.expectedStatus === 'done' && !opts?.deferredRetry) {
-          deferDoneAcknowledgement(worker.id, opts?.assertCurrent);
+          deferDoneAcknowledgement(worker.id, await captureDeferredAuthority(params.callerLeadSessionId, opts));
         }
         return {
           ok: false,
@@ -2076,7 +2188,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
             // 即 ack」在 active-turn 守卫处被拒后没有重试闭环,worker 会永久停在 done
             // (runtime/attention 悬置)。这里在该 turn 的 terminal 边界补一次收口;
             // 没登记过被拒确认的 done 保持原样(维持「done 保持到用户看到为止」语义)。
-            retryAuthority = deferredDoneAcknowledgements.get(link.workerId)?.assertCurrent;
+            retryAuthority = deferredDoneAcknowledgements.get(link.workerId)?.assertDeliveryCurrent;
             retryAcknowledgeDone =
               worker.status === 'done' && deferredDoneAcknowledgements.delete(link.workerId);
             clearRuntimeState(params.sessionId);

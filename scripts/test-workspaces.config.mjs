@@ -157,6 +157,8 @@ const desktopGuardInclude = [
   'src/main/__tests__/deviceLinkVoiceCredentialBootstrap.test.ts',
   'src/main/__tests__/discordExternalization.test.ts',
   'src/main/__tests__/sessionRuntimeControlWiring.test.ts',
+  // Orca queued acceptance must keep using delivery-scoped authority, not the round guard.
+  'src/main/maker-ipc/__tests__/orcaDeliveryWiring.contract.test.ts',
   'src/main/localDb/ipc/__tests__/sessionCreatedBroadcast.test.ts',
   'src/renderer/__tests__/promptRecommendationBadge.test.ts',
   'src/renderer/__tests__/sessionHeaderMenuParity.test.ts',

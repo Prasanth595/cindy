@@ -285,7 +285,10 @@ describe('sendToSession ordering', () => {
     expect(serviceDispatchBlock).toContain('onAcceptedCommit: commitAccepted,');
     expect(serviceDispatchBlock).toContain('const currentWorkers = await deps.listWorkersByLead(link.leadSessionId);');
     expect(serviceDispatchBlock).toContain('const currentWorker = currentWorkers.find((worker) => worker.id === target.id);');
-    expect(serviceDispatchBlock).toContain('previousStatus: currentWorker?.status ?? target.status,');
+    // A worker missing from the active-team list at acceptance is a revocation, not a stale turn;
+    // the snapshot then always carries the live row status.
+    expect(serviceDispatchBlock).toContain("if (!currentWorker) throw new Error('worker no longer belongs to an active team');");
+    expect(serviceDispatchBlock).toContain('previousStatus: currentWorker.status,');
     expect(serviceDispatchBlock).toContain('onAcceptedRollback: rollbackAccepted,');
     expectOrder(serviceDispatchBlock, 'const currentWorkers = await deps.listWorkersByLead(link.leadSessionId);', "await deps.updateWorkerStatus(target.id, 'running');");
     expectOrder(serviceDispatchBlock, 'acceptedSnapshot = {', "await deps.updateWorkerStatus(target.id, 'running');");
