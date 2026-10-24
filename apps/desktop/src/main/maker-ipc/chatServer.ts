@@ -23,7 +23,8 @@ import { buildPlanStepBrief, draftPlanSteps, type PlanStepDraft } from './botGro
 import { splitBotGroupRelaySteps } from '@cindy/maker-shared/botGroupMentions';
 import { chatMigrationReceipts } from './chatMigrationReceipts.js';
 import { prepareBotGroupTaskPost, type BotGroupTaskPostSnapshot } from './botGroupTaskPostSnapshot.js';
-import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
+import { createCurrentGroupManagement } from './currentGroupManagement.js';
+import { registerGroupToolAuthority, assertGroupToolAuthorityCurrent, authorizeGroupTool, GroupToolAuthorizationError, type GroupToolAuthority } from './botGroupToolAuthorization.js';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import WebSocket from 'ws';
@@ -49,6 +50,7 @@ import { readPersistedReplyText } from './botGroupChatService.js';
 import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botGroupRuntimeFailure.js';
 import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
 import { createThreadProjection, isShareableThreadReply, threadPreviewAttachments, threadPreviewText } from './chatServerThreads.js';
+import { createArchivedGroupRecovery, registerArchivedGroupRecovery } from './archivedGroupRecovery.js';
 import { companionSnapshot, registerCompanionHomes } from '../companion-cloud/homes.js';
 import { startCompanionCloud, type CompanionCloudRuntime } from '../companion-cloud/runtime.js';
 import { DIRECT_ROOM_COMPLETION, deliverDirectRoomMessage, directRoomClientId } from '../companion-cloud/directRoom.js';
@@ -1026,6 +1028,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const actor = actors.find(a => a.id === actorId && a.kind === 'bot');
     return profiles.find(p => p.id === actor?.externalId);
   }
+  async function ownedBots() {
+    await register();
+    return actors.flatMap(a => { const bot = a.kind === 'bot' ? localBot(a.id) : undefined; return bot?.status === 'active' ? [{ actorId: a.id, botId: bot.id, name: a.name }] : []; });
+  }
   function messageView(m: Message, members: Member[]): BotGroupMessageView {
     // Only the server-owned origin establishes a system event. A user-supplied
     // card with the same namespace must remain an ordinary chat message.
@@ -1779,8 +1785,42 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           ...(threadRootId ? { threadRootId } : {}) });
         if (!lane.ok) throw new Error(lane.errorCode);
         run.sessionId = lane.sessionId;
-        run.releaseToolAuthority = registerGroupToolAuthority(lane.sessionId, {
+        const groupAuthority: GroupToolAuthority = {
           botId: bot.id, mode: execution.access_mode,
+          currentGroup: createCurrentGroupManagement({
+            botActorId: execution.bot_id, requesterId: execution.requester_id,
+            execution,
+            validate: async () => {
+              assertGroupToolAuthorityCurrent(lane.sessionId, groupAuthority);
+              await authorizeGroupTool(lane.sessionId, bot.id, 'read-self');
+              assertGroupToolAuthorityCurrent(lane.sessionId, groupAuthority);
+            },
+            assertCurrent: () => assertGroupToolAuthorityCurrent(lane.sessionId, groupAuthority),
+            snapshot: () => groupSnapshot(s.room.id),
+            api: async (route, method, payload, actorId) => {
+              // No automatic auth replay after a management write may have committed.
+              return api(route, method, payload, actorId, method !== undefined && method !== 'GET', 200);
+            },
+            changed: () => changed(s.room.id), inviteToken, supportsDissolve: () => supportsDissolve, ownedBots,
+            executionStopped: async executionId => {
+              const stopped = running.get(executionId);
+              if (!stopped || stopped.execution.conversation_id !== s.room.id) return;
+              // Do not wait for a socket event or heartbeat to retire local authority.
+              forgetRun(stopped); stopped.releaseToolAuthority?.();
+              if (stopped.sessionId) await deps.abortLane(stopped.sessionId).catch(error => {
+                deps.log?.warn('Group execution local abort failed after server stop', { executionId, ...chatErrorDiagnostic(error) });
+              });
+            },
+            // Any successful group mutation can revoke another local lease (for
+            // example removing a human also removes their bots). Let the server
+            // decide validity, and reuse the event/heartbeat cleanup immediately.
+            reconcileExecutions: async () => {
+              await Promise.all([...running.values()].filter(active => active.execution.conversation_id === s.room.id)
+                .map(active => checkLease(active).catch(error => {
+                  deps.log?.warn('Group execution reconciliation failed', { executionId: active.execution.id, ...chatErrorDiagnostic(error) });
+                })));
+            },
+          }),
           sourceGroup: { groupId: s.room.id, name: s.room.name },
           isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,
           validate: async () => {
@@ -1801,7 +1841,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               throw error;
             }
           },
-        });
+        };
+        run.releaseToolAuthority = registerGroupToolAuthority(lane.sessionId, groupAuthority);
         if (run.plan && run.workspace?.ownerSessionId) {
           const settings = workspaces().read(s.room.id)!;
           const key = `${run.plan.id}:${execution.access_mode}:${execution.access_revision}`;
@@ -2275,7 +2316,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // controller loses our successful answer. The server still authorizes every replay.
   const postedThreadRecipients = new Map<string, string[]>();
   const chatServer: ChatServerApi = {
-    ownedBots: () => result(async () => { await register(); return { bots: actors.flatMap(a => { const bot = a.kind === 'bot' ? localBot(a.id) : undefined; return bot?.status === 'active' ? [{ actorId: a.id, botId: bot.id, name: a.name }] : []; }) }; }),
+    ownedBots: () => result(async () => ({ bots: await ownedBots() })),
     refreshProfile: () => result(async () => {
       await api('/profile/refresh', 'POST'); profileRefreshedAt = Date.now();
       for (const roomId of rooms.keys()) changed(roomId);
@@ -2627,6 +2668,28 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // A lost controller ACK must not consume the phone upload or submit the same message twice.
   const pendingSends = new Map<string, ReturnType<BotGroupChatService['sendMessage']>>();
   const sendReceipts = new Map<string, Awaited<ReturnType<BotGroupChatService['sendMessage']>>>();
+  const releaseArchivedRecovery = registerArchivedGroupRecovery(createArchivedGroupRecovery({
+    assertCurrent: () => { if (!current()) throw new Error('GROUP_AUTHORIZATION_REQUIRED'); },
+    actor: async botId => {
+      await ensureRegistered();
+      const actor = actors.find(a => a.kind === 'bot' && a.externalId === botId && !a.disabled && localBot(a.id)?.status === 'active');
+      return actor ? { actorId: actor.id, ownerId: selfId } : undefined;
+    },
+    rooms: async () => {
+      const rooms: Room[] = [];
+      let after: string | undefined;
+      do {
+        const page = await api<Array<Room & { state: string }>>(`/conversations?limit=100${after ? `&after=${after}` : ''}`);
+        rooms.push(...page.filter(r => r.state === 'joined' && isGroupRoom(r)));
+        after = page.length === 100 ? page.at(-1)!.id : undefined;
+      } while (after);
+      return rooms;
+    },
+    snapshot: groupId => groupSnapshot(groupId),
+    // Same bot actor and existing PATCH contract; never account managementActor.
+    restore: (groupId, actorId, payload) => api(`/conversations/${id.parse(groupId)}`, 'PATCH', payload, actorId, true, 200),
+    changed,
+  }));
   return {
     chatServer,
     listGroups: () => safe(async () => {
@@ -2860,6 +2923,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     continuePlan: input => safe(() => actPlan(input, 'continue')), retryPlan: input => safe(() => actPlan(input, 'retry')),
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
+      releaseArchivedRecovery();
       disposed = true; threads.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); clearTimeout(claimTrigger); socket?.close();
       companion?.dispose(); companion = undefined; deps.companionCloud?.homes.reset();
       for (const refresh of attachmentRefreshes.values()) clearTimeout(refresh);
