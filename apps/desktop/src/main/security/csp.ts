@@ -56,6 +56,8 @@ const CUSTOM_IMG_SCHEMES = [
 ];
 const CUSTOM_MEDIA_SCHEMES = [
   'xdt-audio:',
+  // Local video (including cindy-ui) uses the extension-checked file handler.
+  'xdt-file:',
   'xdt-video:',
   'xdt-image:',
   'cindy-remote-media:',
