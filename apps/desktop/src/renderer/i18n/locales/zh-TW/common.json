@@ -17219,6 +17219,243 @@
     "calculationUnavailable": "此項暫時無法計算。",
     "incomplete": "部分內容未能顯示。"
   },
+  "setupMigration": {
+    "title": "遷移助理",
+    "back": "← 上一步",
+    "cancel": "取消",
+    "listSeparator": "、",
+    "steps": {
+      "label": "遷移步驟",
+      "source": "選擇電腦",
+      "review": "選擇內容",
+      "apply": "遷移"
+    },
+    "source": {
+      "description": "選一台登入了同一帳號的電腦。它的插件、技能、設定和連線會照原樣裝到這台電腦；登入狀態和金鑰不會離開那台電腦。",
+      "loading": "正在尋找你的其他電腦…",
+      "empty": "沒有找到這個帳號的其他電腦。在另一台電腦上登入 Cindy 後再開啟這裡",
+      "loadFailed": "未能讀取電腦清單",
+      "reload": "重新讀取",
+      "ready": "上線中，可以遷移",
+      "next": "讀取設定",
+      "readAgain": "重新讀取",
+      "unavailable": {
+        "offline": "離線。開啟那台電腦上的 Cindy 後可以遷移",
+        "remote-control-off": "需要先在那台電腦開啟「允許同帳號裝置控制本機」",
+        "control-disabled": "這台電腦已關閉對它的控制，可在「遠端連線」中重新開啟"
+      }
+    },
+    "reading": "正在讀取「{{name}}」上的設定…",
+    "errors": {
+      "SETUP_SOURCE_OUTDATED": "「{{name}}」上的 Cindy 版本較舊，不支援遷移。更新那台電腦上的 Cindy 後再試",
+      "SETUP_SOURCE_UNAVAILABLE": "未能讀取「{{name}}」上的設定。遷移需要那台電腦上線，並開啟「允許同帳號裝置控制本機」",
+      "SETUP_SNAPSHOT_INVALID": "「{{name}}」回傳的設定無法辨識。兩台電腦的 Cindy 版本不同時會出現這種情況，更新到同一版本後再試",
+      "SETUP_PLAN_EXPIRED": "遷移清單已過期，需要重新讀取「{{name}}」上的設定",
+      "GENERIC": "未能讀取「{{name}}」上的設定"
+    },
+    "review": {
+      "description": "勾選要從「{{name}}」遷移到這台電腦的內容。這台電腦上已經改過的設定會保留，不會被覆蓋。",
+      "partial": "那台電腦上有部分內容這次沒能讀取，下面只列出讀到的內容。",
+      "groupCount": "已選 {{selected}} / {{total}}",
+      "present_one": "另有 {{count}} 項與這台電腦相同，無需遷移",
+      "present_other": "另有 {{count}} 項與這台電腦相同，無需遷移",
+      "start_one": "遷移 {{count}} 項",
+      "start_other": "遷移 {{count}} 項",
+      "continue": "繼續",
+      "version": "版本 {{version}}",
+      "pluginDisabled": "在那台電腦上已停用，遷移後保持停用",
+      "pluginConsentLater": "來自插件市場「{{market}}」，安裝時單獨確認權限",
+      "skillTeam": "團隊技能",
+      "settingsChanges_one": "{{count}} 項設定",
+      "settingsChanges_other": "{{count}} 項設定",
+      "settingsKept_one": "保留這台電腦的 {{count}} 項設定",
+      "settingsKept_other": "保留這台電腦的 {{count}} 項設定",
+      "settingsChangesKept_one": "{{count}} 項設定，保留這台電腦的 {{kept}} 項",
+      "settingsChangesKept_other": "{{count}} 項設定，保留這台電腦的 {{kept}} 項",
+      "kept": "保留這台電腦的設定",
+      "rendererPrefs": "介面偏好",
+      "rendererPrefsHint": "主題、語言、通知與對話顯示偏好",
+      "toolOn": "開啟內建工具「{{name}}」",
+      "toolOff": "關閉內建工具「{{name}}」",
+      "mcp": "MCP · {{url}}",
+      "mcpToken": "MCP · {{url}} · 存取憑證需要在這台電腦上重新填寫",
+      "checklistTitle": "遷移後需要在這台電腦上完成",
+      "checklistDescription": "登入狀態、金鑰和系統權限不會離開原來的電腦。遷移完成後，可以依這份清單逐項補上。",
+      "groups": {
+        "plugins": "插件",
+        "skills": "技能",
+        "settings": "設定",
+        "connections": "模型供應商與 MCP",
+        "access": "這台電腦的存取"
+      },
+      "reason": {
+        "not-in-catalog": "這台電腦的插件市場裡沒有它",
+        "source-not-added": "來自這台電腦讀不到的插件市場",
+        "local-only": "只存在於那台電腦，需要手動處理",
+        "needs-sign-in": "需要先登入",
+        "platform": "只適用於另一種系統",
+        "invalid": "這台電腦無法辨識"
+      },
+      "providerAuth": {
+        "apiKey": "API Key 需要在這台電腦上重新填寫",
+        "oauth": "需要在這台電腦上重新登入",
+        "native": "需要在這台電腦上登入訂閱帳號",
+        "none": "無需金鑰"
+      },
+      "access": {
+        "remote-control": "允許同帳號裝置控制本機",
+        "remote-controlHint": "與「{{name}}」上的設定相同，可隨時在「遠端連線」中關閉",
+        "keep-awake": "保持電腦喚醒",
+        "keep-awakeHint": "與「{{name}}」上的設定相同，這台電腦不會進入休眠"
+      }
+    },
+    "permissions": {
+      "title": "確認插件權限",
+      "description_one": "下面 {{count}} 個插件安裝後會取得這些權限。確認後會一起安裝。",
+      "description_other": "下面 {{count}} 個插件安裝後會取得這些權限。確認後會一起安裝。",
+      "pluginTitle": "{{name}} · 版本 {{version}}",
+      "confirm_one": "允許並安裝 {{count}} 個插件",
+      "confirm_other": "允許並安裝 {{count}} 個插件"
+    },
+    "running": {
+      "progress": "正在遷移：已完成 {{completed}} / {{total}}",
+      "label": "正在遷移…"
+    },
+    "done": {
+      "summary_one": "已從「{{name}}」遷移 {{count}} 項",
+      "summary_other": "已從「{{name}}」遷移 {{count}} 項",
+      "applyFailed": "插件、技能和設定的遷移沒有完成",
+      "failedTitle_one": "{{count}} 項未能遷移",
+      "failedTitle_other": "{{count}} 項未能遷移",
+      "checklistTitle": "還需要在這台電腦上完成",
+      "checklistEmpty": "沒有需要在這台電腦上補做的事",
+      "checklistDescription": "這份清單之後也可以在「設定 → 通用」中查看。",
+      "restartHint": "部分設定在重新開啟 Cindy 後生效。",
+      "finish": "完成",
+      "finishReload": "完成並重新整理介面"
+    },
+    "failure": {
+      "generic": "未能遷移（{{code}}）",
+      "SOURCE_NOT_ADDED": "未能新增它所在的插件市場",
+      "MUTATION_CANCELLED": "已取消安裝",
+      "PRECONDITION_FAILED": "遷移時插件或這台電腦的狀態發生了變化",
+      "PERMISSION_DENIED": "目前帳號無權安裝",
+      "NOT_FOUND": "在這台電腦的插件市場裡找不到它",
+      "ALREADY_EXISTS": "這台電腦上已有同名項目",
+      "SETUP_PLAN_EXPIRED": "遷移清單已過期"
+    },
+    "checklist": {
+      "done": "已完成",
+      "markDone": "標記為完成",
+      "needs": "需要：{{items}}",
+      "voiceAsrName": "語音辨識",
+      "plugin-setup": {
+        "title": "連接「{{name}}」的帳號",
+        "action": "前往連接"
+      },
+      "plugin-manual": {
+        "title": "手動安裝插件「{{name}}」",
+        "detail": "它是在那台電腦上直接匯入的插件。在那台電腦的插件詳情中匯出安裝包，再在這台電腦匯入",
+        "action": "開啟插件"
+      },
+      "market-source": {
+        "title": "新增插件市場「{{name}}」",
+        "detail": "這個市場的位址只儲存在那台電腦上，新增後可以安裝其中的插件",
+        "action": "開啟插件"
+      },
+      "skill-manual": {
+        "title": "複製技能「{{name}}」",
+        "detail": "它不是從 SkillHub 安裝的，只存在於那台電腦",
+        "action": "開啟技能"
+      },
+      "provider-key": {
+        "title": "為「{{name}}」填寫 API Key",
+        "action": "前往填寫"
+      },
+      "provider-connection": {
+        "title": "為「{{name}}」重新填寫連線位址",
+        "detail": "原位址中的帳號資訊或查詢參數可能含有憑證，沒有一起遷移",
+        "action": "前往填寫"
+      },
+      "provider-sign-in": {
+        "title": "登入「{{name}}」",
+        "action": "前往登入"
+      },
+      "local-model": {
+        "title": "在這台電腦上準備本機模型「{{name}}」",
+        "detail": "本機模型執行在原來的電腦上，這台電腦需要單獨安裝",
+        "action": "開啟供應商"
+      },
+      "mcp-token": {
+        "title": "為 MCP「{{name}}」填寫存取憑證",
+        "action": "前往填寫"
+      },
+      "builtin-key": {
+        "title": "填寫「{{name}}」的 API Key",
+        "action": "前往填寫"
+      },
+      "im-channel": {
+        "title": "連接「{{name}}」",
+        "detail": "同一個機器人同時只在一台電腦上接收訊息，連接前先確認由哪台電腦接收",
+        "action": "前往連接"
+      },
+      "computer-use": {
+        "title": "開啟自動操作",
+        "detail": "需要在這台電腦上授予輔助使用與螢幕錄製權限",
+        "action": "前往開啟"
+      },
+      "remote-desktop": {
+        "title": "開啟遠端桌面",
+        "detail": "需要在這台電腦上單獨開啟，並授予螢幕錄製權限",
+        "action": "前往開啟"
+      },
+      "ssh": {
+        "title_one": "複製 {{count}} 台遠端主機的 SSH 金鑰與設定",
+        "title_other": "複製 {{count}} 台遠端主機的 SSH 金鑰與設定",
+        "detail": "~/.ssh 中的金鑰與設定不會自動遷移，需要複製到這台電腦",
+        "action": "開啟遠端連線"
+      }
+    },
+    "settingsGroups": {
+      "appearance": "外觀",
+      "windowBehavior": "應用行為",
+      "menubar": "選單列餘量",
+      "collaboration": "協同",
+      "agentResource": "Agent 資源佔用",
+      "gitSafety": "Git 安全",
+      "goal": "目標模式",
+      "memory": "記憶",
+      "compaction": "上下文壓縮",
+      "silentEncryptedRetry": "靜默丟棄協議加密內容並重試",
+      "silentStopAutoResume": "意外停止後自動繼續",
+      "sessionRuntimeFallback": "任務模型自動降級",
+      "subagentModels": "Subagent",
+      "auxiliaryModels": "輔助模型",
+      "visionBridge": "視覺橋",
+      "modelVisibility": "模型顯示與隱藏",
+      "providerOrder": "供應商順序",
+      "modelCatalogOverrides": "模型參數調整",
+      "modelPriceOverrides": "模型單價",
+      "autoUpdate": "空閒時自動安裝更新",
+      "updateChannel": "Beta 測試管道"
+    },
+    "settings": {
+      "title": "遷移助理",
+      "description": "在一台新電腦上，把其他舊機器上 Cindy 所有接入的功能、插件和設定複製過來，成為成品能用。",
+      "start": "開啟遷移助理",
+      "pending_one": "還有 {{count}} 項需要在這台電腦上完成",
+      "pending_other": "還有 {{count}} 項需要在這台電腦上完成",
+      "allDone": "這台電腦上需要補做的事已全部完成",
+      "from": "來自「{{name}}」的遷移",
+      "closeChecklist": "關閉清單"
+    },
+    "suggestion": {
+      "title": "用遷移助理從「{{name}}」遷移？",
+      "description": "可以把那台電腦上的插件、技能、設定和連線搬到這台電腦。需要在這台電腦上重新登入或授權的內容會列成清單。之後也可以在「設定 → 通用 → 遷移助理」中開啟。",
+      "confirm": "開啟遷移助理",
+      "later": "以後再說"
+    }
+  },
   "forwardedRequest": {
     "sourcePresent": "[來源] 使用者原話由宿主原樣保留，作為請求背景；目前的請求在 Agent補充。",
     "sourceMissing": "[來源] 未找到可核驗的使用者原話。",

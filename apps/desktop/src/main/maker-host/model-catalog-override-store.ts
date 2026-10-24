@@ -21,7 +21,7 @@
  */
 
 import { desktopMakerLogger } from './logger-adapter.js';
-import { createOverrideSettingsFile } from './override-settings-file.js';
+import { createOverrideSettingsFile, portableOverrideSettings } from './override-settings-file.js';
 import {
   EMPTY_MODEL_CATALOG_OVERRIDES,
   sanitizeModelCatalogOverrides,
@@ -60,3 +60,8 @@ export function readModelCatalogOverrides(): ModelCatalogOverrides {
   store.invalidateIfChanged();
   return store.read();
 }
+
+/** New-computer setup: values the user changed here (docs/product-rules/new-device-setup-migration.md). */
+export const modelCatalogOverridePortableSettings = portableOverrideSettings(store, {
+  optionalKeys: ['baseModels', 'localModels'],
+});

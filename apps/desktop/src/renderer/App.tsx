@@ -35,6 +35,7 @@ import { GhostConfirmDialogHost } from '@/cindy-brain/GhostConfirmDialogHost';
 import { LocalAgentConfirmationHost } from '@/components/LocalAgentConfirmationHost';
 import { ForgeOidcInstallConfirmHost } from '@/cindy-brain/ForgeOidcInstallConfirmHost';
 import { GhostInstallConsentHost } from '@/cindy-brain/GhostInstallConsentHost';
+import { SetupMigrationHost } from '@/features/setup-migration/SetupMigrationHost';
 import { PluginPublisherConfirmHost } from '@/features/plugin/PluginPublisherConfirmHost';
 import { makerChatStore } from '@/lib/makerChatStore';
 import {
@@ -464,6 +465,8 @@ export function App() {
                               <LocalAgentConfirmationHost />
                               <ForgeOidcInstallConfirmHost />
                               <GhostInstallConsentHost />
+                              {/* 新电脑设置:只挂主窗(应答界面偏好读取、首次建议与迁移弹窗)。 */}
+                              {!isSecondaryWindow() && !isSidebarWindow() && <SetupMigrationHost />}
                               <PluginPublisherConfirmHost />
                               <OwnerScopedRouter />
                             </EnvCheckGuard>

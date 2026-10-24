@@ -72,6 +72,7 @@ export * from "./pluginOauthAuthentication.js";
 export * from "./inputHandoff.js";
 export * from "./inputDelivery.js";
 export * from "./taskMigration.js";
+export * from "./setupSnapshot.js";
 export * from "./remoteAgent.js";
 export * from "./orcaRemoteWorker.js";
 export * from "./companionCloud.js";

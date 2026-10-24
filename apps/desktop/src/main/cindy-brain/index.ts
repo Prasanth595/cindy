@@ -7890,7 +7890,8 @@ function readLegacyEncryptedSecret(file: string): LegacyMigrationRead<string> {
 }
 
 
-async function setGhostEnabledForUser(id: string, enabled: boolean, expectedInstalledApproval?: string, assertCurrent?: () => void) {
+/** Same path as the plugin page switch (runtime stop, receipt write, owner lease). */
+export async function setGhostEnabledForUser(id: string, enabled: boolean, expectedInstalledApproval?: string, assertCurrent?: () => void) {
   assertCurrent?.();
   const target = findGhostForPhysicalStoragePart(id);
   if (!target) throwIpcError('NOT_FOUND', '目标插件实例已不存在');

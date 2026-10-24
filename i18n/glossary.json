@@ -1983,6 +1983,18 @@
       "note": "一次提问到一次回答结束。**内部概念，不作为界面术语**：面向用户一律说「消息」，只在确实要强调一次完整往返时说「一轮」（如「上一轮」）。不要引入「轮次」作为界面用词。"
     },
     {
+      "id": "migration-assistant",
+      "status": "proposed",
+      "en": "Migration Assistant",
+      "translations": {
+        "zh-CN": "迁移助理",
+        "zh-TW": "遷移助理",
+        "ja": "移行アシスタント",
+        "ko": "마이그레이션 지원"
+      },
+      "note": "新电脑从同账号的其他电脑复制插件、技能与设置的功能名（设置 → 通用），用户 2026-10-20 定名「迁移助理」。ja / ko 参照系统同类功能的常见叫法；登记为 proposed，待术语评审。"
+    },
+    {
       "id": "withdraw-reply",
       "status": "proposed",
       "en": "withdraw (a reply)",

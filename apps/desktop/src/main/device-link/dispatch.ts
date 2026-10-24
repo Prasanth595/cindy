@@ -7,6 +7,7 @@ import type { TaskTagRequest } from '@cindy/maker-shared';
 import {
   FILE_PEER_CHANNEL,
   REMOTE_AGENT_CHANNEL,
+  SETUP_SNAPSHOT_CHANNEL,
   TASK_MIGRATION_CHANNEL,
   encodeSessionTagCatalog,
   decodeSessionTagCatalog,
@@ -481,6 +482,19 @@ let providerGroupRemoteHandler: ProviderGroupRemoteHandler | null = null;
 
 export function setProviderGroupRemoteHandler(handler: ProviderGroupRemoteHandler | null): void {
   providerGroupRemoteHandler = handler;
+}
+
+/**
+ * 新电脑设置(docs/product-rules/new-device-setup-migration.md)：同账号的另一台电脑读取这台电脑的
+ * 非秘密配置快照。只读；Main 业务模块在 bootstrap 注入，未就绪时明确拒绝。
+ */
+export interface SetupSnapshotRemoteHandler {
+  handle(raw: unknown): Promise<unknown>;
+}
+let setupSnapshotRemoteHandler: SetupSnapshotRemoteHandler | null = null;
+
+export function setSetupSnapshotRemoteHandler(handler: SetupSnapshotRemoteHandler | null): void {
+  setupSnapshotRemoteHandler = handler;
 }
 
 /** 组摘要只给同账号电脑：分享受邀者与共享任务访客是其他账号，看不到组内电脑。 */
@@ -4561,6 +4575,25 @@ async function executeRemoteInvoke(src: string, payload: InvokePayload | undefin
     } catch (error) {
       const code = /\bMIGRATION_[A-Z_]+\b/.exec(error instanceof Error ? error.message : '')?.[0] ?? 'MIGRATION_FAILED';
       return { ok: false, error: { code: 'IPC_ERROR', message: code } };
+    }
+  }
+  if (payload.channel === SETUP_SNAPSHOT_CHANNEL) {
+    // 只给同账号电脑：共享任务访客与供应商分享受邀者是其他账号(它们的通道清单里也没有它)。
+    if (!isSameAccountController(src)) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_ALLOWED', message: `channel '${payload.channel}' not allowed` } };
+    }
+    const handler = setupSnapshotRemoteHandler;
+    if (!handler) return { ok: false, error: { code: 'IPC_ERROR', message: '[SETUP_SOURCE_UNAVAILABLE] not ready yet' } };
+    try {
+      const result = await runDeviceLinkInvokeContext(
+        { controllerDeviceId: src, channel: payload.channel },
+        () => timing.measure('handler', () => handler.handle(payload.args?.[0])),
+      );
+      return { ok: true, result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const code = /\bSETUP_SNAPSHOT_[A-Z_]+\b/.exec(message)?.[0] ?? 'SETUP_SOURCE_UNAVAILABLE';
+      return { ok: false, error: { code: 'IPC_ERROR', message: `[${code}] setup snapshot unavailable` } };
     }
   }
   if (payload.channel === PLUGIN_OAUTH_CHANNEL) {
