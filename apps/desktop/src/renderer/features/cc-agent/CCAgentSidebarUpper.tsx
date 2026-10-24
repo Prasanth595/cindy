@@ -1205,7 +1205,7 @@ function ExpandedView({
   const unnamedLabelRef = useRef('');
   unnamedLabelRef.current = t('ccAgent.common.unnamedSession');
   const fireSessionNotification = useCallback(
-    (sessionId: string, kind: 'done' | 'error' | 'needs-reply') => {
+    (sessionId: string, kind: 'done' | 'error' | 'needs-reply', options?: { inputHandoff: true }) => {
       const session = findSessionNotificationSession(sessionId, [
         sessionsRef.current,
         allSessionsForNotificationRef.current,
@@ -1228,7 +1228,8 @@ function ExpandedView({
           projectDraftSessionTitle(session.title, unnamedLabelRef.current),
           leadSession ? projectDraftSessionTitle(leadSession.title, unnamedLabelRef.current) : null,
         );
-        sendSessionEventNotification(sessionId, title, kind);
+        if (options) sendSessionEventNotification(sessionId, title, kind, options);
+        else sendSessionEventNotification(sessionId, title, kind);
         return;
       }
       // /review 审查任务不单独通知:结果回到来源任务,由来源任务的轮次收尾通知。
@@ -1240,6 +1241,7 @@ function ExpandedView({
         sendSessionEventNotification(sessionId, title, kind, {
           remoteDevice: !!session.deviceLinkDeviceId,
           remoteDeviceId: session.deviceLinkDeviceId,
+          ...options,
         });
         return;
       }
@@ -1248,7 +1250,8 @@ function ExpandedView({
         const botTitle = await botOwnedSessionNotificationTitle(sessionId);
         // 伙伴群专线不发系统通知,确认请求在群聊里提示(docs/product-rules/bot-group-chat.md §3)。
         if (botTitle === BOT_GROUP_LANE_SESSION) return;
-        sendSessionEventNotification(sessionId, botTitle ?? unnamedLabelRef.current, kind);
+        if (options) sendSessionEventNotification(sessionId, botTitle ?? unnamedLabelRef.current, kind, options);
+        else sendSessionEventNotification(sessionId, botTitle ?? unnamedLabelRef.current, kind);
       })();
     },
     [],
@@ -1262,7 +1265,7 @@ function ExpandedView({
     [fireSessionNotification],
   );
   const handleSessionNeedsReply = useCallback(
-    (sessionId: string) => fireSessionNotification(sessionId, 'needs-reply'),
+    (sessionId: string, options?: { inputHandoff: true }) => fireSessionNotification(sessionId, 'needs-reply', options),
     [fireSessionNotification],
   );
 
