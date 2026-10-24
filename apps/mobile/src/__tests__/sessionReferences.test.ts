@@ -3,6 +3,7 @@ import {
   DeviceLinkError,
   DL_HISTORY_MESSAGES_CHANNEL,
   DL_SESSION_REFERENCE_CAPABILITY_CHANNEL,
+  sharedTaskHostPeer,
 } from '@cindy/device-link';
 import { i18n } from '@/i18n';
 import type { RemoteInvoke } from '@/device-link/mobileMakerTransport';
@@ -140,17 +141,24 @@ describe('mobile session-reference links', () => {
     )).toEqual([{ sessionId: 'source', deviceId: 'source-device' }]);
   });
 
-  it('prefers the device frozen into the link over store lookup and hints', () => {
-    // 桌面端深链冻结的 `?device=` 优先;store 查不到时也不丢远程判定。
+  it('refreshes a restored draft device from the store and retains frozen devices for unlisted tasks', () => {
     expect(extractMobileSessionReferences(
       'cindy://session/source?device=dev-frozen',
       () => 'dev-live',
       [{ sessionId: 'source', deviceId: 'dev-hint' }],
-    )).toEqual([{ sessionId: 'source', deviceId: 'dev-frozen' }]);
+    )).toEqual([{ sessionId: 'source', deviceId: 'dev-live' }]);
     expect(extractMobileSessionReferences(
       'cindy://session/source?message=anchor&device=dev-frozen',
       () => undefined,
     )).toEqual([{ sessionId: 'source', messageClientId: 'anchor', deviceId: 'dev-frozen' }]);
+  });
+
+  it('uses the local shared-task route when a portable link identifies its physical host', () => {
+    const peer = sharedTaskHostPeer('shared-task', 'host-device');
+    expect(extractMobileSessionReferences(
+      'cindy://session/source?message=anchor&device=host-device',
+      () => peer,
+    )).toEqual([{ sessionId: 'source', messageClientId: 'anchor', deviceId: peer }]);
   });
 
   it('clears stale refs and trusted snapshots when an edit removes the link', async () => {

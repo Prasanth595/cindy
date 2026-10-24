@@ -56,6 +56,7 @@ const MARKER_FILE = 'provider-share-regions.json';
 
 export interface CrossRegionEvents {
   changed(): void;
+  catalogChanged?(agentDeviceId: string): void;
 }
 
 interface RegionState {
@@ -287,6 +288,15 @@ function createClient(rt: Runtime, state: RegionState): DeviceLinkClient {
     },
     timing: { pingIntervalMs: 15_000 },
   });
+  client.onFrame?.(frame => {
+    if (!current(rt) || frame.kind !== 'push' || !frame.src) return;
+    const peer = parseProviderSharePeer(frame.src);
+    const payload = frame.payload as { channel?: unknown };
+    if (peer?.role !== 'host' || payload?.channel !== 'maker:provider:changed') return;
+    if (state.shares.some(share => share.shareId === peer.shareId && share.hostDeviceId === peer.deviceId && share.status === 'active')) {
+      rt.events.catalogChanged?.(`share:${peer.shareId}`);
+    }
+  });
   client.start();
   return client;
 }
@@ -426,10 +436,32 @@ export function ensureCrossRegionReceivedForFavorites(regions: readonly Region[]
   if (!state?.loaded && !state?.refreshing && !state?.timer) void refreshRegion(rt, region);
 }
 
+/**
+ * 对方区域里本账号可能有的分享都已确认：标记过的对方区域(本账号在那里申请或加入过分享)名单都已成功返回。
+ * 没有标记的区域本来就没有分享。运行时没起来或已换账号时为 false(说不准)。
+ */
+export function isCrossRegionReceivedComplete(): boolean {
+  const rt = runtime;
+  if (!rt || !current(rt)) return false;
+  const marked = (readMarkers()[rt.account] ?? []).filter((region) => region === peerRegion());
+  return marked.every((region) => rt.regions.get(region)?.loaded === true);
+}
+
 /** 只确认已成功返回名单的区域，失败区域不能阻塞其它区域的收藏。 */
 export function getConfirmedCrossRegionReceivedRegions(): Region[] {
   const rt = runtime;
   return rt && current(rt) ? [...rt.regions.values()].filter((state) => state.loaded).map((state) => state.region) : [];
+}
+
+/** 被启用的跨区标记对应的首次分享列表是否已完成。 */
+export function isCrossRegionReceivedReady(): boolean {
+  const rt = runtime;
+  // 未启动跨区 runtime 时，当前进程没有跨区分享需要等待。
+  if (!rt) return true;
+  if (!current(rt)) return false;
+  const region = peerRegion();
+  if (!readMarkers()[rt.account]?.includes(region)) return true;
+  return rt.regions.get(region)?.loaded === true;
 }
 
 function stateForShare(shareId: string): RegionState | null {

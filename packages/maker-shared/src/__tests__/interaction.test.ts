@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  splitQuestionReferences,
+  asyncQuestionNeedsSupplement,
+  formatAsyncQuestionSupplement,
   buildAskQuestionProgressSummary,
   buildAskQuestionReviewPresentation,
   buildAskUserQuestionDecision,
@@ -37,6 +40,89 @@ import {
 } from '../interaction.js';
 
 describe('interaction shared model', () => {
+  // Unit regression: existing question presentation tests only covered prose.
+  // Bug: review questions hid the only way to open their evidence.
+  // exercise the shared presentation entry, including punctuation and unsafe links.
+  it('finds question evidence without consuming prose or unsupported link targets', () => {
+    expect(splitQuestionReferences('请查看 sidebar-layout-v1.html 或 https://example.com/view。再确认。')).toEqual([
+      { text: '请查看 ' },
+      { text: 'sidebar-layout-v1.html', href: 'sidebar-layout-v1.html' },
+      { text: ' 或 ' },
+      { text: 'https://example.com/view', href: 'https://example.com/view' },
+      { text: '。再确认。' },
+    ]);
+    expect(splitQuestionReferences('[查看原型](<docs/my prototype.html>) 与 `src/app.ts:42`')).toEqual([
+      { text: '查看原型', href: 'docs/my prototype.html' },
+      { text: ' 与 ' },
+      { text: 'src/app.ts:42', href: 'src/app.ts:42' },
+    ]);
+    expect(splitQuestionReferences('[坏链接](javascript:evil.html) data:evil.html')).toEqual([
+      { text: '[坏链接](javascript:evil.html) data:evil.html' },
+    ]);
+    expect(splitQuestionReferences('请查看 页面.html:42 和 docs/设计稿/index.html')).toEqual([
+      { text: '请查看 ' }, { text: '页面.html:42', href: '页面.html:42' },
+      { text: ' 和 ' }, { text: 'docs/设计稿/index.html', href: 'docs/设计稿/index.html' },
+    ]);
+    expect(splitQuestionReferences('`src/app.ts:10-20` 和 [实现](src/app.ts:10-20)')).toEqual([
+      { text: 'src/app.ts:10-20', href: 'src/app.ts:10-20' }, { text: ' 和 ' },
+      { text: '实现', href: 'src/app.ts:10-20' },
+    ]);
+    const spacedPath = String.raw`C:\Program Files\Cindy\app.log`;
+    expect(splitQuestionReferences(spacedPath)).toEqual([{ text: spacedPath }]);
+    expect(splitQuestionReferences('`' + spacedPath + '`')).toEqual([{ text: spacedPath, href: spacedPath }]);
+    expect(splitQuestionReferences('请查看 /tmp\n然后查看 notes.txt')).toEqual([
+      { text: '请查看 ' }, { text: '/tmp', href: '/tmp' },
+      { text: '\n然后查看 ' }, { text: 'notes.txt', href: 'notes.txt' },
+    ]);
+    const windowsHosts = String.raw`C:\Windows\System32\drivers\etc\hosts`;
+    expect(splitQuestionReferences(windowsHosts)).toEqual([{ text: windowsHosts, href: windowsHosts }]);
+    expect(splitQuestionReferences('/etc/hosts 和 /usr/bin/node')).toEqual([
+      { text: '/etc/hosts', href: '/etc/hosts' }, { text: ' 和 ' },
+      { text: '/usr/bin/node', href: '/usr/bin/node' },
+    ]);
+    expect(splitQuestionReferences('/etc/hosts, /usr/bin/node notes.txt')).toEqual([
+      { text: '/etc/hosts', href: '/etc/hosts' }, { text: ', ' },
+      { text: '/usr/bin/node', href: '/usr/bin/node' }, { text: ' ' },
+      { text: 'notes.txt', href: 'notes.txt' },
+    ]);
+    expect(splitQuestionReferences('/etc/hosts 和 `' + windowsHosts + '` 与 [hosts](/etc/hosts)')).toEqual([
+      { text: '/etc/hosts', href: '/etc/hosts' }, { text: ' 和 ' },
+      { text: windowsHosts, href: windowsHosts }, { text: ' 与 ' },
+      { text: 'hosts', href: '/etc/hosts' },
+    ]);
+    expect(splitQuestionReferences('请查看 HTTPS://en.wikipedia.org/wiki/Foo_(bar)。')).toEqual([
+      { text: '请查看 ' },
+      { text: 'HTTPS://en.wikipedia.org/wiki/Foo_(bar)', href: 'HTTPS://en.wikipedia.org/wiki/Foo_(bar)' },
+      { text: '。' },
+    ]);
+  });
+  it('keeps original questions attached to late answers without including skipped questions', () => {
+    expect(formatAsyncQuestionSupplement([{ question: 'Scope?\nDetails?', header: 'Scope' }, { question: 'Skipped?' }],
+      { Scope: 'Mobile too', 'Skipped?': '' })).toBe('> Scope?\n> Details?\n\nMobile too');
+    expect(formatAsyncQuestionSupplement([{ question: 'Q?' }], {})).toBe('');
+  });
+
+  it('never supplements an accepted native answer', async () => {
+    const read = vi.fn();
+    expect(await asyncQuestionNeedsSupplement(async () => ({ accepted: true }), read, 'q1')).toBe(false);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.each(['answered', 'cancelled', 'pending', 'missing'])('checks the original Host row after a lost receipt: %s', async (status) => {
+    const result = asyncQuestionNeedsSupplement(async () => { throw new Error('lost receipt'); },
+      async () => status === 'missing' ? undefined : JSON.stringify({ requestId: 'q1', status }), 'q1');
+    if (status === 'answered') expect(await result).toBe(false);
+    else if (status === 'cancelled') expect(await result).toBe(true);
+    else await expect(result).rejects.toThrow('not confirmed');
+  });
+
+  it('does not deliver against a different question or a still-pending paused question', async () => {
+    await expect(asyncQuestionNeedsSupplement(async () => ({ accepted: false }),
+      async () => ({ requestId: 'other', status: 'cancelled' }), 'q1')).rejects.toThrow();
+    await expect(asyncQuestionNeedsSupplement(async () => ({ accepted: false }),
+      async () => ({ requestId: 'q1', status: 'pending' }), 'q1')).rejects.toThrow();
+  });
+
   it('builds resolve action presentation for requestId, busy, invalid, and confirm states', () => {
     expect(buildInteractionResolveActionPresentation({
       label: '允许一次',

@@ -129,9 +129,13 @@ describe('mobile optimistic composer while session is not ready', () => {
 
   it('lets the app owner obtain authoritative parameters before dispatch, independently of the page', () => {
     const bridge = readSource('src/session/MobileOutboxBridge.tsx');
-    expect(bridge).toContain('getNewSessionCreationTask(r.item.sessionId) === null');
-    expect(bridge).toContain('!isDurableOutboxCreationHeld(r.item.sessionId)');
-    expect(bridge).toContain('const session = await maker(r).getSession(r.item.sessionId)');
+    // Ownership/creation guards and shared reads run through the production
+    // adapter in cindyMakeOutboxBridge.test.ts; retain the app-owner wiring here.
+    expect(bridge).toContain('= createOutboxSessionAccess({');
+    expect(bridge).toContain('hasCreationTask: (sessionId) => getNewSessionCreationTask(sessionId) !== null');
+    expect(bridge).toContain('isCreationHeld: isDurableOutboxCreationHeld');
+    expect(bridge).toContain('readSession: (record) => maker(record).getSession(record.item.sessionId)');
+    expect(bridge).toContain('const session = await readSessionOnce(r)');
     expect(bridge).toContain('if (!session?.workingDir)');
     expect(bridge).toContain('}, [link.status, link.connectionEpoch])');
   });
@@ -196,11 +200,12 @@ describe('mobile optimistic composer while session is not ready', () => {
   it('keeps legacy Plan out of deferred delivery without affecting the modern Plan path', () => {
     const source = readSource(SCREEN);
     const guardStart = source.indexOf('const legacyPlanRequiresLiveDispatch =');
-    const optimisticClearStart = source.indexOf('if (text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
+    const optimisticClearStart = source.indexOf('if (!independent && text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
     const outboxStart = source.indexOf('if (useLocalOutbox) {', guardStart);
     const guard = source.slice(guardStart, outboxStart);
 
     expect(guardStart).toBeGreaterThan(-1);
+    expect(optimisticClearStart).toBeGreaterThan(-1);
     expect(guardStart).toBeLessThan(optimisticClearStart);
     expect(guard).toContain("runtimeOptions?.planModeSupported !== true");
     expect(guard).toContain('const useLocalOutbox = useDurableOutbox;');
@@ -233,7 +238,9 @@ describe('mobile optimistic composer while session is not ready', () => {
     const bridge = readSource('src/session/MobileOutboxBridge.tsx');
     const delivery = readSource('src/session/durableOutboxDelivery.ts');
     expect(source).not.toContain('const dispatchOutboxItem =');
-    expect(bridge).toContain('preSend: guardRecord');
+    // The transport must use the record-scoped adapter, whose delayed pre-send
+    // invalidation is exercised by cindyMakeOutboxBridge.test.ts.
+    expect(bridge).toContain('invoke: invokeOwned(r),');
     expect(delivery).toMatch(/await update\(\{\s*state: ["']sending["'],\s*enqueueStarted: true,\s*error: undefined\s*\}\)/);
     expect(delivery).toContain('record.retrySafe && projection.inputDeliveryVersion === 1');
     expect(delivery).not.toContain('createOutboxClientId');
@@ -284,7 +291,7 @@ describe('mobile optimistic composer while session is not ready', () => {
     expect(source).toContain('const hydratedDocumentAtSend = await hydrateComposerMessageReferenceBodies(');
     expect(source).toContain('if (!sendScopeStillAlive()) {\n      recoverCapturedDraftForScopeExit();');
     expect(source).toContain('await waitForPastePlaceholdersSettled();\n          if (!sendScopeStillAlive()) {');
-    expect(source).toContain('const { failedCount } = await waitForPendingUploads();\n      if (!sendScopeStillAlive()) {');
+    expect(source).toContain('const { failedCount } = independent ? { failedCount: 0 } : await waitForPendingUploads();\n      if (!sendScopeStillAlive()) {');
     expect(source).toContain('if (!sendScopeStillAlive() || !isMobileAuthOwnerCurrent(ownerAtSend)) return;');
   });
 
@@ -301,29 +308,84 @@ describe('mobile optimistic composer while session is not ready', () => {
 
   it('copies attachment bytes before committing the ownership handoff', () => {
     const source = readSource(SCREEN);
-    const branch = source.slice(source.indexOf('const handoff = await beginOutboxAttachmentHandoff()'));
+    // 正文提交不接管输入框附件；普通发送仍须先准备/复制，再持久入队，最后释放。
+    const handoffStart = source.indexOf('const handoff = independent ? null : await beginOutboxAttachmentHandoff();');
+    expect(handoffStart).toBeGreaterThan(-1);
+    const branch = source.slice(handoffStart);
+    expect(branch).toContain('const pendingSources = handoff ? await handoff.prepare() : [];');
+    expect(branch).toContain('const readyAttachments = independent ? [] : [...attachmentsRef.current];');
+    for (const step of ['await handoff.prepare()', 'await retainOutboxFile', 'await mobileDurableOutbox.add(record)', 'handoff?.release(true)']) {
+      expect(branch.indexOf(step)).toBeGreaterThan(-1);
+    }
     expect(branch.indexOf('await handoff.prepare()')).toBeLessThan(branch.indexOf('await retainOutboxFile'));
     expect(branch.indexOf('await retainOutboxFile')).toBeLessThan(branch.indexOf('await mobileDurableOutbox.add(record)'));
-    expect(branch.indexOf('await mobileDurableOutbox.add(record)')).toBeLessThan(branch.indexOf('handoff.release(true)'));
-    expect(branch).toContain('handoff.release(committed)');
+    expect(branch.indexOf('await mobileDurableOutbox.add(record)')).toBeLessThan(branch.indexOf('handoff?.release(true)'));
+    expect(branch).toContain('handoff?.release(committed)');
   });
 
-  it('carries follow-ups back to the new-session screen when creation itself failed', () => {
+  it('carries follow-ups and a pending picker warning back when creation itself failed', async () => {
     // create-failed 的「返回编辑」会连合成会话行一起删掉:不把 outbox 一并 stash,
     // unmount cleanup 会把那些消息写进一个即将消失的会话草稿,用户再也找不回(review P1)。
     const source = readSource(SCREEN);
-    const backToEditStart = source.indexOf("text: t('session.screen.backToEdit')");
-    const backToEditEnd = source.indexOf("text: t('session.screen.retry')", backToEditStart);
+    const backToEditStart = source.indexOf("useFailedCreationReturnToEdit({");
+    const backToEditEnd = source.indexOf("const prevCreationStatusRef", backToEditStart);
     const branch = source.slice(backToEditStart, backToEditEnd);
     // 跨页导航:upload controller 随会话页销毁,在途上传保不住,只能取消 + 告知。
     expect(branch).toContain("takeOutboxForSession(sessionId, 'cancel')");
-    expect(branch.indexOf('takeOutboxForSession'))
-      .toBeLessThan(branch.indexOf('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })'));
+    expect(branch).toContain('useFailedCreationReturnToEdit({');
+    expect(branch).not.toContain('Alert.alert');
+    expect(source).not.toContain('retryNewSessionCreation');
+    expect(branch).toContain('stashDraft: prepared => {');
+    const recovery = readSource('src/session/returnNewSessionToEdit.ts');
+    const stash = recovery.indexOf('stashDraft(prepared);');
+    expect(stash).toBeGreaterThanOrEqual(0);
+    expect(recovery).toContain('editSessionId: sessionId');
+    expect(recovery).not.toContain('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
+    const creation = readSource('src/session/newSessionCreation.ts');
+    const claim = creation.slice(creation.indexOf('export function drainStashedNewSessionDraft'));
+    expect(claim).toContain('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
     expect(branch).toContain('outboxItemDraftText');
     // 装不下的中转对象回收 + 把「没能带回多少」随 stash 带到新建页。
     expect(branch).toContain('discardRecoveredAttachments(dropped);');
     expect(branch).toContain('const unrecoveredCount = dropped.length + cancelledUploadCount;');
     expect(branch).toContain("notice: unrecoveredCount > 0");
+
+    // Execute the production handoff with a picker open but no upload slot yet.
+    // The old pending-count guard returned without saving any warning.
+    const ast = ts.createSourceFile(SCREEN, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let beforeNavigate: ts.Expression | undefined;
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'useFailedCreationReturnToEdit') {
+        const options = node.arguments[0] as ts.ObjectLiteralExpression;
+        beforeNavigate = options.properties.find((p): p is ts.PropertyAssignment =>
+          ts.isPropertyAssignment(p) && p.name.getText(ast) === 'beforeNavigate')?.initializer;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    expect(beforeNavigate).toBeDefined();
+    const save = vi.fn(async () => []);
+    const warning = vi.fn();
+    const context = {
+      getMobileAuthOwner: () => 'owner', isMobileAuthOwnerCurrent: () => true,
+      outboxSessionAliveRef: { current: 'task' }, sessionId: 'task', deviceId: 'mac',
+      getPendingUploadCount: () => 0, hasAttachmentInput: () => true,
+      t: (key: string) => key, attachmentError: null, setAttachmentError: warning,
+      discardAllPendingUploadsForScopeChange: vi.fn(), draftRef: { current: '' },
+      attachmentsRef: { current: [] }, appendNewSessionEditComposer: save,
+      getUploadedSource: vi.fn(),
+      releaseUploadedSources: vi.fn(), setAttachments: vi.fn(), replaceComposerDraft: vi.fn(),
+      discardRecoveredAttachments: vi.fn(),
+    };
+    const code = ts.transpileModule(`const callback = ${beforeNavigate!.getText(ast)};`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    await new Function(...Object.keys(context), `${code}; return callback();`)(...Object.values(context));
+    expect(save).toHaveBeenCalledWith('task', 'mac', {
+      text: '', attachments: [], notice: 'session.screen.pendingAttachmentsNotCarriedBack',
+      getUploadedSource: context.getUploadedSource,
+    });
+    expect(warning).toHaveBeenCalledWith('session.screen.pendingAttachmentsNotCarriedBack');
   });
 
   it('never silently drops recovered attachments, and never discards live tray ones', () => {
@@ -450,7 +512,8 @@ describe('mobile optimistic composer while session is not ready', () => {
     const source = readSource(SCREEN);
     const gate = source.indexOf('commandNeedsRemoteSession(earlyLocalCommand, earlyDesktopCommand)');
     expect(gate).toBeGreaterThan(-1);
-    const clear = source.indexOf('if (text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
+    const clear = source.indexOf('if (!independent && text && !useDurableOutbox) applyComposerDocument(documentAfterOptimisticClear);');
+    expect(clear).toBeGreaterThan(-1);
     expect(gate).toBeLessThan(clear);
     const branch = source.slice(gate, clear);
     expect(branch).toContain('isRemoteSessionMissing(readSessionRowNow())');

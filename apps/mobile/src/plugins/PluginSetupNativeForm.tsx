@@ -1,3 +1,4 @@
+import { receiveMobilePluginOauthLoopback } from "./pluginOauthLoopbackNative";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -10,7 +11,6 @@ import {
 } from "react-native";
 import { useIsFocused } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import * as Clipboard from "expo-clipboard";
 import { PLUGIN_OAUTH_CHANNEL } from "@cindy/device-link";
 import { useTranslation } from "react-i18next";
 import { Text, TextInput } from "@/components/AppText";
@@ -35,6 +35,7 @@ import { type MobilePluginSetupAction } from "./pluginSetupActions";
 import type { authenticateMobilePluginOauth } from "./pluginOauthClient";
 import { openMobilePluginOauthSession } from "./pluginOauthSession";
 import { pluginOauthPlatformCrypto } from "./pluginOauthPlatformCrypto";
+import { createCopiedCodeClipboard } from "./copiedCodeClipboard";
 import { runMobilePluginAuthorization } from "./pluginAuthorizationController";
 
 export default function PluginSetupNativeForm({
@@ -62,8 +63,8 @@ export default function PluginSetupNativeForm({
   const owner = useRef(getMobileAuthOwner()).current,
     alive = useRef(true),
     lock = useRef(false),
-    operation = useRef(0),
-    copiedCode = useRef<string | undefined>(undefined);
+    operation = useRef(0);
+  const [codeClipboard] = useState(createCopiedCodeClipboard);
   const live = useRef({ focused, epoch: link.connectionEpoch });
   live.current = { focused, epoch: link.connectionEpoch };
   const [selected, setSelected] = useState<MobilePluginSetupAction | undefined>(
@@ -77,16 +78,10 @@ export default function PluginSetupNativeForm({
     () => () => {
       alive.current = false;
       operation.current++;
-      void clearCopiedCode();
+      void codeClipboard.clear();
     },
     [],
   );
-  const clearCopiedCode = async () => {
-    const code = copiedCode.current;
-    copiedCode.current = undefined;
-    if (code && (await Clipboard.getStringAsync().catch(() => "")) === code)
-      await Clipboard.setStringAsync("").catch(() => {});
-  };
   const clear = () => {
     setSecret("");
     setHost("");
@@ -96,7 +91,7 @@ export default function PluginSetupNativeForm({
     clear();
     setSelected(undefined);
     setBrowser(undefined);
-    void clearCopiedCode();
+    void codeClipboard.clear();
     onClosed();
   };
   useEffect(() => {
@@ -169,6 +164,18 @@ export default function PluginSetupNativeForm({
           ? { inputConnection: { host, token: secret } }
           : {}),
         clearInput: clear,
+        receiveLoopback: async (request, expiresAt, signal) => {
+          assertCurrent();
+          const accepted = await new Promise<boolean>((resolve) => Alert.alert(
+            t("plugins.connectAccount"), new URL(request.url).hostname,
+            [{ text: t("plugins.cancel"), style: "cancel", onPress: () => resolve(false) }, { text: t("plugins.open"), onPress: () => resolve(true) }],
+            { cancelable: false },
+          ));
+          assertCurrent();
+          if (!accepted || Date.now() >= expiresAt) throw new Error("PLUGIN_OAUTH_CLOSED");
+          return receiveMobilePluginOauthLoopback(request, expiresAt, assertCurrent, signal);
+        },
+        isForeground: () => AppState.currentState === "active",
         pause: async () => {
           await new Promise((resolve) => setTimeout(resolve, 600));
           while (AppState.currentState !== "active") {
@@ -219,7 +226,8 @@ export default function PluginSetupNativeForm({
           e.message === "PLUGIN_AUTHORIZATION_IDENTITY_CHANGED";
         const computerCallback =
           e instanceof Error &&
-          e.message === "PLUGIN_AUTHORIZATION_COMPUTER_CALLBACK";
+          ["PLUGIN_AUTHORIZATION_COMPUTER_CALLBACK", "PLUGIN_OAUTH_CALLBACK_UNSUPPORTED"].includes(e.message);
+        const updateRequired = e instanceof Error && e.message === "PLUGIN_OAUTH_UPDATE_REQUIRED";
         Alert.alert(
           identityChanged
             ? t("plugins.identityChanged")
@@ -230,12 +238,12 @@ export default function PluginSetupNativeForm({
             ? t("plugins.identityChangedHint")
             : computerCallback
               ? t("plugins.computerAuthorizationHint")
-              : t("plugins.authorizationCheckHint"),
+              : updateRequired ? t("plugins.oauthUpdateRequired") : t("plugins.authorizationCheckHint"),
         );
       }
     } finally {
       client?.dispose();
-      void clearCopiedCode();
+      void codeClipboard.clear();
       lock.current = false;
       if (alive.current) {
         setBusy(false);
@@ -334,13 +342,7 @@ export default function PluginSetupNativeForm({
                     style={styles.row}
                     accessibilityRole="button"
                     onPress={() => {
-                      const code = browser.code!;
-                      void Clipboard.setStringAsync(code)
-                        .then(() => {
-                          copiedCode.current = code;
-                          if (!alive.current) void clearCopiedCode();
-                        })
-                        .catch(() => {});
+                      void codeClipboard.copy(browser.code!).catch(() => {});
                     }}
                   >
                     <Text style={styles.body}>

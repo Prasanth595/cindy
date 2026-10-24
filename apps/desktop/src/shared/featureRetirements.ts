@@ -9,7 +9,8 @@ export interface FeatureRetirement {
     sidebarKinds?: readonly string[];
     builtinToolsetIds?: readonly string[];
   };
-  replacement?: { ghostId: string; marketId: string; name: string };
+  /** Display copy lives under `${copyKey}.replacementName`. */
+  replacement?: { ghostId: string; marketId: string };
 }
 
 export interface InstalledFeatureRetirement {
@@ -34,7 +35,6 @@ export const FEATURE_RETIREMENTS: readonly FeatureRetirement[] = [
     replacement: {
       ghostId: 'baguette-simulator',
       marketId: 'cb93909aaa6ac600bbc2f6b8a',
-      name: 'Baguette',
     },
   },
 ];

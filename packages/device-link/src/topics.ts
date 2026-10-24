@@ -54,9 +54,11 @@ export function parseFsWatchTopic(topic: string): string | null {
 export type SessionActivityPhase = 'running' | 'needs-interaction' | 'completed' | 'error';
 
 export interface SessionActivityPayload {
-  /** Completion push ownership only; activity/attention remains unchanged.
+  /** Optional owner-issued completion identity. Old hosts omit it; never infer one. */
+  completionToken?: string;
+  /** Completion notification policy only; activity/attention remains unchanged.
    * Absent on older hosts. Unknown values use ordinary completion semantics. */
-  completionNotification?: 'pending' | 'teammate';
+  completionNotification?: 'pending' | 'teammate' | 'silent';
   /** Optional public generation category; unknown values must use a generic caption. */
   workingPhase?: string;
   sessionId: string;
@@ -176,6 +178,8 @@ const ACCOUNT_CHANNELS: ReadonlySet<string> = new Set([
   // 不为每个新模块扩张一档 topic。
   REMOTE_RESOURCE_CHANGED_CHANNEL,
   'maker:bot-direct-message:changed',
+  // 伙伴自主跟进状态变化：账号级、无 sessionId，节流 ≤1 次/秒。
+  'maker:bot-autonomy:changed',
   'maker:schedule:event',
   'maker:project-automation:event',
   // 被控端「当前 New Maker 草稿」全量变更:账号 / 全局级(无 sessionId),并入 `sessions` topic

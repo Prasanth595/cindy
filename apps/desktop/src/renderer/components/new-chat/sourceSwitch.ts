@@ -171,6 +171,7 @@ export function resolveSourceSwitch(args: {
 export {
   resolveEffort,
   resolveRequestedEffort,
+  resolveRemoteSwitchEffort,
   composeAtomicModelSelection,
   resolveIntentReselectEffort,
   resolveProviderSwitchEffort,

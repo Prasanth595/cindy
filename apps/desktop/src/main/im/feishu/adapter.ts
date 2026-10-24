@@ -9,10 +9,8 @@ import { captureImContext } from '../../../shared/imMessageSource';
  *     MCP (send_file_to_user)
  *   - ack emoji: REACTION_PROCESSING
  *   - 群 lane(senderId = `g/{chatId}[/{threadId}]`, @cindy/im feishu/codec.ts):
- *     群主流 @ 入站即开话题(每话题一个会话, 群 lane 仅开话题失败的降级路径);
- *     **`/ctr` 接管严格按话题记账**: binding 的 userId 就是话题 lane, 一个话题
- *     一份接管, 群主流的 @ 恒开新话题走该话题自己的会话(不会被任何接管吃掉);
- *     要跟接管会话说话就在那个话题里说 —— 群主流不是接管的入口;
+ *     群主流提问留在群 lane, 话题内提问留在原话题 lane, 不自动开新话题;
+ *     接管绑定按完整 lane 区分, 群主流不会改道进入某个话题的接管会话;
  *     群里新建的会话一律用渠道设置「群聊新建任务权限档」(sessions.permissionModeFor,
  *     `/ctr` 新建走 cardActionHandler 读同一设置);
  *     群轮次挂「非只读即确认」策略 + 触发时按页回翻群历史(50/页, 最多 5 页,
@@ -28,6 +26,8 @@ import fs from 'node:fs';
 import { app } from 'electron';
 import { decodeFeishuLaneUserId, type FeishuIM, type FeishuLane } from '@cindy/im';
 
+import { imChannelNoteDirectSourceFromEvent } from '../shared/channelNote';
+import type { FeishuToolScope } from '../shared/channelToolScope';
 import type { ImChannelAdapter, ImOrchestratorConfig } from '../shared/types';
 import { readImDefaultSettings } from '../defaultSettingsStore';
 import { claimLegacyImPath, ownerScopedImUserDataPath } from '../ownerScopedStorage';
@@ -238,10 +238,26 @@ function cachedChatNameForNote(feishuIm: FeishuIM, chatId: string): string | nul
   return null;
 }
 
+/**
+ * 每条入站消息的 `[渠道说明]` 末尾点一句本轮可用的渠道工具 —— Agent 不知道自己在飞书里、
+ * 每次摸瞎试工具是 2026-10-16 Chris 点名的痛点。个人 bot 与伙伴自有连接同一句。
+ */
+export function feishuToolsHint(service: 'feishu' | 'lark'): string {
+  const platform = service === 'lark' ? 'Lark' : '飞书';
+  return `本轮可直接用 cindy_feishu_bot 工具操作${platform} Open API(send_text / send_markdown / send_file 发到本对话或回复某条消息, set_reaction 表情, get_chat 群信息与成员, get_message 读消息, pin_message 置顶, call_api 任意接口), 默认目标就是本条所在对话。`;
+}
+
+export interface FeishuAdapterOptions {
+  /** 伙伴自有连接: 私聊按主人 / 外部用户分落点(transport 对外开放时才会有外部私聊)。 */
+  companionBotId?: string;
+}
+
 export function buildFeishuAdapter(
   feishuIm: FeishuIM,
   config: ImOrchestratorConfig,
+  options: FeishuAdapterOptions = {},
 ): ImChannelAdapter {
+  const companion = Boolean(options.companionBotId);
   const isLark = () => feishuIm.getService() === 'lark';
   const conversationPrefix = () => (isLark() ? '[Lark·DM] ' : '[飞书·DM] ');
   const groupPrefix = (threadId: string) =>
@@ -298,9 +314,8 @@ export function buildFeishuAdapter(
        * 面向私聊的 `permissionMode`。
        *
        * 覆盖到的建会话路径(都经 sessionRepo.prepareNewSession):
-       *   - 群主流 @bot 开新话题 → 话题 lane 首条消息建行(turnRunner)
+       *   - 群主流 / 话题 @bot → 对应 lane 首条消息建行(turnRunner)
        *   - 群里 `/new` 重开上下文(slashCommands → resetSessionToDefaults)
-       *   - 群主流降级 lane(开话题失败时)建行
        * `/ctr` 新建接管会话不走这里(它建的是 desktop 会话, 见
        * cardActionHandler), 那边读的是同一个设置项。
        *
@@ -322,7 +337,7 @@ export function buildFeishuAdapter(
         if (!name) return null;
         return `${groupPrefix(lane.threadId)}${name}`;
       },
-      // 群主流 lane(仅开话题失败的降级路径)标题是稳定的群名, 不参与首条消息
+      // 群主流 lane 标题是稳定的群名, 不参与首条消息
       // oneshot 起名; 话题 lane 需要 oneshot 出「话题简介」, 照常参与。
       skipOneshotTitleFor: (userId) => {
         const lane = decodeFeishuLaneUserId(userId);
@@ -351,12 +366,29 @@ export function buildFeishuAdapter(
     processingEmoji: REACTION_PROCESSING,
     queuedEmoji: 'OneSecond',
     buildVendorOptions: (userId) => ({ feishuChatId: userId, source: 'feishu' }),
+    // 伙伴自有连接: TOFU 认定的主人私聊进主任务; 群 / 话题按 lane 一条专线; 对外开放
+    // 后的外部用户私聊(transport guests)按用户一条专线。
+    companionLane: (userId) => {
+      const lane = decodeFeishuLaneUserId(userId);
+      if (lane) return { kind: 'group', chatId: lane.chatId, threadId: lane.threadId };
+      return userId === feishuIm.getOwnerOpenId() ? { kind: 'owner-dm' } : { kind: 'guest-dm', userId };
+    },
 
     // 群轮次(speaker 存在)统一挂强确认策略 — 群历史前缀携带成员可控文本,
     // 注入可借 owner 轮次的宽松档执行危险操作; 确认卡经 deliverToOwnerDm
     // 改投 owner 私聊, 点击也只认 owner。DM 不挂, owner 私聊保持全速。
-    turnPermissionPolicyFor: (event) =>
-      event.speaker ? createFeishuGroupTurnPermissionPolicy(event.messageId, event.speaker.isOwner) : undefined,
+    // 伙伴自有 bot(2026-10-16 Chris 裁决): 伙伴设置里的权限档是唯一开关。主人触发的
+    // 轮次不另挂策略; 成员 / 外部用户触发的轮次只在破坏性动作上要主人确认, 口径与
+    // Telegram 一致(不用飞书个人 bot 的「非只读即确认」)。
+    turnPermissionPolicyFor: (event) => {
+      if (!event.speaker) return undefined;
+      if (companion) {
+        return event.speaker.isOwner
+          ? undefined
+          : createFeishuGroupTurnPermissionPolicy(event.messageId, false, 'destructive');
+      }
+      return createFeishuGroupTurnPermissionPolicy(event.messageId, event.speaker.isOwner);
+    },
     // 群护栏取缔: 用户在渠道设置里显式允许群会话用「完全访问」→ 该档位
     // 不再挂强确认策略(maker 不再拒绝, 按用户选择直接执行)。群上下文的
     // 防注入过滤/包裹在 prepareAgentTurnText 里独立生效, 不随权限档关闭;
@@ -366,13 +398,39 @@ export function buildFeishuAdapter(
     // open_id(飞书事件不带显示名)。私聊写 p2p chat_id。
     channelNoteSourceFor: async (event) => {
       const lane = decodeFeishuLaneUserId(event.senderId);
-      if (!lane) return { chatKind: 'direct', ...(event.chatId ? { chatId: event.chatId } : {}) };
+      const toolsHint = feishuToolsHint(feishuIm.getService());
+      // 私聊: 主人只写 chat_id; 对外开放后外部用户的私聊写明发言人、不是主人。
+      if (!lane) return { ...imChannelNoteDirectSourceFromEvent(event), toolsHint };
       const chatName = cachedChatNameForNote(feishuIm, lane.chatId);
       return {
         chatKind: 'group',
         chatId: lane.chatId,
         ...(chatName ? { chatName } : {}),
         ...(event.speaker?.id ? { senderId: event.speaker.id } : {}),
+        toolsHint,
+      };
+    },
+    // cindy_feishu_bot 轮次内工具的逐轮作用域: 目标 chat 就是触发消息所在的 chat / 话题; 触发者
+    // 是不是主人由 Main 校验过的 speaker / owner open_id 决定(不来自模型参数)。transport 就是
+    // 这条连接自己的 FeishuIM —— 伙伴自有连接的工具不会串到设置页那份 bot。
+    channelToolScopeFor: (event): FeishuToolScope => {
+      const lane = decodeFeishuLaneUserId(event.senderId);
+      const requesterIsOwner = lane
+        ? event.speaker?.isOwner === true
+        : event.speaker
+          ? event.speaker.isOwner
+          : event.senderId === feishuIm.getOwnerOpenId();
+      return {
+        channel: 'feishu',
+        im: feishuIm,
+        botId: event.contextId,
+        laneUserId: event.senderId,
+        chatId: lane ? lane.chatId : event.chatId,
+        threadId: lane ? lane.threadId : '',
+        chatKind: lane ? 'group' : 'direct',
+        requesterIsOwner,
+        triggerMessageId: event.messageId,
+        companion,
       };
     },
     // 群 lane: 触发时按页回翻群历史拼上下文前缀(含媒体附件), 落库仍是渠道原文。
@@ -402,15 +460,8 @@ export function buildFeishuAdapter(
           replyContext: safeReply,
         };
       }
-      // 群主流 @ 开新话题: 上下文取数 lane 与路由 lane 分离(见
-      // IMMessageEvent.groupContextLane) — 触发消息发在群主流(只是回复被折成
-      // 了新话题), 所以群历史仍按群主流拉取, 「总结上面」才拿得到上下文。
-      //
-      // 话题里发的消息一律按**话题容器**取数(contextLane = lane): 会话里只看
-      // 会话。`/ctr` 曾把「开话题之前的群主流讨论」记下来补给话题里第一条消息,
-      // 已按产品裁决去掉 —— 它让 /ctr 后的第一句要回翻整条群主流(5 页 + 每页
-      // 一次模型判断), 首句实测被拖到 87s; 而话题的语义本就是「另起一摊」,
-      // 需要群里的上文时在群主流里 @ 即可。
+      // Ordinary inbound context follows its originating group/topic lane.
+      // Retain explicit context overrides for existing callers.
       const contextLane = event.groupContextLane ?? lane;
       const built = await buildFeishuGroupContext({
         lane: contextLane,

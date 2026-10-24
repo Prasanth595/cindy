@@ -121,6 +121,10 @@ function memoryStore(initial: Partial<SlackHookConfigState> & { url: string }): 
           : { ...state, telegramBindingCache: entry ? { ...entry } : null };
       return state;
     },
+    setXCompanionBotId(botId) {
+      state = { ...state, xCompanionBotId: botId };
+      return state;
+    },
     setProviderDefaultWorkspace(provider: 'telegram' | 'x', alias: string | null) {
       state =
         provider === 'x'
@@ -1446,6 +1450,7 @@ describe('hook-control transport + manager(真实 ws server)', () => {
     );
     await expect.poll(() => manager.snapshot().binding?.state, { timeout: 3000 }).toBe('confirmed');
     // 熬过看门狗时限: 已 confirmed 不该被误判超时
+    // real-wait: this regression must cross the real watchdog deadline.
     await new Promise((r) => setTimeout(r, 200));
     expect(store.get().enabled).toBe(true);
     expect(manager.snapshot().binding?.state).toBe('confirmed');

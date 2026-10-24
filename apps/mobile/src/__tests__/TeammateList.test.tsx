@@ -197,3 +197,10 @@ it.each([false, null, true])('opens cached teammates while connection evidence i
   expect(select).toHaveBeenCalledExactlyOnceWith(item);
   if (connected === true) expect(button.textContent).not.toContain('devices.resources.hostOffline');
 });
+
+it('keeps a cloud companion quiet while its main computer looks offline: no offline text, dot or dimming', async () => {
+  await act(async () => root.render(el(TeammateList, { items: [item], error: null, isOnline: () => false, quietPresence: () => true,
+    loading: false, refreshing: false, onRefresh: vi.fn(), onSelect: vi.fn(), embedded: true })));
+  expect(node.textContent).not.toContain('devices.resources.hostOffline');
+  expect(node.querySelector('[data-testid="teammate.connection"] [data-testid="status-dot"]')).toBeNull();
+});

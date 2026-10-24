@@ -10,6 +10,9 @@
  * 即连即断。没有密钥概念, 旧 safeStorage secret 文件由 store 迁移时清理。
  */
 
+import { requireXCompanion, resolveXCompanionTarget } from './xCompanion.js';
+import { captureChannelAccount } from '../im/shared/openChannelSession.js';
+
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -96,6 +99,7 @@ import { createHookTransport } from './transport.js';
 import { registerSlackToolBridge, unregisterSlackToolBridge } from './slackToolBridge.js';
 import { createHookBindingStore } from './bindings.js';
 import { createHookRequestLedger } from './requestLedger.js';
+import { createHookMediaStore } from '../cindy-media/hookOutbox.js';
 import {
   buildGroupContextPrefix,
   listTelegramKnownGroupsForStableBinding,
@@ -125,8 +129,12 @@ let codexMcpRefreshPending = false;
 let codexMcpRefreshRunning = false;
 let codexMcpRefreshRetryTimer: NodeJS.Timeout | null = null;
 let latestSlackToolProviderEnabled = false;
+let codexMcpRefreshRetryDelayMs = 0;
 
-const CODEX_MCP_REFRESH_RETRY_MS = 2_000;
+// busy 重试按指数退避:伙伴等本地 Codex 会话可能连续忙几十分钟,固定 2 秒重试会把日志刷满
+// (2026-10-19 实排:一次启动 987 条 deferred)。新的可用性变化会把退避归零。
+const CODEX_MCP_REFRESH_RETRY_MIN_MS = 2_000;
+const CODEX_MCP_REFRESH_RETRY_MAX_MS = 60_000;
 
 function hookControlAvailable(): boolean {
   return getAppCapabilities().canUseCindyAccountServices;
@@ -185,6 +193,7 @@ function disabledHookView(): SlackHookView {
 function requestCodexMcpRefreshForSlackAvailability(enabled: boolean): void {
   latestSlackToolProviderEnabled = enabled;
   codexMcpRefreshPending = true;
+  codexMcpRefreshRetryDelayMs = 0;
   if (codexMcpRefreshRetryTimer !== null) {
     clearTimeout(codexMcpRefreshRetryTimer);
     codexMcpRefreshRetryTimer = null;
@@ -200,13 +209,20 @@ async function drainCodexMcpRefreshForSlackAvailability(): Promise<void> {
       codexMcpRefreshPending = false;
       try {
         await restartCodexAfterAuthModeChange(shutdownCodexEnvironment);
+        codexMcpRefreshRetryDelayMs = 0;
         log.info('Codex MCP environment refreshed after Slack provider availability changed', {
           enabled: latestSlackToolProviderEnabled,
         });
       } catch (err) {
         codexMcpRefreshPending = true;
-        log.warn('Codex MCP refresh deferred after Slack provider availability changed', {
+        codexMcpRefreshRetryDelayMs = codexMcpRefreshRetryDelayMs === 0
+          ? CODEX_MCP_REFRESH_RETRY_MIN_MS
+          : Math.min(codexMcpRefreshRetryDelayMs * 2, CODEX_MCP_REFRESH_RETRY_MAX_MS);
+        // 首次推迟 warn 一次;之后的退避重试只记 debug,避免同一原因刷屏。
+        const logDeferred = codexMcpRefreshRetryDelayMs === CODEX_MCP_REFRESH_RETRY_MIN_MS ? log.warn : log.debug;
+        logDeferred('Codex MCP refresh deferred after Slack provider availability changed', {
           enabled: latestSlackToolProviderEnabled,
+          retryInMs: codexMcpRefreshRetryDelayMs,
           error: err instanceof Error ? err.message : String(err),
         });
         break;
@@ -219,7 +235,7 @@ async function drainCodexMcpRefreshForSlackAvailability(): Promise<void> {
     codexMcpRefreshRetryTimer = setTimeout(() => {
       codexMcpRefreshRetryTimer = null;
       void drainCodexMcpRefreshForSlackAvailability();
-    }, CODEX_MCP_REFRESH_RETRY_MS);
+    }, codexMcpRefreshRetryDelayMs || CODEX_MCP_REFRESH_RETRY_MIN_MS);
     codexMcpRefreshRetryTimer.unref?.();
   }
 }
@@ -473,6 +489,7 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
     });
   }
   if (!manager) {
+    const mediaStore = createHookMediaStore();
     const dispatcher = createHookDispatcher({
       // 两个 provider 复用 dispatcher，但连接身份和服务地址彼此隔离。
       getConnection: (connectionId) => {
@@ -510,6 +527,7 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
           name: meta.name,
           url: meta.url,
           enabled: meta.enabled,
+          ...(provider === 'x' ? { companionBotId: config.xCompanionBotId ?? null } : {}),
           workspaces: config.workspaces,
           createdAt: 0,
         };
@@ -520,9 +538,12 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       }),
       terminalLedger: createHookRequestLedger({
         filePath: ownerScopedUserDataPath('hook-request-ledger.json'),
+        releaseMedia: mediaStore.release,
         log,
       }),
+      mediaStore,
       runner: createMakerHookSessionRunner({ log }),
+      resolveCompanionTarget: resolveXCompanionTarget,
       buildContextPrefix: buildGroupContextPrefix,
       // 新建 hook 会话默认预建独立 worktree(并发隔离); deps 组装与
       // maker-ipc/register.ts 的 use_worktree 分支同款。失败由 dispatcher
@@ -913,6 +934,24 @@ export function registerHookControlIpc(): void {
     },
   );
 
+  registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.SET_X_COMPANION, async (_e, payload) => {
+    requireHookControl();
+    const assertAccount = captureChannelAccount();
+    const { store: s, manager: m } = ensureInstances();
+    const p = requireObject(payload);
+    const botId = requireNullableString(p.botId, 'botId');
+    const expectedBotId = requireNullableString(p.expectedBotId, 'expectedBotId');
+    if (botId !== null) await requireXCompanion(botId);
+    assertAccount();
+    if ((s.get().xCompanionBotId ?? null) !== expectedBotId) {
+      throwIpcError('PRECONDITION_FAILED', 'X companion assignment changed');
+    }
+    translateValidation(() => s.setXCompanionBotId(botId));
+    const hook = m.snapshot();
+    broadcastStatus(hook);
+    return { hook };
+  });
+
   // 发起 Slack 账号绑定(SIWS OIDC): 经已连接的 WS 发 bind.start(无参); server
   // 回 bind.update(pending, authorizeUrl), main 打开系统浏览器并广播状态。
   registerTrustedHookControlHandler(HOOK_CONTROL_INVOKE.BIND_START, () => {
@@ -1175,6 +1214,10 @@ export function registerHookControlIpc(): void {
       if (providerId !== null && providerId.length > 128) {
         throwIpcError('INVALID_PARAMS', 'providerId too long');
       }
+      const agentDeviceId = p.agentDeviceId == null ? null : requireString(p.agentDeviceId, 'agentDeviceId');
+      if (agentDeviceId && (!/^[A-Za-z0-9_.:-]{1,128}$/.test(agentDeviceId) || !providerId)) {
+        throwIpcError('INVALID_PARAMS', 'remote provider route invalid');
+      }
       // 条目总量上限(codex review): 键合法性校验挡不住海量唯一 teamId 的无限
       // 追加 —— 新增(非替换/删除)且已达上限时拒绝。按精确键判新增(不能用
       // getWorkspaceProviderSource, 它的 teamId null 兜底会把新 team 误判为已存在)。
@@ -1194,7 +1237,7 @@ export function registerHookControlIpc(): void {
       // throwIpcError 协议给稳定错误码, 细节留 main 日志。
       let entries: ReturnType<typeof setWorkspaceProviderSource>;
       try {
-        entries = setWorkspaceProviderSource(channel, teamId, workspace, providerId);
+        entries = setWorkspaceProviderSource(channel, teamId, workspace, providerId, agentDeviceId);
       } catch (err) {
         log.warn(
           `workspace provider source write failed: ${err instanceof Error ? err.message : String(err)}`,

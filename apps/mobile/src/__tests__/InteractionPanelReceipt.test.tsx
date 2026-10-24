@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from 'react';
+import { act, useLayoutEffect, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { sharedTaskHostPeer } from '@cindy/device-link';
@@ -9,8 +9,24 @@ import { InteractionPanel, PluginSetupMessageContent } from '@/session/Interacti
 import { remoteSessionStore, useSessionPendingInteractions } from '@/session/remoteSessionStore';
 import { clearAllInteractionDrafts, readAskUserDraft, readPlanReviewDraft } from '@/session/interactionDraftStore';
 import { forwardNavigationLock } from '@/utils/navigationLock';
+import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/chatFilePathContext';
+import { QuestionReferenceText } from '@/session/QuestionReferenceText';
+import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
+import { i18n } from '@/i18n';
+
+const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
+// As in LegendList, setters are inert outside a list item. The composer card
+// needs ordinary React state to upgrade a reference after its remote stat.
+vi.mock('@legendapp/list/react-native', async () => {
+  const { useState } = await import('react');
+  return { useRecyclingState: (initial: unknown) => [useState(initial)[0], () => {}] };
+});
 
 const { resolveInteraction, invoke, push } = vi.hoisted(() => ({ resolveInteraction: vi.fn(), invoke: vi.fn(), push: vi.fn() }));
+const asyncReply = vi.hoisted(() => ({
+  getSession: vi.fn(), aroundMessagesByClientId: vi.fn(),
+  input: { steer: vi.fn(), enqueue: vi.fn(), resume: vi.fn() },
+}));
 const { routeParams } = vi.hoisted(() => ({ routeParams: {} as { deviceId?: string; sessionId?: string } }));
 const { textLayouts } = vi.hoisted(() => ({ textLayouts: new Map<string, (event: { nativeEvent: { lines: unknown[] } }) => void>() }));
 vi.mock('expo-router', async () => {
@@ -21,7 +37,7 @@ vi.mock('expo-router', async () => {
 });
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invoke }) }));
 vi.mock('@/device-link/useMobileMakerTransport', () => ({
-  useMobileMakerTransport: () => ({ resolveInteraction }),
+  useMobileMakerTransport: () => ({ resolveInteraction, ...asyncReply }),
 }));
 // 代输入 card has its own tests; its native modules (clipboard, secure store) are out of scope here.
 vi.mock('@/inputHandoff/InputHandoffCard', () => ({ InputHandoffCard: () => null }));
@@ -32,11 +48,11 @@ vi.mock('react-native', async () => {
     children?: ReactNode; onPress?: () => void; disabled?: boolean; testID?: string;
   }) => createElement(tag, { onClick: onPress, disabled, 'data-testid': testID }, children);
   // Text keeps its onTextLayout so a test can report how many lines a label took.
-  const Text = ({ children, onTextLayout }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void }) => {
+  const Text = ({ children, onTextLayout, onPress, testID }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void; onPress?: () => void; testID?: string }) => {
     if (onTextLayout) textLayouts.set(String(children), onTextLayout);
-    return createElement('span', null, children);
+    return createElement('span', { onClick: onPress, 'data-testid': testID }, children);
   };
-  return { View: view('div'), Text, Pressable: view('button'),
+  return { View: view('div'), Text, Pressable: view('button'), Linking: { openURL: evidence.openURL },
     ScrollView: view('div'), Image: () => null,
     useWindowDimensions: () => ({ width: 390, height: 844 }),
     StyleSheet: { create: (s: unknown) => s, hairlineWidth: 1 } };
@@ -52,7 +68,7 @@ vi.mock('@/components/AppText', async () => {
   };
 });
 vi.mock('lucide-react-native', () => ({ ShieldCheck: () => null, MessageCircle: () => null, ChevronDown: () => null, ChevronUp: () => null, Check: () => null, CornerDownLeft: () => null,
-  Maximize2: () => null, Minimize2: () => null, Minus: () => null, Pencil: () => null, Plus: () => null }));
+  Maximize2: () => null, Minimize2: () => null, Minus: () => null, Mic: () => null, Pencil: () => null, Plus: () => null }));
 vi.mock('react-i18next', async (importOriginal) => ({
   ...await importOriginal<typeof import('react-i18next')>(),
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
@@ -67,13 +83,21 @@ let root: Root;
 let host: HTMLDivElement;
 const requestId = 'codex:test:0';
 const onError = vi.fn();
-function Harness({ companion = false, deviceId = 'd1' }: { companion?: boolean; deviceId?: string }) {
+function Harness({ companion = false, deviceId = 'd1', fileContext }: { companion?: boolean; deviceId?: string; fileContext?: ChatFilePathContextValue }) {
   const interactions = useSessionPendingInteractions('s1');
-  return <InteractionPanel companion={companion} deviceId={deviceId} sessionId="s1" interactions={interactions} onError={onError} />;
+  return <InteractionPanel companion={companion} deviceId={deviceId} sessionId="s1" fileContext={fileContext} interactions={interactions} onError={onError} />;
+}
+function CollapsibleHarness() {
+  const interactions = useSessionPendingInteractions('s1');
+  const [requestIds, setRequestIds] = useState<readonly string[]>([]);
+  return <InteractionPanel deviceId="d1" sessionId="s1" interactions={interactions} onError={onError}
+    collapse={{ requestIds, onToggle: (id) => setRequestIds((ids) => ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id]) }} />;
 }
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.resetAllMocks();
+  _clearRemotePathVerdictCache();
+  evidence.openURL.mockResolvedValue(undefined);
   routeParams.deviceId = 'd1'; routeParams.sessionId = 's1';
   forwardNavigationLock.reset();
   remoteSessionStore.clear();
@@ -95,6 +119,176 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+// Unit regression for PR #6306 review: a signed-out microphone tap used to
+// render hardcoded Chinese. Existing receipt tests never tapped this entry.
+// Exercise the real card and hook in each supported locale, without auth.
+it.each(['en', 'zh-CN', 'zh-TW', 'ja', 'ko'])('localizes the signed-out voice error in %s', async (locale) => {
+  const previousLanguage = i18n.language;
+  try {
+    await i18n.changeLanguage(locale);
+    remoteSessionStore.setPendingInteractions('s1', [{ request: {
+      kind: 'ask_user_question', requestId, questions: [{ question: 'Answer?' }],
+    } }]);
+    await act(async () => root.render(<Harness />));
+    expect(host.querySelector('[data-testid="interaction.ask.voiceError"]')).toBeNull();
+    await click('interaction.ask.voice');
+    expect(host.querySelector('[data-testid="interaction.ask.voiceError"]')?.textContent)
+      .toBe(i18n.t('composer.voice.loginRequired'));
+    expect(resolveInteraction).not.toHaveBeenCalled();
+  } finally {
+    await i18n.changeLanguage(previousLanguage);
+  }
+});
+
+// Unit regression: receipt tests never opened evidence in a question title.
+// Minimal input: a bare HTML filename + URL. Real card + remote stat must open
+// the controlled computer's file without resolving the question.
+it('opens question files on the controlled computer and URLs without resolving the question', async () => {
+  const onOpenPath = vi.fn();
+  const fileContext: ChatFilePathContextValue = {
+    deviceId: 'd1', sessionId: 's1', workdir: '/repo', onOpenPath,
+    statPath: vi.fn(async (absPath: string) => ({ kind: absPath.endsWith('missing.html') ? 'missing' as const : 'file' as const, resolvedPath: absPath })),
+  };
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId,
+    questions: [{ question: '请查看 sidebar-layout-v1.html 和 https://example.com/view。 missing.html' }],
+  } }]);
+  await act(async () => root.render(<Harness fileContext={fileContext} />));
+  await click('message.markdownPathChip');
+  expect(onOpenPath).toHaveBeenCalledWith({ kind: 'file', absPath: '/repo/sidebar-layout-v1.html', relPath: 'sidebar-layout-v1.html' });
+  expect(host.querySelectorAll('[data-testid="message.markdownPathChip"]')).toHaveLength(1);
+  const url = Array.from(host.querySelectorAll('span')).find((element) => element.textContent === 'https://example.com/view')!;
+  await act(async () => url.click());
+  expect(evidence.openURL).toHaveBeenCalledWith('https://example.com/view');
+  expect(resolveInteraction).not.toHaveBeenCalled();
+  expect(host.querySelector('[data-testid="interaction.ask.card"]')).not.toBeNull();
+});
+
+// Unit: a new question must not borrow the last file's verified state. The
+// existing click test never changed the href at a retained span index. Inspect
+// the first committed frame before passive effects can clear the stale verdict.
+it('keeps a changed question reference unclickable until its own verification', async () => {
+  const onOpenPath = vi.fn();
+  const fileContext: ChatFilePathContextValue = {
+    deviceId: 'd1', sessionId: 's1', workdir: '/repo', onOpenPath,
+    statPath: vi.fn((absPath: string) => absPath.endsWith('present.html')
+      ? Promise.resolve({ kind: 'file' as const, resolvedPath: absPath })
+      : new Promise<never>(() => {})),
+  };
+  const changedFrame: boolean[] = [];
+  function ReferenceFrame({ text }: { text: string }) {
+    useLayoutEffect(() => {
+      if (text !== 'missing.html') return;
+      const chip = host.querySelector<HTMLElement>('[data-testid="message.markdownPathChip"]');
+      changedFrame.push(!!chip);
+      chip?.click();
+    }, [text]);
+    return <ChatFilePathContext.Provider value={fileContext}><QuestionReferenceText text={text} /></ChatFilePathContext.Provider>;
+  }
+  await act(async () => root.render(<ReferenceFrame text="present.html" />));
+  expect(host.querySelector('[data-testid="message.markdownPathChip"]')).not.toBeNull();
+  await act(async () => root.render(<ReferenceFrame text="missing.html" />));
+  expect(changedFrame).toEqual([false]);
+  expect(onOpenPath).not.toHaveBeenCalled();
+});
+
+it.each(['push-first', 'receipt-first', 'lost-receipt', 'other-client'] as const)(
+  'finalizes retained answers without stale snapshot resurrection: %s',
+  async (order) => {
+    const item = { persistId: 'original-row', request: {
+      kind: 'ask_user_question', requestId, delivery: 'async', questions: [{ question: 'Original?' }],
+    } };
+    remoteSessionStore.setPendingInteractions('s1', [item]);
+    await act(async () => root.render(<Harness />));
+    await type('interaction.ask.textInput', 'Finished');
+    let accept!: (value: { accepted: boolean }) => void;
+    let reject!: (error: Error) => void;
+    resolveInteraction.mockImplementationOnce(() => new Promise((resolve, fail) => {
+      accept = resolve; reject = fail;
+    }));
+    if (order !== 'other-client') await click('interaction.ask.submitButton');
+    if (order === 'receipt-first') await act(async () => accept({ accepted: true }));
+    await act(async () => {
+      remoteSessionStore.applyRemotePush('d1', 'maker:interaction-dismissed', {
+        sessionId: 's1', requestId, reason: 'resolved',
+        decision: { kind: 'ask_user_question', answers: { 'Original?': 'Finished' } },
+      });
+      // A snapshot requested before the answer may arrive after its push.
+      remoteSessionStore.setPendingInteractions('s1', [item]);
+    });
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toEqual([]);
+    expect(readAskUserDraft(requestId)).toBeNull();
+    expect(host.querySelector('[data-testid="interaction.ask.card"]')).toBeNull();
+    if (order === 'push-first') await act(async () => accept({ accepted: true }));
+    if (order === 'lost-receipt') await act(async () => reject(new Error('receipt lost')));
+    expect(asyncReply.input.enqueue).not.toHaveBeenCalled();
+    expect(readAskUserDraft(requestId)).toBeNull();
+    expect(onError.mock.calls.every(([error]) => error === null)).toBe(true);
+  },
+);
+
+it.each(['send', 'close', 'stopped', 'stopped-empty', 'already-answered', 'unconfirmed', 'unknown-steer'])('retains edited async answers across expiry and new questions: %s', async (action) => {
+  remoteSessionStore.setPendingInteractions('s1', [{
+    persistId: 'original-row',
+    request: { kind: 'ask_user_question', requestId, delivery: 'async', questions: [{ question: 'Original?' }] },
+  }]);
+  await act(async () => root.render(<Harness />));
+  await type('interaction.ask.textInput', 'Writing');
+  await type('interaction.ask.textInput', '');
+  const input = host.querySelector('[data-testid="interaction.ask.textInput"]');
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [{
+    request: { kind: 'ask_user_question', requestId: 'new-question', questions: [{ question: 'New?' }] },
+  }]));
+  expect(host.querySelector('[data-testid="interaction.ask.textInput"]')).toBe(input);
+  expect(host.textContent).toContain('Original?');
+  await type('interaction.ask.textInput', 'Finished');
+  resolveInteraction.mockResolvedValue({ accepted: false });
+  asyncReply.aroundMessagesByClientId.mockResolvedValue([{
+    clientId: 'original-row', role: 'ask_user', content: {
+      requestId, status: action === 'already-answered' ? 'answered' : action === 'unconfirmed' ? 'pending' : 'cancelled',
+    },
+  }]);
+  asyncReply.getSession.mockResolvedValue({ id: 's1', agentKind: 'codex', model: 'test', effort: 'medium',
+    permissionMode: 'ask', workingDir: '/repo' });
+  asyncReply.input.steer.mockResolvedValue(action === 'unknown-steer' ? undefined : false);
+  const projection = remoteSessionStore.getInputProjection('s1');
+  asyncReply.input.enqueue.mockResolvedValue({ ...projection, queuePaused: action === 'stopped' });
+  asyncReply.input.resume.mockResolvedValue({ ...projection, queuePaused: false });
+  if (action === 'stopped') {
+    await act(async () => remoteSessionStore.setInputProjection('s1', { ...projection, queuePaused: true }));
+    expect(host.textContent).toContain('interaction.panel.sendAndContinue');
+  }
+  if (action === 'stopped-empty') {
+    expect(host.textContent).toContain('interaction.panel.sendAndContinue');
+    expect(asyncReply.input.enqueue).not.toHaveBeenCalled();
+  }
+  await click(action === 'close' ? 'interaction.ask.closeButton' : 'interaction.ask.submitButton');
+  if (action === 'unconfirmed' || action === 'unknown-steer') {
+    expect(host.textContent).toContain('Original?');
+    expect(readAskUserDraft(requestId)?.customInput).toBe('Finished');
+    expect(onError).toHaveBeenLastCalledWith('interaction.panel.decisionNotAccepted');
+  } else {
+    expect(onError.mock.calls).toEqual([[null]]);
+    expect(host.textContent).toContain('New?');
+  }
+  if (action === 'send' || action === 'stopped' || action === 'stopped-empty') {
+    expect(asyncReply.input.enqueue).toHaveBeenCalledOnce();
+    expect(asyncReply.input.enqueue.mock.calls[0][1]).toMatchObject({
+      clientId: expect.stringMatching(/^question-reply:codex:test:0:[a-f0-9]{64}$/), text: '> Original?\n\nFinished',
+    });
+    expect(asyncReply.input.resume).toHaveBeenCalledTimes(action === 'stopped' ? 1 : 0);
+  } else expect(asyncReply.input.enqueue).not.toHaveBeenCalled();
+});
+
+it('does not retain an untouched async card', async () => {
+  remoteSessionStore.setPendingInteractions('s1', [{
+    request: { kind: 'ask_user_question', requestId, delivery: 'async', questions: [{ question: 'Original?' }] },
+  }]);
+  await act(async () => root.render(<Harness />));
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
+  expect(host.querySelector('[data-testid="interaction.ask.card"]')).toBeNull();
+});
 
 it.each(['permission', 'ask_user_question', 'plan_review'])('lets a shared guest submit %s through its decision button', async (kind) => {
   remoteSessionStore.setPendingInteractions('s1', [{ request: {
@@ -147,6 +341,30 @@ it.each(['plugin_setup', 'issue_confirm', 'ghost_grant_confirm', 'rename_session
   await act(async () => root.render(<Harness deviceId={sharedTaskHostPeer('shared', 'd1')} />));
   expect(host.querySelector('[data-testid="interaction.readOnlyCard"]')).not.toBeNull();
   expect(resolveInteraction).not.toHaveBeenCalled();
+});
+
+// Bug #1493: collapse belongs to the caller and must survive a card being replaced.
+it('collapses through the supplied intent, restores that intent after queue churn, and expands again', async () => {
+  const ask = { request: { kind: 'ask_user_question', requestId: 'ask-collapse', questions: [{ question: 'Continue?' }] } };
+  remoteSessionStore.setPendingInteractions('s1', [ask]);
+  await act(async () => root.render(<CollapsibleHarness />));
+  await click('interaction.panel.collapseButton');
+  expect(host.querySelector('[data-testid="interaction.panel.collapsedBar"]')).not.toBeNull();
+  expect(host.querySelector('[data-testid="interaction.ask.submitButton"]')).toBeNull();
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [{ request: { kind: 'plugin_setup', requestId: 'setup-switch', revision: 1 } }]));
+  expect(host.querySelector('[data-testid="interaction.panel.collapsedBar"]')).toBeNull();
+  expect(host.querySelector('[data-testid="interaction.panel.collapseButton"]')).toBeNull();
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [ask]));
+  await click('interaction.panel.collapsedBar');
+  expect(host.querySelector('[data-testid="interaction.ask.submitButton"]')).not.toBeNull();
+});
+
+// Remote kinds must not become i18next key paths. Observe the actual rendered title.
+it.each(['permission.extra', '__proto__', 'constructor', 'unknown'])('normalizes remote kind %s to its translated fallback', async (kind) => {
+  remoteSessionStore.setPendingInteractions('s1', [{ request: { kind, requestId: 'foreign-kind' } }]);
+  await act(async () => root.render(<Harness />));
+  expect(host.textContent).toContain('interaction.kinds.fallback.title');
+  expect(host.textContent).not.toContain('interaction.kinds.' + kind + '.title');
 });
 
 it('keeps multiple selections and the free answer when moving back, remounting, and retrying', async () => {
@@ -269,6 +487,55 @@ it.each([false, true])('restores the last answer after a rejected receipt and cl
   expect(resolveInteraction.mock.calls[1][1]).toMatchObject({ answers: { 'Your answer?': 'Keep the connection' } });
   expect(input()).toBeNull();
   expect(readAskUserDraft(requestId)).toBeNull();
+});
+
+it('keeps a typed custom answer when the pending request is refetched or the card remounts', async () => {
+  const pending = () => [{ request: {
+    kind: 'ask_user_question', requestId,
+    questions: [{ question: 'Spine license?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+  } }];
+  remoteSessionStore.setPendingInteractions('s1', pending());
+  await act(async () => root.render(<Harness />));
+  const input = () => host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]');
+  await click('interaction.ask.showCustomButton');
+  await act(async () => {
+    input()!.value = 'No, figure it out';
+    input()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // 回到前台后重新拉取待处理请求:内容相同但对象引用全新。
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', pending()));
+  expect(input()?.value).toBe('No, figure it out');
+  await act(async () => root.render(null));
+  await act(async () => root.render(<Harness />));
+  expect(input()?.value).toBe('No, figure it out');
+});
+
+it('starts over when the same request replaces its questions', async () => {
+  const first = { question: 'First?', options: [{ label: 'Yes' }, { label: 'No' }] };
+  const second = { question: 'Second?', options: [{ label: 'A' }, { label: 'B' }] };
+  remoteSessionStore.setPendingInteractions('s1', [{ request: { kind: 'ask_user_question', requestId, questions: [first, second] } }]);
+  await act(async () => root.render(<Harness />));
+  const question = () => (host.textContent!.includes('Second?') ? 'Second?' : host.textContent!.includes('First?') ? 'First?' : null);
+  const input = () => host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]');
+  await click('interaction.ask.option.1');
+  await click('interaction.ask.submitButton');
+  expect(question()).toBe('Second?');
+  await click('interaction.ask.showCustomButton');
+  await act(async () => {
+    input()!.value = 'Old payload answer';
+    input()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // 同一 requestId 的问题从两道变成一道:旧题号与输入都不能带进新内容。
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [first],
+  } }]));
+  expect(question()).toBe('First?');
+  expect(input()).toBeNull();
+  resolveInteraction.mockResolvedValueOnce({ accepted: true });
+  await click('interaction.ask.option.2');
+  await click('interaction.ask.submitButton');
+  expect(resolveInteraction).toHaveBeenCalledTimes(1);
+  expect(resolveInteraction.mock.calls[0][1]).toMatchObject({ answers: { 'First?': 'No' } });
 });
 
 

@@ -13,6 +13,7 @@ import {
   effectiveSourceIdForModel,
   getModel,
   isModelSelectableForNewRoute,
+  movedCindyAutoSourceId,
   type ProviderView,
 } from '@cindy/model-providers';
 
@@ -32,18 +33,20 @@ import { createLogger } from '../logger';
 import { getMaker } from '../maker-host';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService';
 import { readImDefaultSettings } from './defaultSettingsStore';
+import { readImRemoteProviderRoute } from './remoteProviderRoute';
 import { fingerprintImDefaultSettings, type ImDefaultRoute } from './shared/channelDefaultRoute';
 import type { ImOrchestratorConfig } from './shared/types';
 
 const log = createLogger('im:defaults');
 
 export interface ResolvedImSessionDefaults {
+  agentDeviceId?: string | null;
   agentKind: AgentKind;
   model: string;
   effort: Effort;
   providerId: string | null;
   permissionMode: PermissionMode;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
   /** 本次解析所读原始设置的指纹(与上面的值出自同一次读取), 写进任务的跟随记录。 */
   fingerprint: string;
 }
@@ -69,6 +72,19 @@ export async function resolveImSessionDefaults(
   channel?: ImDefaultSettingsChannel,
 ): Promise<ResolvedImSessionDefaults> {
   const raw = readImDefaultSettings(channel);
+  const remote = raw.agents[raw.agentKind];
+  if (remote.agentDeviceId) {
+    const { model } = await readImRemoteProviderRoute({ ...remote, agentDeviceId: remote.agentDeviceId, agentKind: raw.agentKind });
+    return {
+      ...remote,
+      agentKind: raw.agentKind,
+      effort: model.efforts.includes(remote.effort) || !model.efforts.length
+        ? remote.effort : model.defaultEffort ?? model.efforts[0],
+      permissionMode: raw.permissionMode ?? config.defaultPermissionMode,
+      fastMode: false,
+      fingerprint: fingerprintImDefaultSettings(raw),
+    };
+  }
   const providers =
     providerSnapshot === undefined ? await listProvidersForDefaults() : providerSnapshot;
   const requestedAgent = raw.agentKind;
@@ -126,6 +142,7 @@ export function readImRawDefaultRoute(channel?: ImDefaultSettingsChannel): ImDef
     agentKind: raw.agentKind,
     model: settings.model,
     providerId: settings.providerId?.trim() || null,
+    agentDeviceId: settings.agentDeviceId ?? null,
     effort: settings.effort,
   };
 }
@@ -273,6 +290,12 @@ function resolveProviderId(
   modelId: string,
   providerId: string | null,
 ): string | null {
+  // 保存的 Auto 路由在使用时跟随服务端：Auto 被挪到另一家 Cindy 来源后改用新来源，
+  // 与新建任务同一规则；渠道设置里存的值不改写。
+  const movedAuto = providers
+    ? movedCindyAutoSourceId(providers, { agent: agentKind, model: modelId, providerId })
+    : null;
+  if (movedAuto) return movedAuto;
   if (!providerId) {
     if (!providers) return null;
     // 隐式默认(未选来源)同样过裁决:原生默认落点的拷贝被停用而有启用替代时,

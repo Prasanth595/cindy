@@ -1,3 +1,4 @@
+import { richAnswerText } from '@cindy/maker-shared/rich-answer';
 /**
  * chat-data-localization F5：IPC 边界 row ↔ camel/ISO 转换。
  *
@@ -12,6 +13,7 @@ import { hasPendingSessionInterruption } from '@cindy/maker-shared/session-activ
 import { DESKTOP_VISIBLE_SESSION_SOURCES } from '../../shared/sessionSource.js';
 import { getSessionInterruptionBootAt } from './sessionInterruptionBoot';
 import { stripInternalWebCitations } from '@cindy/maker-shared/internal-citation';
+import { projectMcpAppContent } from '@cindy/maker-shared/mcp-apps';
 import { markdownPreviewText } from '../../shared/markdownPreviewText.js';
 import {
   parseOrcaRemoteLead,
@@ -97,7 +99,9 @@ type ProjectAutomationConsentInsert = typeof projectAutomationConsents.$inferIns
 type ScheduleRunRow = typeof scheduleRuns.$inferSelect;
 type ScheduleRunInsert = typeof scheduleRuns.$inferInsert;
 
-type SessionRuntimeFields = Pick<Session, 'id' | 'agentKind' | 'model' | 'providerId' | 'effort' | 'fastMode'>;
+type SessionRuntimeFields = Pick<Session, 'id' | 'agentKind' | 'model' | 'providerId' | 'effort' | 'fastMode'> & {
+  scheduledModelBaseline?: string | null;
+};
 type SessionRuntimeProjector = (session: SessionRuntimeFields) => Partial<Session>;
 let sessionRuntimeProjector: SessionRuntimeProjector | null = null;
 
@@ -153,7 +157,7 @@ export function finalizePlainPreview(
   // role='user' 的正常落库行,但对用户不可见 —— 预览显示隐藏英文指令会暴露
   // 实现细节。返回 null 与"无预览"同渲染语义。
   if (isSyntheticTriggerText(next)) return null;
-  if (role === 'assistant') next = stripInternalWebCitations(next);
+  if (role === 'assistant') next = richAnswerText(stripInternalWebCitations(next));
   // Strip formatting before the display limit: URLs must not consume the preview budget.
   const collapsed = markdownPreviewText(next);
   if (!collapsed) return null;
@@ -257,10 +261,11 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     totalMoney,
     contextTokens: row.contextTokens,
     contextWindow: row.contextWindow,
-    fastMode: !!row.fastMode,
+    fastMode: (row.fastMode ?? false),
     planModeEnabled: !!row.planModeEnabled,
     clearedAt: msToIso(row.clearedAt),
     pinnedAt: msToIso(row.pinnedAt),
+    hiddenAt: msToIso(row.hiddenAt),
     userSendAt: msToIso(row.userSendAt),
     agentKind: row.agentKind as AgentKind,
     source: normalizeSessionSource(row.source),
@@ -305,7 +310,7 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     hasPendingSessionInterruption(candidate)
       ? base.activeTurnStartedAt
       : null;
-  return { ...base, ...projectSessionRuntimeFields(base) };
+  return { ...base, ...projectSessionRuntimeFields({ ...base, scheduledModelBaseline: row.scheduledModelBaseline }) };
 }
 
 export function messageToCamel(row: MessageRow): Message {
@@ -334,7 +339,7 @@ export function messageToCamel(row: MessageRow): Message {
     clientId: row.clientId,
     sessionId: row.sessionId,
     role: row.role as MessageRole,
-    content,
+    content: projectMcpAppContent(content, agentMeta?.mcpApp === true),
     toolUseId: row.toolUseId,
     agentMeta,
     agentKind: (row.agentKind as 'cc' | 'codex' | 'pi' | null) ?? null,
@@ -369,7 +374,7 @@ export function sessionCreateToRow(
         model?: string;
         effort?: string;
         permissionMode?: string;
-        fastMode?: boolean;
+        fastMode?: boolean | 'ultrafast';
         planModeEnabled?: boolean;
         agentKind?: AgentKind;
         orcaRole?: OrcaRole | null;
@@ -413,7 +418,7 @@ export function sessionCreateToRow(
     contextTokens: 0,
     contextWindow: 0,
     // 新建 session 默认 Fast Mode OFF；调用方显式传 true 时才打开。
-    fastMode: !!body?.fastMode,
+    fastMode: (body?.fastMode ?? false),
     // 计划模式默认 OFF；草稿里开了计划模式的会话显式传 true。
     planModeEnabled: !!body?.planModeEnabled,
     clearedAt: null,
@@ -457,7 +462,7 @@ export function sessionPatchToRow(
     effort?: string | null;
     permissionMode?: string;
     providerId?: string | null;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     planModeEnabled?: boolean;
     sdkSessionId?: string | null;
     totalTokenUsage?: number;
@@ -484,7 +489,7 @@ export function sessionPatchToRow(
   if (patch.permissionMode !== undefined)
     out.permissionMode = patch.permissionMode as SessionInsert['permissionMode'];
   if (patch.providerId !== undefined) out.providerId = patch.providerId;
-  if (patch.fastMode !== undefined) out.fastMode = !!patch.fastMode;
+  if (patch.fastMode !== undefined) out.fastMode = (patch.fastMode ?? false);
   if (patch.planModeEnabled !== undefined) out.planModeEnabled = !!patch.planModeEnabled;
   if (patch.sdkSessionId !== undefined) out.sdkSessionId = patch.sdkSessionId;
   if (patch.totalTokenUsage !== undefined) out.totalTokenUsage = patch.totalTokenUsage;
@@ -696,8 +701,9 @@ export function scheduleToCamel(row: ScheduleRow): Schedule {
     modelAgentKind: row.modelAgentKind ?? undefined,
     model: row.model ?? undefined,
     providerId: row.providerId ?? undefined,
+    agentDeviceId: row.agentDeviceId ?? undefined,
     effort: row.effort ?? undefined,
-    fastMode: !!row.fastMode,
+    fastMode: (row.fastMode ?? false),
     workspaceKind: normalizeWorkspaceKind(row.workspaceKind),
     workingDir: row.workingDir ?? undefined,
     useWorktree: !!row.useWorktree,
@@ -748,8 +754,9 @@ export function scheduleCreateToRow(s: Schedule): ScheduleInsert {
     modelAgentKind: s.modelAgentKind ?? null,
     model: s.model ?? null,
     providerId: s.providerId ?? null,
+    agentDeviceId: s.agentDeviceId ?? null,
     effort: (s.effort as ScheduleInsert['effort']) ?? null,
-    fastMode: !!s.fastMode,
+    fastMode: (s.fastMode ?? false),
     workspaceKind: s.workspaceKind ?? 'project',
     workingDir: s.workingDir ?? null,
     useWorktree: s.useWorktree,
@@ -803,8 +810,9 @@ export function schedulePatchToRow(patch: Partial<Schedule>): Partial<ScheduleIn
   if (hasKey(patch, 'modelAgentKind')) out.modelAgentKind = patch.modelAgentKind ?? null;
   if (hasKey(patch, 'model')) out.model = patch.model ?? null;
   if (hasKey(patch, 'providerId')) out.providerId = patch.providerId ?? null;
+  if (hasKey(patch, 'agentDeviceId')) out.agentDeviceId = patch.agentDeviceId ?? null;
   if (hasKey(patch, 'effort')) out.effort = (patch.effort as ScheduleInsert['effort']) ?? null;
-  if (hasKey(patch, 'fastMode')) out.fastMode = !!patch.fastMode;
+  if (hasKey(patch, 'fastMode')) out.fastMode = (patch.fastMode ?? false);
   if (hasKey(patch, 'workspaceKind')) out.workspaceKind = patch.workspaceKind ?? 'project';
   if (hasKey(patch, 'workingDir')) out.workingDir = patch.workingDir ?? null;
   if (hasKey(patch, 'useWorktree')) out.useWorktree = patch.useWorktree as boolean;

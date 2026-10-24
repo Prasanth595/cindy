@@ -2,7 +2,7 @@
  * 群聊「引用回复」(docs/product-rules/bot-group-chat.md §10「引用回复」)。
  *
  * 引用是主时间线上的一条新消息，带着被引用消息的作者与摘要；它不是 Thread（话题），
- * 也不改变点名。服务器的 `replyToId` 只允许指向同一 Thread 内的消息，所以主时间线的
+ * 发送端会把被引用的在群伙伴加入点名。服务器的 `replyToId` 只允许指向同一 Thread 内的消息，所以主时间线的
  * 引用以版本化卡片块持久化：与 `cindy.plan`、`cindy.membership` 同一扩展机制，由
  * Chat Server 保存与同步；不认识它的旧端读到 `fallback` 里可读的 Markdown 引用行。
  *
@@ -10,6 +10,7 @@
  * 只有原消息不在本端时才显示快照。卡片内容是群成员提交的数据，读取时逐字段校验，
  * 不能当作指令或授权，也不能指向别的群或 Thread。
  */
+import { botGroupMessageSummaryText } from './botGroupTask';
 import type { BotGroupAttachment, BotGroupMessageView } from './botGroupChat';
 
 export const BOT_GROUP_QUOTE_NAMESPACE = 'cindy.quote';
@@ -85,21 +86,24 @@ export function botGroupQuoteExcerpt(text: string): string {
 
 /** Snapshot of a message the reader can see, e.g. when picking 引用回复 in a timeline. */
 export function botGroupQuoteFromMessage(message: Pick<BotGroupMessageView,
-  'id' | 'sequence' | 'authorKind' | 'authorName' | 'content'> & { attachments: readonly Pick<BotGroupAttachment, 'name'>[] }): BotGroupQuoteView {
+  'id' | 'sequence' | 'authorKind' | 'authorName' | 'content' | 'task' | 'deleted'> & { attachments: readonly Pick<BotGroupAttachment, 'name'>[] }): BotGroupQuoteView {
   return {
     messageId: message.id,
     authorName: clip(message.authorName.trim(), AUTHOR_NAME_MAX),
     authorKind: message.authorKind === 'user' ? 'user' : 'bot',
-    excerpt: botGroupQuoteExcerpt(message.content),
+    excerpt: botGroupQuoteExcerpt(botGroupMessageSummaryText(message)),
     attachmentCount: message.attachments.length,
     attachmentName: botGroupQuoteAttachmentName(message.attachments),
     sequence: Number.isSafeInteger(message.sequence) && message.sequence > 0 ? message.sequence : null,
   };
 }
 
-/** A main-timeline message that can be quoted: a real chat message that still exists. */
-export function isBotGroupMessageQuotable(message: Pick<BotGroupMessageView, 'kind' | 'deleted' | 'threadRootId' | 'authorKind'>): boolean {
-  return message.kind === 'message' && message.deleted !== true && !message.threadRootId && message.authorKind !== 'system';
+/**
+ * A main-timeline message that can be quoted: a real chat message that still exists. A thread
+ * share is not: its own text is only the card's fallback, never the reply it points at.
+ */
+export function isBotGroupMessageQuotable(message: Pick<BotGroupMessageView, 'kind' | 'deleted' | 'threadRootId' | 'authorKind' | 'threadShare'>): boolean {
+  return message.kind === 'message' && message.deleted !== true && !message.threadRootId && message.authorKind !== 'system' && !message.threadShare;
 }
 
 /** Language-neutral Markdown for clients that do not know the card. */
@@ -200,7 +204,7 @@ export type BotGroupQuoteDisplay =
 
 export function resolveBotGroupQuote(
   quote: BotGroupQuoteView,
-  loaded: readonly Pick<BotGroupMessageView, 'id' | 'deleted' | 'threadRootId' | 'authorName' | 'content' | 'attachments'>[],
+  loaded: readonly Pick<BotGroupMessageView, 'id' | 'deleted' | 'threadRootId' | 'authorName' | 'content' | 'attachments' | 'task'>[],
 ): BotGroupQuoteDisplay {
   const original = loaded.find((message) => message.id === quote.messageId && !message.threadRootId);
   if (quote.originalDeleted) return { state: 'deleted', authorName: original?.authorName || quote.authorName };
@@ -213,7 +217,7 @@ export function resolveBotGroupQuote(
   return {
     state: 'live',
     authorName: original.authorName || quote.authorName,
-    excerpt: botGroupQuoteExcerpt(original.content),
+    excerpt: botGroupQuoteExcerpt(botGroupMessageSummaryText(original)),
     ...(attachments.length
       ? { attachmentCount: attachments.length, attachmentName: botGroupQuoteAttachmentName(attachments) }
       : { attachmentCount: quote.attachmentCount, attachmentName: quote.attachmentName }),

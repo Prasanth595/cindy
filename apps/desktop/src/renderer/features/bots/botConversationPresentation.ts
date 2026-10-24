@@ -1,3 +1,4 @@
+import { hasRichAnswer } from '@cindy/maker-shared/rich-answer';
 import { botTaskResultKey, readBotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
 import { extractRenderedMarkdownImageTargets } from '@/components/chat/markdownImageTargets';
 import { HISTORY_GAP_SPLIT_MS } from '@/lib/historyGap';
@@ -11,6 +12,8 @@ import {
   type WorkGroupChildItem,
 } from '@/components/chat/messageWorkGroups';
 
+type WorkGroupItem = Extract<RenderItem, { type: 'work_group' }>;
+
 function isProse(item: RenderItem): item is MessageRenderItem {
   return item.type === 'message' && item.message.role === 'assistant'
     && !item.message.systemCardType;
@@ -18,16 +21,6 @@ function isProse(item: RenderItem): item is MessageRenderItem {
 
 function hasAttachments(message: ChatMessage): boolean {
   return Boolean(message.images?.length || message.files?.length);
-}
-
-/** Read already loaded delivery/interaction children; technical history stays persisted. */
-function publicItems(items: readonly RenderItem[]): RenderItem[] {
-  return items.flatMap((item): RenderItem[] => {
-    if (item.type === 'message' && item.message.role === 'thinking') return [];
-    if (item.type !== 'work_group') return [item];
-    const children = publicItems(item.children) as WorkGroupChildItem[];
-    return children;
-  });
 }
 
 function expandWorkGroups(items: readonly RenderItem[]): RenderItem[] {
@@ -38,8 +31,10 @@ function expandWorkGroups(items: readonly RenderItem[]): RenderItem[] {
 /** A presentation-only projection. Never mutate messages or infer intent from prose.
  * isFinal from the adapters closes a text block, not a turn (Pi/Claude can call
  * another tool afterwards). Reuse the normal work-group turn seal, showing provider-marked final prose immediately while keeping
- * unclassified intermediate prose hidden. The composer owns live action
- * feedback. On stop/error or old history without a seal, expose the last useful
+ * unclassified top-level intermediate prose hidden. While a turn runs its work groups
+ * show like a normal session; once the turn ends they are dropped, so a finished turn
+ * shows only what the bot said, results and errors. Agent tasks and workflow cards pass through.
+ * On stop/error or old history without a seal, expose the last useful
  * prose so an answer or plain-text question cannot disappear permanently.
  */
 export function simplifyBotRenderItems(
@@ -47,9 +42,9 @@ export function simplifyBotRenderItems(
   isStreaming: boolean,
   visibleGeneratedFileKeys?: ReadonlySet<string>,
 ): RenderItem[] {
-  // Preserve the shared grouping's history-window boundary before unwrapping
-  // groups or removing thinking (both can carry timestamp anchors). Only the
-  // final window is active; earlier legacy answers retain their own fallback.
+  // Preserve the shared grouping's history-window boundary before filtering
+  // prose (work groups carry timestamp anchors). Only the final window is
+  // active; earlier legacy answers retain their own fallback.
   const result: RenderItem[] = [];
   let window: RenderItem[] = [];
   let previousEnd: number | null = null;
@@ -88,6 +83,72 @@ export function simplifyBotRenderItems(
   return [...visible, ...fallbackReceipts];
 }
 
+/** Empty avatar rows never make a fold on their own; unloaded history still does. */
+function hasWorkContent(item: RenderItem): boolean {
+  if (item.type === 'work_group') return Boolean(item.deferred) || item.children.some(hasWorkContent);
+  if (isProse(item)) return Boolean(item.message.content.trim()) || hasAttachments(item.message);
+  return true;
+}
+
+/**
+ * Work groups pass through like a normal session, except that a reply the bot
+ * deliberately addressed to the user (an earlier background-wake seal, provider
+ * final, group delivery or explicit delivery) never hides inside the fold. The
+ * group is split around such replies; inner activity groups keep their keys.
+ */
+function liftRepliesFromWorkGroup(
+  group: WorkGroupItem,
+  isReply: (message: ChatMessage) => boolean,
+): RenderItem[] {
+  if (!group.children.some((child) => isProse(child) && isReply(child.message))) return [group];
+  const out: RenderItem[] = [];
+  let pending: WorkGroupChildItem[] = [];
+  let chunk = 0;
+  let previousReplyEnd: number | null = null;
+  const groupEnd = group.startedAtMs !== undefined && group.durationMs !== undefined
+    ? group.startedAtMs + group.durationMs : null;
+  const flush = (nextReply: MessageRenderItem | null) => {
+    if (pending.length === 0) return;
+    // Deferred history owns loading/retry state on the outer group, even with one inner group.
+    if (!group.deferred && pending.length === 1 && pending[0].type === 'work_group') {
+      out.push(pending[0]);
+    } else {
+      const starts = pending.map(renderItemStartMs).filter((ms): ms is number => ms !== null);
+      const ends = pending.map(renderItemEndMs).filter((ms): ms is number => ms !== null);
+      const start = chunk === 0
+        ? group.startedAtMs ?? (starts.length ? Math.min(...starts) : null)
+        : previousReplyEnd ?? (starts.length ? Math.min(...starts) : null);
+      const end = nextReply
+        ? renderItemStartMs(nextReply)
+        : groupEnd ?? (ends.length ? Math.max(...ends) : null);
+      const durationMs = start !== null && end !== null && end >= start ? end - start : undefined;
+      out.push({
+        type: 'work_group',
+        // The first chunk keeps the original key so its expansion memory survives.
+        key: chunk === 0 ? group.key : `${group.key}~${pending[0].key}`,
+        children: pending,
+        isStreaming: group.isStreaming,
+        ...(durationMs !== undefined ? { durationMs } : {}),
+        ...(start !== null ? { startedAtMs: start } : {}),
+        ...(chunk === 0 && group.deferred ? { deferred: group.deferred } : {}),
+      });
+    }
+    chunk += 1;
+    pending = [];
+  };
+  for (const child of group.children) {
+    if (isProse(child) && isReply(child.message)) {
+      flush(child);
+      out.push(child);
+      previousReplyEnd = renderItemEndMs(child);
+    } else {
+      pending.push(child);
+    }
+  }
+  flush(null);
+  return out;
+}
+
 function projectWindow(
   items: readonly RenderItem[],
   isStreaming: boolean,
@@ -101,13 +162,18 @@ function projectWindow(
   let sealedRun = false;
   for (let index = expanded.length - 1; index >= 0; index -= 1) {
     const item = expanded[index];
-    if (!isProse(item) || !item.message.content.trim()) {
+    if (!isProse(item) || !item.message.content.trim() || item.message.failedSamplingAttempt) {
       sealedRun = false;
       continue;
     }
     sealedRun ||= isCompletedAssistantMessage(item.message);
     if (sealedRun) sealedAnswers.add(item.message);
   }
+  const isAddressedReply = (message: ChatMessage) => Boolean(message.content.trim())
+    && !message.failedSamplingAttempt
+    && !(message.assistantPhase === 'commentary' && !message.explicitDelivery && !hasRichAnswer(message.content))
+    && (hasRichAnswer(message.content) || message.assistantPhase === 'final_answer' || Boolean(message.sourceGroup)
+      || Boolean(message.explicitDelivery) || isCompletedAssistantMessage(message) || sealedAnswers.has(message));
   const result: RenderItem[] = [];
   let turn: RenderItem[] = [];
   const flushTurn = (active: boolean) => {
@@ -116,7 +182,7 @@ function projectWindow(
     for (let index = 0; index < turn.length; index += 1) {
       const item = turn[index];
       if (isProse(item) && item.message.content.trim()) lastProse = index;
-      if ((isProse(item) && (hasAttachments(item.message)
+      if ((isProse(item) && (hasAttachments(item.message) || hasRichAnswer(item.message.content)
         || extractRenderedMarkdownImageTargets(item.message.content).length > 0))
         || (item.type === 'message' && item.message.systemCardType === 'bot-session-task-result')
         || (item.type === 'generated_files' && visibleGeneratedFileKeys?.has(item.key))
@@ -130,27 +196,33 @@ function projectWindow(
     // Keep later explanatory text after a partial delivery on stop/error/history.
     const fallbackProse = !active && lastProse > lastDelivery ? lastProse : -1;
     turn.forEach((item, index) => {
-      if (item.type === 'agent_plan' || item.type === 'turn_changes') return;
+      // Bots never produce change cards; keep them out like before. Thinking is
+      // always folded into a work group by the shared grouping, never top level.
+      if (item.type === 'turn_changes') return;
+      // The work process shows only while its turn runs; a finished turn keeps only what
+      // the bot said, results and errors (cindy-bots-runtime.md).
+      if (!active && item.type === 'work_group') return;
+      if (item.type === 'message' && item.message.role === 'thinking') return;
       if (item.type === 'message' && item.message.isSyntheticTrigger) return;
       if (isProse(item)) {
-        if (!item.message.content.trim() && !hasAttachments(item.message)) return;
-        if (item.message.assistantPhase === 'commentary' && !item.message.explicitDelivery && !hasAttachments(item.message)) return;
+        if (!item.message.content.trim() && !hasAttachments(item.message) && !hasRichAnswer(item.message.content)) return;
+        if (item.message.assistantPhase === 'commentary' && !item.message.explicitDelivery && !hasAttachments(item.message) && !hasRichAnswer(item.message.content)) return;
         if (item.message.assistantPhase !== 'final_answer' && !item.message.sourceGroup && !item.message.explicitDelivery && !isCompletedAssistantMessage(item.message) && !sealedAnswers.has(item.message)
-          && !hasAttachments(item.message) && index !== fallbackProse
+          && !hasAttachments(item.message) && !hasRichAnswer(item.message.content) && index !== fallbackProse
           && extractRenderedMarkdownImageTargets(item.message.content).length === 0) {
           return;
         }
       }
-      if (item.type === 'tool_segment' || item.type === 'agent_task' || item.type === 'work_group') {
-        return;
-      }
-      // Includes authorization, answered questions, errors and all delivery cards.
+      // Includes work groups, agent tasks, plans, authorization, answered
+      // questions, errors and all delivery cards.
       result.push(item);
     });
     turn = [];
   };
 
-  for (const item of publicItems(items)) {
+  const lifted = items.flatMap((item) => item.type !== 'work_group' ? [item]
+    : hasWorkContent(item) ? liftRepliesFromWorkGroup(item, isAddressedReply) : []);
+  for (const item of lifted) {
     if (item.type === 'message' && item.message.role === 'user'
       && item.message.delivery !== 'steer') {
       flushTurn(false);

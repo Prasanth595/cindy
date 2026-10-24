@@ -17,6 +17,19 @@ function fixtures(): Session[] {
 }
 
 describe('project grouping structural reuse', () => {
+  // Unit regression: list refresh may expose a draft before its create response.
+  // Previously only row changes were covered; an unchanged row stayed in the
+  // unclassified section even after the new-task page claimed its identity.
+  it('regroups an unchanged row when provisional draft identity changes', () => {
+    const select = createProjectGroupsSelector();
+    const rows = [{ ...fixtures()[1], userSendAt: null, _count: { messages: 0 } }];
+    expect(select(rows).unclassified).toEqual(rows);
+    const placed = select(rows, { provisionalDraftTaskId: rows[0].id });
+    expect(placed.unclassified).toEqual([]);
+    expect(placed.projects[0]?.sessions).toEqual(rows);
+    expect(select(rows, { provisionalDraftTaskId: null }).unclassified).toEqual(rows);
+  });
+
   it('updates timestamp/preview/spend without rebuilding untouched groups or stale row data', () => {
     const select = createProjectGroupsSelector();
     const sessions = fixtures();

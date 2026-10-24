@@ -60,6 +60,7 @@ import Anthropic, { APIError } from '@anthropic-ai/sdk';
 
 import {
   BaseAgent,
+  LOCAL_AGENT_CLIENT,
   OneShotError,
   AgentNotAuthenticatedError,
   AgentStartupStoppedError,
@@ -247,11 +248,13 @@ export function buildClaudeSystemPromptAppend(parts: {
   botProfileContextPrompt?: string;
   botUserProfilePrompt?: string;
   userPrompt?: string;
+  answerDeliveryPrompt?: string;
   /** 设备托管：项目在哪台电脑、文件与命令工具是哪些。 */
   deviceHostedNote?: string;
 }): string {
   return [
     parts.botProfilePrompt,
+    parts.answerDeliveryPrompt,
     MAKER_SYSTEM_PROMPT_APPEND,
     parts.deviceHostedNote,
     parts.makerMemoryRules,
@@ -1433,6 +1436,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     const remoteRoute =
       opts.remoteHostId && this.deps.resolveRemoteClaudeRoute
         ? await this.deps.resolveRemoteClaudeRoute({
+            sessionId: opts.sessionId,
             providerId: opts.providerId,
             model: opts.model,
           })
@@ -1890,6 +1894,13 @@ export class ClaudeCodeAgent extends BaseAgent {
       if (currentQ === q) nonHarnessMcpServerNames = fallbackNames;
     };
     const buildMcpServers = (): Record<string, McpServerConfig> | undefined => {
+      const client = opts[LOCAL_AGENT_CLIENT];
+      if (client) {
+        hostMcpServerNames = new Set([client.mcpName ?? 'client']);
+        registeredMcpServerNames = hostMcpServerNames;
+        nonHarnessMcpServerNames = hostMcpServerNames;
+        return { [client.mcpName ?? 'client']: { type: 'http', url: client.url, headers: { Authorization: `Bearer ${client.token}` } } };
+      }
       if (hosted) {
         // 设备托管：只用经隧道的服务——cindy_exec(文件与命令)+ 任务所在电脑提供的 Cindy 工具。
         const headers = { Authorization: `Bearer ${hosted.tunnelToken}` };
@@ -2242,7 +2253,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     };
     const forceTurnConfirmation = (toolName: string, input: unknown): boolean => {
       const policy = activeTurnPermissionPolicy;
-      if (!policy) return false;
+      if (!policy || mutablePermissionMode === 'bypassPermissions') return false;
       try {
         return policy.forceConfirmToolCall(toolName, input) === true;
       } catch (error) {
@@ -2270,8 +2281,6 @@ export class ClaudeCodeAgent extends BaseAgent {
       kind: InteractionRequest['kind'];
       resolve: (d: InteractionDecision) => void;
       settled: boolean;
-      /** 本轮来源/执行范围约束独立于 MCP 的逐次审批偏好。 */
-      turnPolicyForcePrompt?: boolean;
       /** Auto 审阅故障降级来的确认:系统收口不能当成用户点了拒绝。 */
       unavailableHandoff?: boolean;
       /** 目录授权变化会使这次文件读写审批的根快照失效。 */
@@ -2291,7 +2300,7 @@ export class ClaudeCodeAgent extends BaseAgent {
      */
     async function dispatchInteraction(
       req: InteractionRequest,
-      opts?: { turnPolicyForcePrompt?: boolean; directorySensitive?: boolean },
+      opts?: { directorySensitive?: boolean },
     ): Promise<InteractionDecision> {
       if (!interactionResolver) {
         return safeDefaultDecision(req.kind, 'no_resolver_attached');
@@ -2302,7 +2311,6 @@ export class ClaudeCodeAgent extends BaseAgent {
           kind: req.kind,
           resolve,
           settled: false,
-          ...(opts?.turnPolicyForcePrompt ? { turnPolicyForcePrompt: true } : {}),
           ...(opts?.directorySensitive ? { directorySensitive: true } : {}),
           ...(req.kind === 'permission' && isAutoReviewUnavailableMetadata(req.metadata)
             ? { unavailableHandoff: true }
@@ -2335,11 +2343,10 @@ export class ClaudeCodeAgent extends BaseAgent {
       const entries = Array.from(pendingInteractions.entries());
       for (const [requestId, entry] of entries) {
         if (entry.settled) continue;
-        const effectiveResolveAs = resolveAs === 'allow' && entry.turnPolicyForcePrompt ? 'deny' : resolveAs;
-        const decision = effectiveResolveAs === 'allow' && entry.kind !== 'ask_user_question'
+        const decision = resolveAs === 'allow' && entry.kind !== 'ask_user_question'
           ? ({ kind: entry.kind, behavior: 'allow' } as InteractionDecision)
           : safeDefaultDecision(entry.kind, reason);
-        if (effectiveResolveAs === 'deny' && entry.unavailableHandoff) {
+        if (resolveAs === 'deny' && entry.unavailableHandoff) {
           autoReviewConfirmUndeliveredNotice.notify();
         }
         entry.settled = true;
@@ -2348,7 +2355,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         const dismissedPayload: InteractionDismissedEvent = {
           requestId,
           reason,
-          resolvedAs: effectiveResolveAs,
+          resolvedAs: resolveAs,
         };
         eventQueue.push({ type: 'interaction_dismissed', data: dismissedPayload, source: 'claude-code' });
       }
@@ -2631,9 +2638,6 @@ export class ClaudeCodeAgent extends BaseAgent {
           return { behavior: 'deny', message: 'The current Plan turn is read-only.' };
         }
         if (modeAfterReview === 'bypassPermissions') {
-          if (turnPolicyForcePrompt) {
-            return { behavior: 'deny', message: 'Permission mode changed; retry within the authorized turn scope.' };
-          }
           return { behavior: 'allow', updatedInput: executionInput };
         }
         if (modeAfterReview !== reviewPermissionMode) {
@@ -2685,7 +2689,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         unavailableHandoff
           ? annotatePermissionRequestForUnavailableReview(permissionRequest)
           : permissionRequest,
-        { turnPolicyForcePrompt, directorySensitive: directorySensitivePermission },
+        { directorySensitive: directorySensitivePermission },
       );
       notifyIfAutoReviewConfirmUndelivered(unavailableHandoff, decision);
       if (isPlanToolBlocked(toolName)) {
@@ -2872,7 +2876,8 @@ export class ClaudeCodeAgent extends BaseAgent {
         // Fast 模式:进 flag settings 层(= --settings),解锁 cc 二进制在 Agent SDK 通道下的
         // fast(否则二进制按 "Agent SDK 不可用" 拒绝)。是否 Opus/官方/firstParty 由二进制把关,
         // agent 层不重复硬判(规则 9:确定性逻辑就近,但 fast 的最终门槛是二进制 + 配置门控)。
-        fastMode: mutableFastMode,
+        fastMode: opts.fastModePolicy?.isAllowed() === false ? false : mutableFastMode,
+        fastModeAllowed: opts.fastModePolicy?.isRequestAllowed?.() ?? opts.fastModePolicy?.isAllowed(),
         botSkillPolicy: reviewMode ? undefined : opts.botRuntimeProfile?.skillPolicy,
         capabilityRouting: reviewMode ? undefined : this.deps.capabilityRouting,
       });
@@ -3155,7 +3160,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       && (planTurnActive || sdkInPlanMode) && !isReadOnlyClaudeTool(toolName);
     // Fast 模式运行时态:启动取 opts.fastMode 快照,setFastMode 覆盖。buildSettings 每次读最新值;
     // host 只在「该 model 支持 + 走官方供应商」时才传 true(renderer 配置门控),agent 忠实消费。
-    let mutableFastMode = opts.fastMode === true;
+    let mutableFastMode = opts.fastMode === true && opts.fastModePolicy?.isAllowed() !== false;
     // 附加只读引用目录: 启动时取 opts.extraDirs 快照, setExtraDirs 覆盖。
     // SDK additionalDirectories 在 Query 创建时冻结;代际不一致时下一次 send
     // 走 rewind 同款 resume+fork 重建,下一 turn 生效,不用 fresh:true。
@@ -3346,6 +3351,34 @@ export class ClaudeCodeAgent extends BaseAgent {
     /** 当前分片的起始壁钟时刻;片尾据此识别系统挂起。 */
     let upstreamResponseIdleSliceStartedAt = 0;
     const pendingToolIds: Set<string> = new Set();
+    async function withRemoteApprovalIdleGuard(
+      rawParams: unknown,
+      approve: () => Promise<unknown>,
+    ): Promise<unknown> {
+      // SSH daemon canUseTool bypasses the local callback. Its requestId is the
+      // SDK toolUseID: executable input is available even before full assistant.
+      const toolUseId = (rawParams as { requestId?: unknown } | null)?.requestId;
+      const generation = turnState.generation;
+      const tracked = !closed && turnInFlight && typeof toolUseId === 'string' && toolUseId.length > 0;
+      if (tracked) {
+        pendingToolIds.add(toolUseId);
+        clearUpstreamResponseIdle();
+      }
+      let awaitingToolResult = false;
+      try {
+        const result = await approve();
+        const decision = result as { kind?: string; behavior?: string } | null;
+        awaitingToolResult = decision?.behavior === 'allow' || decision?.kind === 'ask_user_question';
+        return result;
+      } finally {
+        // Allowed tools stay protected until tool_result. Denial / failure may
+        // never produce one, so resume idle timing. Never re-add a cleared id or
+        // let an old approval remove/reset the next turn's pending tools/budget.
+        if (!awaitingToolResult && tracked && turnState.generation === generation && pendingToolIds.delete(toolUseId)) {
+          armUpstreamResponseIdle();
+        }
+      }
+    }
     function clearUpstreamResponseIdle(): void {
       if (upstreamResponseIdleTimer) {
         clearTimeout(upstreamResponseIdleTimer);
@@ -3789,6 +3822,7 @@ export class ClaudeCodeAgent extends BaseAgent {
             : {}),
           systemPrompt: (() => {
             const appendText = buildClaudeSystemPromptAppend({
+              answerDeliveryPrompt: reviewMode ? undefined : this.deps.runtimeConfig.answerDeliveryPrompt,
               makerMemoryRules,
               contactsRules,
               ghostRosterPrompt,
@@ -3858,14 +3892,13 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 同一个 scope key 也必须随注册的 session ctx 走: prompt 段用它读索引
           // (上方 memoryScopeKey), 远端工具侧不给就会回落到 workdir 键。
           ...((makerMemoryEnabled || opts.makerMemoryScopeKey) ? { makerMemoryScopeKey: memoryScopeKey } : {}),
-          onApprovalRequest: async (rawParams: unknown) => {
+          onApprovalRequest: (rawParams: unknown) => withRemoteApprovalIdleGuard(rawParams, async () => {
             // 110s timeout — must respond before daemon's 120s server-request timeout.
             // On timeout, dismiss the pending interaction (clears UI) and reject to
             // let cc-manager-client return deny to daemon.
             const REMOTE_APPROVAL_TIMEOUT_MS = 110_000;
             async function dispatchWithTimeout(
               req: InteractionRequest,
-              dispatchOpts?: { turnPolicyForcePrompt?: boolean },
             ): Promise<InteractionDecision> {
               let timer: NodeJS.Timeout | undefined;
               try {
@@ -3874,7 +3907,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                     dismissSinglePending(req.requestId, 'approval_timeout');
                     reject(new Error('approval timed out'));
                   }, REMOTE_APPROVAL_TIMEOUT_MS);
-                  dispatchInteraction(req, dispatchOpts).then(resolve, reject);
+                  dispatchInteraction(req).then(resolve, reject);
                 });
               } finally {
                 if (timer) clearTimeout(timer);
@@ -4006,9 +4039,7 @@ export class ClaudeCodeAgent extends BaseAgent {
               params.input ?? {},
             );
             if (mutablePermissionMode === 'bypassPermissions') {
-              return remoteTurnPolicyForcePrompt
-                ? { kind: 'permission', behavior: 'deny', reason: 'Permission mode changed; retry within the authorized turn scope.' }
-                : { kind: 'permission', behavior: 'allow' };
+              return { kind: 'permission', behavior: 'allow' };
             }
             // 远端会话走同一份 host MCP 策略 —— 否则 SSH 会话里可信 server 又要逐次
             // 弹窗, prompt-each-time 的"禁止持久化授权"保护也整套缺失。
@@ -4043,9 +4074,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                 return { kind: 'permission', behavior: 'deny', reason: 'The current Plan turn is read-only.' };
               }
               if (modeAfterReview === 'bypassPermissions') {
-                return remoteTurnPolicyForcePrompt
-                  ? { kind: 'permission', behavior: 'deny', reason: 'Permission mode changed; retry within the authorized turn scope.' }
-                  : { kind: 'permission', behavior: 'allow' };
+                return { kind: 'permission', behavior: 'allow' };
               }
               if (modeAfterReview === reviewPermissionMode && autoDecision.verdict === 'allow') {
                 return { kind: 'permission', behavior: 'allow' };
@@ -4087,7 +4116,6 @@ export class ClaudeCodeAgent extends BaseAgent {
                 remoteUnavailableHandoff
                   ? annotatePermissionRequestForUnavailableReview(remotePermissionRequest)
                   : remotePermissionRequest,
-                { turnPolicyForcePrompt: remoteTurnPolicyForcePrompt },
               );
             } catch {
               if (remoteUnavailableHandoff) autoReviewConfirmUndeliveredNotice.notify();
@@ -4114,7 +4142,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                 ? formatPermissionDenial(isSystemPermissionDenialReason(decision.reason) ? 'system' : 'user', decision.reason)
                 : decision.reason,
             };
-          },
+          }),
           onSubagentModelAccessRequest: async (rawParams: unknown) => {
             const params = typeof rawParams === 'object' && rawParams !== null
               ? rawParams as Record<string, unknown>
@@ -4288,7 +4316,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       // Re-read at each Query boundary: plugin uninstall/disable may remove the
       // previous projection while the conversation itself remains open.
       // 受邀者(另一个账号)的托管会话不带本机安装的托管技能(属于本机用户与其组织)。
-      const managedSkills = !reviewMode && !hosted?.guest && this.deps.getManagedSkills
+      const managedSkills = !reviewMode && !hosted?.guest && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly && this.deps.getManagedSkills
         ? await this.deps.getManagedSkills() : [];
       const managedDisabledPaths = currentDisabledSkillLaunchPaths(managedDisabledSkillLaunch);
       const allowedManagedSkills = resolveAllowedManagedSkills(managedSkills, managedSkillGrants, managedDisabledPaths);
@@ -4346,6 +4374,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 空段被 .filter 跳过 (.md 文件为空 / userPrompt 为空 = 不 append).
           systemPrompt: (() => {
             const appendText = buildClaudeSystemPromptAppend({
+              answerDeliveryPrompt: reviewMode ? undefined : this.deps.runtimeConfig.answerDeliveryPrompt,
               makerMemoryRules,
               contactsRules,
               ghostRosterPrompt,
@@ -4381,6 +4410,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                         pid,
                         kind: 'claude',
                         role: 'task-host',
+                        sessionId: opts.sessionId ?? null,
                       }),
                     trackDebugFile: process.env.XDT_CC_DEBUG_NET === '1' && ccDebugFile
                       ? () => this.deps.trackCcDebugFile?.(ccDebugFile, opts.sessionId) ?? (() => {})
@@ -4414,7 +4444,8 @@ export class ClaudeCodeAgent extends BaseAgent {
           canUseTool: sdkCanUseTool,
           // Bot MCP selection is explicit; native delegation remains available.
           // 设备托管：只用经隧道的 MCP(本机用户 / 项目里的 MCP 启动命令会在本机执行)。
-          ...(opts.botRuntimeProfile || hosted ? { strictMcpConfig: true } : {}),
+          ...(opts.botRuntimeProfile || hosted || opts[LOCAL_AGENT_CLIENT] ? { strictMcpConfig: true } : {}),
+          ...(opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? { tools: [] } : {}),
           // 设备托管：自带文件与命令工具只能操作本机，关掉，由 cindy_exec 顶替；
           // 另含 host 路由表关闭的自带工具(见 claudeDisallowedTools)。
           ...(claudeDisallowedTools.length > 0
@@ -4424,7 +4455,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           ...(hosted?.guest ? { tools: [...DEVICE_HOSTED_GUEST_CLAUDE_TOOLS] } : {}),
           // 设备托管：个人配置(用户级设置、hooks)属于任务所在电脑，不加载本机用户级设置；
           // 项目级设置来自同步过来的影子目录(只保留权限规则)。
-          settingSources: reviewMode || !!opts.botRuntimeProfile
+          settingSources: reviewMode || !!opts.botRuntimeProfile || opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly
             ? []
             : hosted ? ['project', 'local'] : ['user', 'project', 'local'],
           // Settings (SDK "flag settings" 层, 优先级最高 — 覆盖 user/project/local 文件层):
@@ -4499,7 +4530,7 @@ export class ClaudeCodeAgent extends BaseAgent {
             taintWorkspaceSettings(message);
             throw new Error(message);
           }
-          return applyFlagSettings(settings);
+          return applyFlagSettings(opts.fastModePolicy?.isAllowed() === false ? { ...settings, fastMode: false } : settings);
         };
       }
       if (newSdkSessionId && localQueryStarted && !unacceptedForks.has(query)) {
@@ -5689,10 +5720,16 @@ export class ClaudeCodeAgent extends BaseAgent {
                 toolName?: unknown,
                 input?: unknown,
                 parentToolUseId?: string,
+                inputStreaming?: boolean,
               ) => {
-                pendingToolIds.add(id);
                 getToolLoopMonitor(parentToolUseId).onToolUse(id, toolName, input);
-                clearUpstreamResponseIdle();
+                // content_block_start precedes input_json_delta: the model still
+                // owns the response until the complete tool input is delivered.
+                // canUseTool independently pauses the watchdog during approval.
+                if (!inputStreaming) {
+                  pendingToolIds.add(id);
+                  clearUpstreamResponseIdle();
+                }
               },
               onToolResultDone: (
                 id: string,
@@ -6324,6 +6361,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     };
     const handle: AgentSessionHandle = {
       disabledSkillPaths: disabledSkillSnapshot,
+      getAutoReviewOwner: () => usesNativeClaudeAutoReview() ? 'native' : 'cindy',
       reviewAutoPermissionAction: async (action) => {
         const decision = await reviewAutoAction(
           action,
@@ -7320,6 +7358,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         // providerId 用调用方给的目标来源(可能正在切 provider),缺省回落会话启动值。
         if (opts.remoteHostId && resolveRemoteClaudeRoute) {
           const nextRoute = await resolveRemoteClaudeRoute({
+            sessionId: opts.sessionId,
             providerId: targetProviderId,
             model: newModel,
           });
@@ -7533,14 +7572,19 @@ export class ClaudeCodeAgent extends BaseAgent {
         mutableEffort = newEffort;
       },
 
-      async setFastMode(enabled: boolean) {
-        if (reviewMode) return;
+      async setFastMode(enabled: boolean | 'ultrafast') {
+        if (reviewMode && opts.fastModePolicy?.isAllowed() !== false) return;
+        if (opts.fastModePolicy?.isAllowed() === false) enabled = false;
+        if (enabled === 'ultrafast') throw new Error('Ultrafast requires the Codex runtime');
         // 与 setEffort 同款:走 SDK applyFlagSettings 改 flag settings 层 `fastMode`。
         // cc 二进制的 sticky-on latch 负责缓存安全(header 一旦发出整 session 保持,中途 toggle
         // 不破 server 端 cache key)—— 所以这里直接切、不做缓存兜底。是否 Opus/官方/firstParty
         // 由二进制把关(不支持时优雅 no-op),agent 不重复硬判(规则 9 留给配置 + 二进制)。
         const isControlBlocked = controlRequestsBlocked();
         log.debug('setFastMode', { from: mutableFastMode, to: enabled, controlRequestsBlocked: isControlBlocked });
+        if (isControlBlocked && opts.fastModePolicy?.isAllowed() === false && mutableFastMode) {
+          throw new Error('Subscription Fast policy is waiting for the native runtime to accept settings');
+        }
         if (!isControlBlocked) {
           await q.applyFlagSettings({ fastMode: enabled });
         }

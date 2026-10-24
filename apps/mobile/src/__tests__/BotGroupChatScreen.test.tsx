@@ -8,8 +8,12 @@ const h = vi.hoisted(() => ({
   chat: null as any,
   management: null as any,
   alert: vi.fn(),
+  leaveGuard: [] as boolean[],
+  leaveDecision: (async () => false) as () => Promise<boolean>,
   confirm: vi.fn(),
   leave: vi.fn(),
+  focused: true,
+  closeSettings: null as null | (() => void),
   row: null as any,
   inputs: {} as Record<string, any>,
   teammates: { rows: [] as any[], loading: false, failed: false },
@@ -56,7 +60,7 @@ vi.mock('react-native', () => {
   };
 });
 vi.mock('expo-router', () => ({
-  useIsFocused: () => true,
+  useIsFocused: () => h.focused,
   Stack: { Screen: () => null },
   useRouter: () => ({ back: vi.fn(), replace: vi.fn() }),
   useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
@@ -75,7 +79,7 @@ vi.mock('react-i18next', async (importOriginal) => ({
 vi.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${++h.uuid}` }));
 vi.mock('lucide-react-native', () => Object.fromEntries(
   ['ChevronLeft', 'Settings2', 'Plus', 'Square', 'Users', 'X', 'Check', 'CircleAlert', 'CircleCheck', 'CircleDashed', 'FileText', 'Sparkles', 'Folder', 'Camera', 'Image',
-    'Layers', 'ListChecks', 'Ellipsis', 'ChevronRight', 'ChevronDown']
+    'Layers', 'ListChecks', 'ListTodo', 'Ellipsis', 'ChevronRight', 'ChevronDown']
     .map((name) => [name, () => null]),
 ));
 vi.mock('@/theme', async () => ({
@@ -103,6 +107,7 @@ vi.mock('@/components/AppText', () => ({
   TextInput: ({ testID, ...props }: any) => { h.inputs[testID] = props; return el('input', { 'data-testid': testID, value: props.value ?? '', readOnly: true }); },
 }));
 vi.mock('@/components/PaperPlaneIcon', () => ({ PaperPlaneIcon: () => null }));
+vi.mock('@/session/useConfirmLeaveWhileUploading', () => ({ useConfirmLeaveWhileUploading: (active: boolean) => { h.leaveGuard.push(active); return () => h.leaveDecision(); } }));
 vi.mock('@/components/MobilePrimitives', () => ({
   MainWindowActionButton: ({ action }: any) => el('button', {
     'data-testid': action.testID, 'aria-label': action.accessibilityLabel, 'aria-busy': action.busy ? 'true' : undefined,
@@ -117,7 +122,8 @@ vi.mock('@/session/HomeHeaderGlassButton', () => ({
   HomeHeaderGlassButton: ({ onPress, testID, disabled, children }: any) => el('button', { 'data-testid': testID, disabled, onClick: onPress }, children),
 }));
 vi.mock('@/session/CompanionSheet', () => ({
-  CompanionSheet: ({ visible, children, onClosed, testID }: any) => {
+  CompanionSheet: ({ visible, children, onClose, onClosed, testID }: any) => {
+    if (testID === 'botGroup.settings') h.closeSettings = onClose;
     const was = useRef(visible);
     useEffect(() => { if (was.current && !visible) onClosed?.(); was.current = visible; }, [visible]);
     return visible ? el('div', { 'data-testid': testID }, children) : null;
@@ -183,10 +189,12 @@ vi.mock('@/session/ImageLightbox', () => ({
   ImageLightbox: ({ images, initialUrl }: any) => el('div', { 'data-testid': 'lightbox', 'data-url': initialUrl, 'data-count': String(images.length) }),
 }));
 vi.mock('@/session/MessageRenderer', () => ({
-  AttachmentStrip: ({ attachments, onOpen, align }: any) => el('div', { 'data-testid': 'attachmentStrip', 'data-align': align },
+  AttachmentStrip: ({ attachments, onOpen, onOpenFile, align }: any) => el('div', { 'data-testid': 'attachmentStrip', 'data-align': align },
     attachments.map((item: any, index: number) => el('button', {
       key: index, 'data-testid': `attachment.${item.kind}`, 'data-uri': item.uri ?? '',
-      onClick: () => onOpen(item.kind === 'image'
+      onClick: () => item.kind === 'file' && onOpenFile
+        ? onOpenFile(attachments.slice(0, index).filter((attachment: any) => attachment.kind === 'file').length)
+        : onOpen(item.kind === 'image'
         ? { kind: 'media', media: { kind: 'image', url: item.uri, previewable: false } }
         : { kind: 'file', title: item.name, body: '' }),
     }, item.name))),
@@ -201,6 +209,9 @@ vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsM
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
 vi.mock('@/session/ThinkingDots', () => ({ ThinkingDots: () => null }));
+// The live card of my own teammate's task reads the computer over device-link; only which computer is under test.
+const taskCardDevices = vi.hoisted(() => [] as string[]);
+vi.mock('@/session/CompanionMessageCard', () => ({ CompanionTaskCard: ({ deviceId }: { deviceId: string }) => { taskCardDevices.push(deviceId); return null; } }));
 import { BotGroupChatScreen } from '@/session/BotGroupChatScreen';
 import { parseBotGroupChatData } from '@/session/botGroupRemote';
 
@@ -268,9 +279,9 @@ beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
-  h.platform.OS = 'ios'; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
+  h.platform.OS = 'ios'; h.focused = true; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
-  h.discarded = []; h.deleted = [];
+  h.discarded = []; h.deleted = []; h.leaveGuard = []; h.leaveDecision = async () => false;
   h.local = {
     options: null, setPending: null,
     addImages: vi.fn(), addDocument: vi.fn(), addPastedImages: vi.fn(), enqueueUploads: vi.fn(),
@@ -302,6 +313,71 @@ describe('group timeline', () => {
     await render(parseBotGroupChatData(deleted)!);
     expect(byId('botGroup.quote')!.textContent).toContain('groupChat.quote.deleted');
     expect(node.textContent).not.toContain('私密的原文');
+  });
+
+  it('shows a task another owner\'s teammate started from the group as its posted title and state', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-1', fromBotId: 'abu', fromBotName: '阿布', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-1', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: false },
+    ] });
+    data.messages.push(message('t1', 20, { authorBotId: 'abu', authorName: '阿布', content: '我开了个任务',
+      task: { meta, state: 'waiting', title: '官网首页', summary: '首页要放几个案例？' } }));
+    await render(parseBotGroupChatData(data)!);
+    const card = byId('botGroup.task')!;
+    expect(card.textContent).toContain('官网首页');
+    expect(card.textContent).toContain('groupChat.task.state.waiting');
+    expect(card.textContent).toContain('首页要放几个案例？');
+    expect(byId('botGroup.task.live')).toBeNull();
+  });
+
+  it('opens my own teammate\'s task live in a group entered straight from the Chat Server, via the companion\'s home computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-3', fromBotId: 'mimi', fromBotName: '咪咪', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-3', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true, homeDeviceId: 'pc' },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: true, homeDeviceId: null },
+    ] });
+    data.messages.push(message('t3', 22, { authorBotId: 'mimi', authorName: '咪咪', content: '我开了个任务', task: { meta, state: 'started', title: '官网首页' } }),
+      message('t4', 23, { authorBotId: 'abu', authorName: '阿布', content: '我也开了', task: { meta: { ...meta, delegationId: 'task-4', fromBotId: 'abu' }, state: 'started', title: '整理行程' } }));
+    h.chat = { ...h.chat, server: true, state: { kind: 'ready', group: data } };
+    // No computer on the route: the direct Chat Server entry.
+    await act(async () => root.render(el(BotGroupChatScreen, { deviceId: '', deviceName: '', groupId: 'g1' })));
+    expect(all('botGroup.task.live')).toHaveLength(1);
+    // A companion whose computer the account does not know stays a snapshot.
+    expect(byId('botGroup.task')!.textContent).toContain('整理行程');
+  });
+
+  it('reads my own teammate\'s live task on its home computer when the group is opened through another computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-5', fromBotId: 'mimi', fromBotName: '咪咪', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-5', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true, homeDeviceId: 'pc' },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: true, homeDeviceId: null },
+    ] });
+    data.messages.push(message('t5', 24, { authorBotId: 'mimi', authorName: '咪咪', content: '我开了个任务', task: { meta, state: 'started', title: '官网首页' } }),
+      message('t6', 25, { authorBotId: 'abu', authorName: '阿布', content: '我也开了', task: { meta: { ...meta, delegationId: 'task-6', fromBotId: 'abu' }, state: 'started', title: '整理行程' } }));
+    taskCardDevices.length = 0;
+    // Opened through 'mac', which is not 咪咪's home; 阿布's home is unknown, so it stays on 'mac'.
+    await render(parseBotGroupChatData(data)!);
+    expect(all('botGroup.task.live')).toHaveLength(2);
+    expect([...new Set(taskCardDevices)].sort()).toEqual(['mac', 'pc']);
+  });
+
+  it('shows a task from an author who has left the group as a snapshot, never a lookup on this phone\'s computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-2', fromBotId: 'gone', fromBotName: '离开的伙伴', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-2', objective: '整理行程' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true },
+    ] });
+    data.messages.push(message('t2', 21, { authorBotId: 'gone', authorName: '离开的伙伴', content: '我也开了',
+      task: { meta, state: 'started', title: '整理行程' } }));
+    await render(parseBotGroupChatData(data)!);
+    const card = byId('botGroup.task')!;
+    expect(card.textContent).toContain('整理行程');
+    expect(card.textContent).toContain('groupChat.task.state.started');
+    expect(byId('botGroup.task.live')).toBeNull();
   });
 
   it('uses the shared Android keyboard avoidance behavior for the group composer', async () => {
@@ -424,6 +500,13 @@ describe('group timeline', () => {
     expect(h.chat.act).toHaveBeenLastCalledWith('plan-edit', { planId: 'p1', position: 0, action: 'remove' });
   });
 
+  // The computer's 自动交接 survives the phone's parse, so the card does not promise a 继续 that never comes.
+  it.each([[true, 'groupChat.plan.autoNote'], [undefined, 'groupChat.plan.pauseNote']] as const)('says how steps hand on (autoContinue=%s)', async (autoContinue, note) => {
+    const data = group();
+    await render(parseBotGroupChatData({ ...data, plans: data.plans.map(plan => ({ ...plan, ...(autoContinue ? { autoContinue } : {}) })) })!);
+    expect(byId('botGroup.message.plan')?.textContent).toContain(note);
+  });
+
   it.each([undefined, true, false])('renders human-signed plans as organizer cards with working actions and read-only old plans (isSelf=%s)', async (isSelf) => {
     const data = group();
     data.messages = data.messages.map(message => message.kind === 'plan'
@@ -537,6 +620,21 @@ describe('group composer', () => {
     });
   }
 
+  it.each([true, false])('locks an existing draft when dissolved without being archived (direct server %s)', async server => {
+    h.chat.server = server;
+    const live = group({ openPlan: null, archived: false });
+    await render(live);
+    await type('Unsent draft');
+    expect(h.row.editable).toBe(true);
+    expect(byId('botGroup.composer.send')?.disabled).toBe(false);
+    await render({ ...live, dissolvedAt: '2026-10-15T00:00:00.000Z' });
+    expect(h.row.editable).toBe(false);
+    expect(byId('botGroup.composer.send')?.disabled).toBe(true);
+    await click('botGroup.composer.send');
+    expect(h.chat.act).not.toHaveBeenCalled();
+    expect(node.textContent).toContain('好的，我看看');
+  });
+
   it('offers 所有人 first, inserts a picked teammate and sends the resolved mentions', async () => {
     await render(group({ openPlan: null }));
     await type('请 @');
@@ -649,17 +747,29 @@ describe('group composer', () => {
     expect(last).not.toHaveProperty('division');
   });
 
-  it('explains why 安排分工 is unavailable while a plan runs, and stops the round when empty', async () => {
+  // bot-group-chat.md §7.0 (2026-10-23): the computer arranges a 分工 in single-speaker rooms too,
+  // so a phone working through it keeps 安排分工; a phone talking to the server directly does not, nor one
+  // whose older computer would answer the request as a queue (no supportsDivision) (component tier).
+  it.each([[true, true, false, true], [true, false, false, false], [false, false, false, true], [true, true, true, false]])(
+    'offers 安排分工 (singleSpeaker=%s, supportsDivision=%s, direct=%s)', async (singleSpeaker, supportsDivision, direct, offered) => {
+    h.chat.server = direct;
+    await render(parseBotGroupChatData(group({ serverBacked: true, singleSpeaker, ...(supportsDivision ? { supportsDivision } : {}), replyMode: 'mentioned', openPlan: null }))!);
+    expect(!!byId('botGroup.composer.menu.action.division')).toBe(offered);
+  });
+
+  it.each(['all', 'mentioned'] as const)('keeps the running work-plan gate and uses truthful %s copy', async replyMode => {
     const data = group({
+      replyMode,
       openPlan: { id: 'p1', status: 'running', currentStep: 0, stepCount: 2, currentBotName: '咪咪', currentStepStatus: 'running' },
       round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: 's1', activity: 'step' }], canContinue: false },
     });
-    data.plans[0] = { ...data.plans[0]!, status: 'running', currentStep: 0, steps: [{ ...data.plans[0]!.steps[0]!, status: 'running' }, data.plans[0]!.steps[1]!] };
+    data.plans[0] = { ...data.plans[0]!, kind: 'work', status: 'running', currentStep: 0, steps: [{ ...data.plans[0]!.steps[0]!, status: 'running' }, data.plans[0]!.steps[1]!] };
     await render(data);
     expect(byId('botGroup.composer.menu')).toBeNull();
     await click('botGroup.composer.more');
     expect(h.alert).toHaveBeenCalledWith('groupChat.composer.division', 'groupChat.composer.divisionBusy');
-    expect(byId('placeholder')?.textContent).toBe('groupChat.composer.placeholderPlanRunning(name=咪咪)');
+    expect(byId('placeholder')?.textContent).toBe(replyMode === 'mentioned'
+      ? 'groupChat.composer.placeholder' : 'groupChat.composer.placeholderPlanRunning(name=咪咪)');
     await click('botGroup.composer.stop');
     expect(h.chat.act).toHaveBeenLastCalledWith('stop');
   });
@@ -786,6 +896,39 @@ describe('group attachments', () => {
     expect(byId('botGroup.attachmentTray')).toBeNull();
   });
 
+  // Leaving mid-upload drops the photo: ask first, and never send the text alone.
+  it('asks before leaving while a send waits on an upload, and sends nothing once left', async () => {
+    await render(group({ openPlan: null, supportsAttachments: true }));
+    await focusComposer();
+    await act(async () => { h.row.onChangeText('配图'); });
+    let settle!: (result: { failedCount: number; abandoned: boolean }) => void;
+    h.local.wait.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+    await click('botGroup.composer.send');
+    expect(h.leaveGuard.at(-1)).toBe(true);
+    await act(async () => settle({ failedCount: 0, abandoned: true }));
+    expect(h.chat.act).not.toHaveBeenCalled();
+    expect(h.leaveGuard.at(-1)).toBe(false);
+  });
+
+  // The leave dialog stays open after the upload settles: nothing may be sent before the answer.
+  it('holds the send for an open leave dialog, then sends or drops it by the answer', async () => {
+    await render(group({ openPlan: null, supportsAttachments: true }));
+    await focusComposer();
+    await act(async () => { h.row.onChangeText('配图'); });
+    let answer!: (discard: boolean) => void;
+    h.leaveDecision = () => new Promise((resolve) => { answer = resolve; });
+    await click('botGroup.composer.send');
+    expect(h.chat.act).not.toHaveBeenCalled();
+    await act(async () => answer(false));
+    expect(h.chat.act).toHaveBeenCalledTimes(1);
+
+    h.chat.act.mockClear();
+    await act(async () => { h.row.onChangeText('再来一条'); });
+    await click('botGroup.composer.send');
+    await act(async () => answer(true));
+    expect(h.chat.act).not.toHaveBeenCalled();
+  });
+
   it('reclaims unsent uploads when the chat closes', async () => {
     await render(group({ openPlan: null, supportsAttachments: true }));
     const photo = uploaded('att-4', 'c.jpg');
@@ -818,7 +961,11 @@ describe('group attachments', () => {
     await act(async () => { image.click(); });
     expect(byId('lightbox')?.getAttribute('data-url')).toBe('cindy-media://blobs/abc.png');
     expect(byId('lightbox')?.getAttribute('data-count')).toBe('1');
-    const file = strip.querySelector('[data-testid="attachment.file"]') as HTMLButtonElement;
+    // Sent order: the picture's strip, then the file's own strip (a strip draws pictures first).
+    const strips = [...users[0]!.querySelectorAll('[data-testid="attachmentStrip"]')];
+    expect(strips).toHaveLength(2);
+    expect(strips[0]).toBe(strip);
+    const file = strips[1]!.querySelector('[data-testid="attachment.file"]') as HTMLButtonElement;
     expect(file.textContent).toBe('brief.pdf');
     await act(async () => { file.click(); });
     expect(h.alert).toHaveBeenCalledWith('brief.pdf', 'groupChat.files.onComputer');
@@ -831,6 +978,99 @@ describe('group settings', () => {
     await click('botGroup.settingsButton');
     expect(byId('botGroup.settings')).not.toBeNull();
   }
+
+  it('allows personal removal from an archived read-only group without management rights', async () => {
+    h.chat.server = true;
+    await openSettings(group({ serverBacked: true, archived: true, supportsListRemoval: true, supportsSettingsManagement: false,
+      members: [{ botId: 'self', actorId: 'self', name: 'Me', avatar: '', avatarColor: '', status: 'active', isSelf: true, role: 'member' }] }));
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.hide')?.disabled).toBe(false);
+    await click('botGroup.settings.hide');
+    expect(h.chat.act).toHaveBeenCalledExactlyOnceWith('hide', undefined);
+  });
+
+  it.each([true, false])('leaves after confirmed personal hide even when settings unmounts before the reply (direct=%s)', async direct => {
+    h.chat.server = direct;
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    expect(h.chat.act).toHaveBeenLastCalledWith('hide', undefined);
+    await render(null, 'missing');
+    expect(byId('botGroup.settings')).toBeNull();
+    expect(h.leave).not.toHaveBeenCalled();
+    await act(async () => { finish(); });
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('navigates only once when a personal hide completes before the list rerenders', async () => {
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])('leaves once for authoritative hide without a local action (direct=%s)', async direct => {
+    h.chat.server = direct;
+    await render(group({ serverBacked: true }));
+    h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+    expect(h.chat.act).not.toHaveBeenCalled();
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('does not navigate twice when the authoritative event precedes the local hide receipt', async () => {
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+    await act(async () => { finish(); });
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a hidden background page from navigating another route and leaves when focused again', async () => {
+    await render(group({ serverBacked: true }));
+    h.focused = false; h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).not.toHaveBeenCalled();
+    h.focused = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('resets lifecycle busy on reopen and keeps an old reply out of a new request', async () => {
+    const data = group({ serverBacked: true, supportsDissolve: true, revision: 1,
+      members: [{ botId: 'mimi', actorId: 'mimi', name: 'Mimi', avatar: '', avatarColor: '', status: 'active', isOwned: true, role: 'owner' }] });
+    let finishOld!: () => void, finishNew!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finishOld = () => resolve({ effects: [] }); }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishNew = () => resolve({ effects: [] }); }));
+    await openSettings(data);
+    await click('botGroup.settings.dissolve');
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(true);
+    await act(async () => h.closeSettings!());
+    await click('botGroup.settingsButton');
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(false);
+    await click('botGroup.settings.dissolve');
+    expect(h.chat.act).toHaveBeenCalledTimes(2);
+    await act(async () => { finishOld(); });
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(true);
+    await act(async () => { finishNew(); });
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(false);
+  });
+
+  it('does not navigate from an old hide acknowledgement after leaving the screen', async () => {
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    await act(async () => root.render(el('div')));
+    await act(async () => { finish(); });
+    expect(h.leave).not.toHaveBeenCalled();
+  });
 
   it('follows a remote rename on blur without saving an untouched name', async () => {
     await openSettings();
@@ -890,8 +1130,9 @@ describe('group settings', () => {
     expect(byId('botGroup.settings.addable')).toBeNull();
     await click('botGroup.settings.retry'); expect(refresh).toHaveBeenCalledOnce();
     expect(h.chat.act).not.toHaveBeenCalled();
-    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.archive');
-    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.archiveNote');
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.hide')?.disabled).toBe(true);
+    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.lifecycle.unavailable');
     expect(byId('botGroup.settings')?.textContent).not.toContain('groupChat.settings.deleteNote');
   });
 
@@ -956,26 +1197,27 @@ describe('group settings', () => {
     expect(byId('botGroup.settings.memberMenu.abu.action.remove:abu')?.disabled).toBe(true);
   });
 
-  it.each(['member', 'admin'] as const)('retains compatibility-entry leave for a server %s without granting archive', async (role) => {
-    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
-    data.members[0] = { ...data.members[0], isOwned: true, role };
+  it.each(['member', 'admin'] as const)('uses explicit leave for a server %s without granting archive or compatibility delete', async (role) => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsGroupLeave: true, revision: 5 });
+    data.members[0] = { ...data.members[0], actorId: 'human', isSelf: true, isOwned: true, role };
     await openSettings(data);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(role === 'admin');
     expect(byId('botGroup.settings.add')?.disabled).toBe(role !== 'admin');
-    expect(byId('botGroup.settings.delete')?.disabled).toBe(false);
-    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.delete');
-    await click('botGroup.settings.delete');
-    expect(h.chat.act).toHaveBeenCalledWith('delete', {});
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.leave')?.disabled).toBe(false);
+    await click('botGroup.settings.leave');
+    expect(h.chat.act).toHaveBeenCalledWith('leave', undefined);
     expect(h.leave).toHaveBeenCalledOnce();
   });
 
-  it('keeps compatibility leave disabled when the computer is offline', async () => {
-    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
-    data.members[0] = { ...data.members[0], isOwned: true, role: 'member' };
+  it('keeps explicit leave disabled when the computer is offline', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsGroupLeave: true, revision: 5 });
+    data.members[0] = { ...data.members[0], actorId: 'human', isSelf: true, isOwned: true, role: 'member' };
     h.chat.online = false;
     await openSettings(data);
-    expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
-    await click('botGroup.settings.delete');
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.leave')?.disabled).toBe(true);
+    await click('botGroup.settings.leave');
     expect(h.chat.act).not.toHaveBeenCalled();
   });
 
@@ -1103,4 +1345,17 @@ it('acknowledges other humans only once their messages reach the measured visibl
   });
   expect(h.chat.markRead).toHaveBeenLastCalledWith(['incoming-human']);
   expect(h.markRead).not.toHaveBeenCalled();
+});
+
+// #6550: screen + real mobile Markdown parser, with RN host primitives simulated in jsdom.
+it('renders component body as readable text without changing the message', async () => {
+  const content = 'Before\n\n```cindy-ui\n' + JSON.stringify({ seq: 1, version: 1, op: 'create', id: 'body', kind: 'text', props: { text: 'Readable answer' } }) + '\n```\n\nAfter';
+  const reply = message('rich-body', 1, { authorBotId: 'mimi', authorName: '咪咪', content });
+  await render(group({ messages: [reply] }));
+  const body = byId('botGroup.message.bot')!;
+  expect(body.textContent).toContain('Readable answer');
+  expect(body.textContent).toContain('Before');
+  expect(body.textContent).toContain('After');
+  expect(body.textContent).not.toContain('"op":"create"');
+  expect(reply.content).toBe(content);
 });

@@ -3,7 +3,8 @@ import { isMobileRemoteCollectionSupported, normalizeRemoteCollectionItems, pars
 
 const PREFIX = 'cindy.remoteResources.v1.';
 const MAX_CHARS = 256 * 1024;
-type Snapshot = { home: RemoteHomeCollection[]; items: Record<string, HostedRemoteCollectionItem[]>; read: Record<string, number>; readSequences?: Record<string, string> };
+type ChatRoster = { items: HostedRemoteCollectionItem[]; ids: string[] };
+type Snapshot = { home: RemoteHomeCollection[]; items: Record<string, HostedRemoteCollectionItem[]>; read: Record<string, number>; readSequences?: Record<string, string>; chatRosters?: Record<string, ChatRoster> };
 const empty = (): Snapshot => ({ home: [], items: {}, read: {}, readSequences: {} });
 const validSequence = (value: unknown): value is string => typeof value === 'string' && /^\d{1,30}$/.test(value);
 let epoch = 0;
@@ -33,7 +34,7 @@ function normalize(raw: unknown): Snapshot {
       if (!row) return [];
       const [host] = parseRemoteResourceTargets(JSON.stringify([row.host]));
       const [item] = normalizeRemoteCollectionItems({ items: [row.item] }, id);
-      return host && item ? [{ host, item, key: JSON.stringify([host.deviceId, item.ref.kind, item.ref.id]) }] : [];
+      return host && item ? [{ host, item, key: JSON.stringify([host.deviceId, item.ref.collectionId, item.ref.kind, item.ref.id]) }] : [];
     });
   }
   if (value.read && typeof value.read === 'object') for (const [key, at] of Object.entries(value.read).slice(-2000)) {
@@ -41,6 +42,26 @@ function normalize(raw: unknown): Snapshot {
   }
   if (value.readSequences && typeof value.readSequences === 'object') for (const [key, sequence] of Object.entries(value.readSequences).slice(-2000)) {
     if (key.length <= 600 && validSequence(sequence)) out.readSequences![key] = sequence;
+  }
+  // Direct server rows have no device host. Keep their display mirror separate from
+  // legacy computer rows; neither cached membership nor presence grants access.
+  if (value.chatRosters && typeof value.chatRosters === 'object') for (const realm of ['cn', 'global']) {
+    const roster = value.chatRosters[realm];
+    if (!roster || !Array.isArray(roster.items) || !Array.isArray(roster.ids)) continue;
+    const items = roster.items.slice(0, 200).flatMap(row => {
+      const [item] = normalizeRemoteCollectionItems({ items: [row?.item] }, 'bot-groups');
+      if (!item || item.ref.kind !== 'bot-group') return [];
+      const groupMembers = Array.isArray(row.groupMembers) ? row.groupMembers.slice(0, 200).flatMap(member => {
+        if (!member || typeof member.botId !== 'string' || typeof member.name !== 'string') return [];
+        return [{ botId: member.botId.slice(0, 160), name: member.name.slice(0, 512),
+          avatar: typeof member.avatar === 'string' ? member.avatar.slice(0, 8192) : '',
+          ...(typeof member.avatarUrl === 'string' && member.avatarUrl.startsWith('https://') ? { avatarUrl: member.avatarUrl.slice(0, 8192) } : {}),
+          avatarColor: typeof member.avatarColor === 'string' ? member.avatarColor.slice(0, 64) : '' }];
+      }) : undefined;
+      return [{ key: `chat:${item.ref.id}`, host: { deviceId: '', deviceName: '' }, item, groupMembers,
+        ...(validSequence(row.lastReplySequence) ? { lastReplySequence: row.lastReplySequence } : {}) }];
+    });
+    (out.chatRosters ??= {})[realm] = { items, ids: [...new Set(roster.ids.filter(id => typeof id === 'string' && id.length <= 160))].slice(-2000) };
   }
   return out;
 }
@@ -56,6 +77,40 @@ export async function readRemoteResourceSnapshot(userId: string): Promise<Snapsh
   if (epoch !== expected) return empty();
   if (!snapshots.has(userId)) snapshots.set(userId, value);
   return snapshots.get(userId)!;
+}
+
+/** Trim only the disposable disk mirror; live rows and read positions stay intact. */
+function diskSnapshot(raw: string): string {
+  if (raw.length <= MAX_CHARS) return raw;
+  const copy: Snapshot = JSON.parse(raw);
+  // The group list paints at most five avatars; full membership comes from opening it.
+  for (const roster of Object.values(copy.chatRosters ?? {})) {
+    for (const row of roster.items) if (row.groupMembers) row.groupMembers = row.groupMembers.slice(0, 5);
+  }
+  let remaining = JSON.stringify(copy).length - MAX_CHARS;
+  const lists = [...Object.values(copy.items), ...Object.values(copy.chatRosters ?? {}).map(roster => roster.items)];
+  const candidates = lists.flat().sort((a, b) => (a.item.display.lastReplyAt ?? 0) - (b.item.display.lastReplyAt ?? 0));
+  const removed = new Set<HostedRemoteCollectionItem>();
+  for (const row of candidates) {
+    if (remaining <= 0) break;
+    removed.add(row); remaining -= JSON.stringify(row).length;
+  }
+  for (const list of lists) {
+    const kept = list.filter(row => !removed.has(row));
+    list.splice(0, list.length, ...kept);
+  }
+  // Pathological metadata alone can exhaust the budget too. Retain newer markers
+  // before older ones, rather than silently leaving a stale whole snapshot on disk.
+  for (const map of [copy.read, copy.readSequences ?? {}]) for (const key of Object.keys(map)) {
+    if (remaining <= 0) break;
+    remaining -= JSON.stringify(key).length + JSON.stringify(map[key]).length + 1;
+    delete map[key];
+  }
+  for (const roster of Object.values(copy.chatRosters ?? {})) while (remaining > 0 && roster.ids.length) {
+    remaining -= JSON.stringify(roster.ids.shift()).length;
+  }
+  while (remaining > 0 && copy.home.length) remaining -= JSON.stringify(copy.home.shift()).length;
+  return JSON.stringify(copy);
 }
 
 async function update(userId: string, change: (snapshot: Snapshot) => void): Promise<void> {
@@ -74,8 +129,7 @@ async function update(userId: string, change: (snapshot: Snapshot) => void): Pro
     // open companion chat re-acknowledges its read position on render (a JS render loop).
     if (raw === before && !unsaved.has(userId)) return;
     if (raw !== before) emit();
-    if (raw.length > MAX_CHARS) return;
-    const saved = await AsyncStorage.setItem(PREFIX + userId, raw).then(() => true, () => false);
+    const saved = await AsyncStorage.setItem(PREFIX + userId, diskSnapshot(raw)).then(() => true, () => false);
     if (expected !== epoch) { await AsyncStorage.removeItem(PREFIX + userId).catch(() => undefined); return; }
     if (saved) unsaved.delete(userId); else unsaved.add(userId);
   });
@@ -83,6 +137,15 @@ async function update(userId: string, change: (snapshot: Snapshot) => void): Pro
   await next.finally(() => { if (writes.get(userId) === next) writes.delete(userId); });
 }
 export const cacheRemoteResourceHome = (userId: string, home: RemoteHomeCollection[]) => update(userId, (s) => { s.home = home; });
+export const readCachedChatRoster = async (userId: string, realm: string): Promise<ChatRoster | null> =>
+  (await readRemoteResourceSnapshot(userId)).chatRosters?.[realm] ?? null;
+export const cacheChatRoster = (userId: string, realm: string, items: HostedRemoteCollectionItem[], ids: Iterable<string>) => update(userId, s => {
+  (s.chatRosters ??= {})[realm] = { items, ids: [...ids] };
+});
+export const hideCachedChatRooms = (userId: string, realm: string, ids: string[]) => update(userId, s => {
+  const roster = s.chatRosters?.[realm];
+  if (roster) { roster.items = roster.items.filter(row => !ids.includes(row.item.ref.id)); roster.ids = [...new Set([...roster.ids, ...ids])]; }
+});
 export const remoteResourceReadKey = (deviceId: string, resourceId: string) => JSON.stringify([deviceId, resourceId]);
 export const cacheRemoteResourceItems = (userId: string, collectionId: string, items: HostedRemoteCollectionItem[]) => update(userId, (s) => {
   s.items[collectionId] = items;
@@ -124,3 +187,12 @@ export async function clearRemoteResourceCache(): Promise<void> {
   const keys = await AsyncStorage.getAllKeys().catch(() => []);
   await AsyncStorage.multiRemove(keys.filter((key) => key.startsWith(PREFIX))).catch(() => undefined);
 }
+
+/** Drop only this account's display/unread mirror after a confirmed personal removal. */
+export const forgetRemoteResource = (userId: string, resourceId: string) => update(userId, s => {
+  for (const id of Object.keys(s.items)) s.items[id] = s.items[id].filter(row => row.item.ref.id !== resourceId);
+  for (const roster of Object.values(s.chatRosters ?? {})) roster.items = roster.items.filter(row => row.item.ref.id !== resourceId);
+  for (const map of [s.read, s.readSequences ?? {}]) for (const key of Object.keys(map)) {
+    try { if (JSON.parse(key)[1] === resourceId) delete map[key]; } catch { /* legacy cache key */ }
+  }
+});

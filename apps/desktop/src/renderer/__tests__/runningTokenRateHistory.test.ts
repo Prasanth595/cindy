@@ -347,10 +347,10 @@ describe('host token speed (Pi extension algorithm)', () => {
     expect(history.latestRate).toBe(70);
   });
 
-  it('reports the final average without adding a chart point, and continues the axis next turn', () => {
+  it('keeps the latest speed when the final average arrives, and continues the axis next turn', () => {
     let history = recordTokenSpeed(emptyRateHistory(null), { startedAt: 1, speed: speed(100, 1500) });
     history = recordTokenSpeed(history, { startedAt: 1, speed: speed(60, 2000, false) });
-    expect(history.latestRate).toBe(60);
+    expect(history.latestRate).toBe(100);
     expect(history.samples).toHaveLength(1);
     history = recordTokenSpeed(history, { startedAt: 2, speed: speed(50, 1100) });
     expect(history.samples.map((sample) => sample.durationMs)).toEqual([1500, 2600]);

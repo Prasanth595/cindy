@@ -1251,6 +1251,7 @@ export function createHookControlManager(deps: HookControlManagerDeps): HookCont
         lane.binding === null ? null : { ...lane.binding, actions: [...lane.binding.actions] },
       // store 侧已保证读出来的别名仍然有效(目录删掉即归零), 这里直投。
       defaultWorkspace: defaultWorkspaceOf(store.get(), lane.config.provider),
+      ...(lane.config.provider === 'x' ? { companionBotId: store.get().xCompanionBotId ?? null } : {}),
     };
   }
 

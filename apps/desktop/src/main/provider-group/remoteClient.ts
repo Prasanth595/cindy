@@ -19,6 +19,7 @@ import {
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
+import { PROVIDER_GROUP_FAILURE_COOLDOWN_MS } from './cooling.js';
 
 /** 留出 invoke 路由头的空间，同时适配可靠传输和旧端普通帧；预算按 JSON 的 UTF-8 字节数计。 */
 export const PROVIDER_GROUP_USAGE_REQUEST_MAX_BYTES = Math.min(MAX_FRAME_BYTES, MAX_TRANSPORT_MESSAGE_BYTES) - 64 * 1024;
@@ -37,15 +38,17 @@ export interface ProviderGroupRemoteClient {
     agentKind: 'claude-code' | 'codex' | 'pi';
     model: string;
     exclude: readonly string[];
+    quotaRebalance?: string;
   }): Promise<ProviderGroupRemotePick>;
   cool(ownerDeviceId: string, input: {
     providerId: string;
     memberKey: string;
     cause: ProviderGroupRemoteCoolCause;
     resetAt?: number | null;
+    model?: string;
   }): Promise<void>;
   leases(ownerDeviceId: string, seq: number, entries: readonly ProviderGroupRemoteLease[]): Promise<void>;
-  view(ownerDeviceId: string, providerId: string, modelOrOptions?: string | { model?: string; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
+  view(ownerDeviceId: string, providerId: string, modelOrOptions?: string | { model?: string; agentKind?: 'claude-code' | 'codex' | 'pi'; includeGuestSupport?: boolean }): Promise<ProviderGroupView>;
   /** 报告经组、在组里别的电脑上运行的用量；组所在电脑是旧版本时抛 ProviderGroupRemoteUnsupportedError。 */
   usage(ownerDeviceId: string, report: { seq: number; sinceDay: string | null; rows: readonly ProviderGroupRemoteUsageRow[] }, beforeSend?: () => void): Promise<void>;
 }
@@ -81,7 +84,11 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
           agentKind: input.agentKind,
           model: input.model,
           exclude: [...input.exclude],
+          ...(input.quotaRebalance ? { quotaRebalance: input.quotaRebalance } : {}),
         });
+        // 旧组所在电脑可能忽略这个可选约束：只有明确执行并回显的结果才用于主动换号。
+        if (input.quotaRebalance && (!raw || typeof raw !== 'object'
+          || (raw as { quotaRebalance?: unknown }).quotaRebalance !== true)) return { kind: 'none' };
         return parseProviderGroupRemotePick(raw, input.providerId);
       } catch (error) {
         if (error instanceof ProviderGroupRemoteUnsupportedError) return { kind: 'none' };
@@ -90,13 +97,23 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
     },
 
     async cool(ownerDeviceId, input) {
-      await call(ownerDeviceId, {
-        action: 'cool',
+      const scoped = input.cause === 'usage-limit' && !!input.model;
+      const request = {
+        action: scoped ? 'cool-model' : 'cool',
         providerId: input.providerId,
         memberKey: input.memberKey,
         cause: input.cause,
+        ...(input.model ? { model: input.model } : {}),
         ...(typeof input.resetAt === 'number' ? { resetAt: input.resetAt } : {}),
-      });
+      };
+      try {
+        await call(ownerDeviceId, request);
+      } catch (error) {
+        // Old owners reject unknown actions. A short legacy cooldown must not carry the model's weekly reset.
+        if (!scoped || !(error instanceof Error) || !/unknown provider group action/.test(error.message)) throw error;
+        await call(ownerDeviceId, { ...request, action: 'cool', model: undefined,
+          resetAt: Date.now() + PROVIDER_GROUP_FAILURE_COOLDOWN_MS });
+      }
     },
 
     async leases(ownerDeviceId, seq, entries) {
@@ -105,11 +122,13 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
 
     async view(ownerDeviceId, providerId, modelOrOptions) {
       const model = typeof modelOrOptions === 'string' ? modelOrOptions : modelOrOptions?.model;
+      const agentKind = typeof modelOrOptions === 'object' ? modelOrOptions?.agentKind : undefined;
       const includeGuestSupport = typeof modelOrOptions === 'object' && modelOrOptions?.includeGuestSupport === true;
       return parseProviderGroupRemoteView(await call(ownerDeviceId, {
         action: 'view',
         providerId,
         ...(model ? { model } : {}),
+        ...(agentKind ? { agentKind } : {}),
         ...(includeGuestSupport ? { includeGuestSupport: true } : {}),
       }), providerId);
     },

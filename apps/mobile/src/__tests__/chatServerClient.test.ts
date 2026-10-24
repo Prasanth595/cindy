@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
-import { buildBotGroupQuoteCard } from '@cindy/maker-shared/botGroupChat';
+import { i18n } from '@/i18n';
+import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatPage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
+import { botGroupQuoteFromMessage, resolveBotGroupQuote, buildBotGroupQuoteCard, buildBotGroupTaskCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const room = (n = 1, state = 'joined'): ChatRoom => ({ id: id(n), name: 'Discussion', kind: 'group', state, archived: false,
   revision: 1, created_at: '2026-10-01', updated_at: '2026-10-09', response_mode: 'all', speaking_mode: 'auto' });
@@ -27,6 +28,42 @@ describe('direct Chat Server client', () => {
     const deleted = chatGroupView({ ...page, messages: [{ ...message(20), deleted: true, content: [] }, replying] }, id(11));
     expect(deleted.messages).toHaveLength(1);
     expect(deleted.messages[0].quote).toMatchObject({ messageId: id(20), originalDeleted: true });
+  });
+
+  it('names the home computer of my own companions from the account actors, never of other members', () => {
+    const mine = { id: id(12), kind: 'bot' as const, name: 'Mine', state: 'joined', ownerActorId: id(11), ownerName: '', avatar: null, role: 'member' as const };
+    const theirs = { id: id(13), kind: 'bot' as const, name: 'Theirs', state: 'joined', ownerActorId: id(10), ownerName: '', avatar: null, role: 'member' as const };
+    const page: ChatPage = { snapshot: { ...snapshot(), members: [...snapshot().members, mine, theirs] }, messages: [], before: null };
+    const actors = [{ id: id(12), kind: 'bot', externalId: 'mine', name: 'Mine', avatar: null, homeDeviceId: 'pc' }];
+    const members = chatGroupView(page, id(11), actors).members;
+    expect(members.find(member => member.botId === id(12))).toMatchObject({ isOwned: true, homeDeviceId: 'pc' });
+    expect(members.find(member => member.botId === id(13))).not.toHaveProperty('homeDeviceId');
+    // Without the actor list (older or failed read) an owned companion has no known computer.
+    expect(chatGroupView(page, id(11)).members.find(member => member.botId === id(12))).toMatchObject({ homeDeviceId: null });
+  });
+
+  it('reads a task card on a teammate message as its task, and only there (bot-group-chat.md §10)', () => {
+    const card = buildBotGroupTaskCard({ meta: { v: 1, role: 'delegation-request', delegationId: 'task-1', fromBotId: 'bot', fromBotName: 'Bot',
+      toBotId: null, toBotName: 'Cindy', parentSessionId: 'lane', childSessionId: 'child', objective: 'Launch post' }, state: 'started', title: 'Launch post' },
+    { task: 'Task', untitled: 'Background task', states: { started: 'In progress', waiting: 'Waiting', completed: 'Done', failed: 'Failed', cancelled: 'Cancelled', 'timed-out': 'Timed out' } });
+    const fromBot = { ...message(20), authorId: id(12), author: { kind: 'bot', name: 'Bot' }, content: [{ type: 'text', text: 'Started it.' }, card] };
+    const fromHuman = { ...message(21), content: [card, { type: 'text', text: 'Pasted a card' }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [fromBot, fromHuman], before: null }, id(11));
+    expect(view.messages[0]).toMatchObject({ authorKind: 'bot', content: 'Started it.', task: { state: 'started', title: 'Launch post' } });
+    expect(view.messages[1].task).toBeUndefined();
+    expect(view.messages[1].content).toBe(`${card.fallback}\nPasted a card`);
+    for (const state of ['started', 'waiting'] as const) {
+      const onlyCard = { ...fromBot, content: [{ ...card, data: { ...card.data, state } }] };
+      const single = chatGroupView({ snapshot: snapshot(), messages: [onlyCard], before: null }, id(11));
+      expect(single.messages[0]).toMatchObject({ content: '', task: { state, title: 'Launch post' } });
+      expect(single.lastMessage?.preview).toBe('Launch post');
+      expect(chatRoomRow(room(), { ...snapshot(), messages: [onlyCard] }, id(11)).item.display.preview).toBe('Launch post');
+      const quote = botGroupQuoteFromMessage(single.messages[0]);
+      expect(quote.excerpt).toBe('Launch post');
+      expect(resolveBotGroupQuote({ ...quote, excerpt: 'stale' }, single.messages)).toMatchObject({ state: 'live', excerpt: 'Launch post' });
+      expect(resolveBotGroupQuote(quote, [])).toMatchObject({ state: 'snapshot', excerpt: 'Launch post' });
+    }
+    expect(botGroupQuoteFromMessage(view.messages[0]).excerpt).toBe('Started it.');
   });
 
   it('reconciles all loaded message pages in bounded requests and clears an old-source failure on refresh', async () => {
@@ -70,6 +107,26 @@ describe('direct Chat Server client', () => {
       expect(JSON.stringify(view.messages)).not.toContain('cindy-runtime-error:');
       expect(chatRoomRow(room(), { ...snapshot(), messages: [source] }, id(11)).item.display.preview).not.toContain('cindy-runtime-error:');
     }
+  });
+  it('names a media block the server sent without a caption, in the attachment and the list preview', () => {
+    const untitled = i18n.t('groupChat.files.untitled');
+    expect(untitled).not.toBe('groupChat.files.untitled');
+    const unnamed = { ...message(22), content: [{ type: 'media', mediaId: id(33) }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [unnamed], before: null }, id(11));
+    expect(view.messages[0]!.attachments.map(attachment => attachment.name)).toEqual([untitled]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [unnamed] }, id(11)).item.display.preview).toBe(untitled);
+  });
+  it('shows media as the message attachments, not as caption text, and keeps typed look-alike text', () => {
+    const withText = { ...message(20), content: [{ type: 'text', text: '我写的 [附件: a.png]' }, { type: 'media', mediaId: id(30), caption: 'clipboard-1.png' }] };
+    const onlyMedia = { ...message(21), content: [{ type: 'media', mediaId: id(31), caption: 'a.png' }, { type: 'media', mediaId: id(32), caption: 'b.pdf' }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [onlyMedia, withText], before: null }, id(11));
+    expect(view.messages.map(({ content, attachments }) => ({ content, names: attachments.map(attachment => attachment.name) }))).toEqual([
+      { content: '我写的 [附件: a.png]', names: ['clipboard-1.png'] },
+      { content: '', names: ['a.png', 'b.pdf'] },
+    ]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [onlyMedia] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
+    const blankText = { ...onlyMedia, content: [{ type: 'text', text: ' \n' }, ...onlyMedia.content] };
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [blankText] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
   });
   it.each(['AUTH_REQUIRED', 'private diagnostic', undefined])('reads executions and projects a safe notice beside its visible source: %s', async failure_code => {
     const source = message(20);
@@ -220,4 +277,43 @@ describe('direct Chat Server client', () => {
     await expect(createChatServerClient(request).list()).rejects.toThrow('INVALID_CHAT_LIST');
   });
 
+});
+
+describe('group lifecycle contract', () => {
+  function lifecycle(options: { supported?: boolean; kind?: string; role?: string; reject?: boolean } = {}) {
+    const request = vi.fn().mockImplementation(async (path: string, method?: string) => {
+      if (path === '/me') return { actor: { id: id(11), kind: 'human' }, ...(options.supported === false ? {} : { capabilities: { groupLifecycleVersion: 1, conversationListStateVersion: 1 } }) };
+      if (path.startsWith('/conversation-list-state?')) return [];
+      if (path.endsWith('/snapshot')) return { ...snapshot(), room: { ...room(), kind: options.kind ?? 'group' },
+        members: [{ id: id(12), ownerActorId: id(11), state: 'joined', kind: 'bot', role: options.role ?? 'owner' }] };
+      if (path.endsWith('/list-state')) {
+        if (options.reject) throw new Error('REVISION_CONFLICT');
+        return { conversationId: id(1), hidden: true, revision: 1 };
+      }
+      if (method === 'POST') return { revision: 2, dissolvedAt: '2026-10-15T00:00:00Z', dissolvedBy: id(12) };
+      return [];
+    });
+    return { client: createChatServerClient(request), request };
+  }
+  it('uses the owned companion owner and an explicit revision for dissolution', async () => {
+    const { client, request } = lifecycle();
+    await client.dissolve(id(1), 1, 'fixture-dissolve');
+    expect(request).toHaveBeenLastCalledWith(`/conversations/${id(1)}/dissolve`, 'POST', { operationId: 'fixture-dissolve', expectedRevision: 1 }, id(12));
+    expect(request.mock.calls.some(([, method]) => method === 'PATCH')).toBe(false);
+  });
+  it.each([{ kind: 'direct', code: 'GROUP_REQUIRED' }, { role: 'admin', code: 'OWNER_REQUIRED' }, { supported: false, code: 'LIFECYCLE_UNAVAILABLE' }])('refuses unsupported or unauthorized dissolution %j', async ({ code, ...options }) => {
+    const { client, request } = lifecycle(options);
+    await expect(client.dissolve(id(1), 1, 'fixture-dissolve')).rejects.toThrow(code);
+    expect(request.mock.calls.some(([, method]) => method === 'POST' || method === 'PATCH')).toBe(false);
+  });
+  it('hides after leave without snapshot access and does not hide a failed write', async () => {
+    const failed = lifecycle({ reject: true });
+    await expect(failed.client.hide(id(1), 'fixture-hide')).rejects.toThrow('REVISION_CONFLICT');
+    expect(failed.client.personalList.hidden(id(1))).toBe(false);
+    const { client, request } = lifecycle();
+    await client.hide(id(1), 'fixture-hide');
+    expect(client.personalList.hidden(id(1))).toBe(true);
+    expect(request.mock.calls.some(([path]) => path.endsWith('/snapshot'))).toBe(false);
+    expect(request).toHaveBeenLastCalledWith(`/conversations/${id(1)}/list-state`, 'POST', { operationId: 'fixture-hide', hidden: true, expectedRevision: 0 });
+  });
 });

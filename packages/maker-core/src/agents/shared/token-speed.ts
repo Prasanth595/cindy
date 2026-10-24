@@ -5,12 +5,12 @@ import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
  * with its `estimate` count strategy and `average` end-of-stream behaviour:
  *
  * - one measurement per turn, started by the first content block;
- * - each text / thinking delta (and file-writing tool argument delta) is
+ * - each text / thinking delta (and every tool argument delta) is
  *   counted with the word-boundary estimate `/\w+|[^\s\w]/g`;
  * - current speed = tokens in the last 1s window / time since the token
  *   before them, or since generation resumed (min 100ms); a window with
  *   fewer than 5 tokens keeps the previous reading;
- * - the clock pauses when a non file-writing tool call ends and resumes when
+ * - the clock pauses when a tool call ends and resumes when
  *   the next content block starts or the next counted delta arrives;
  * - at turn end the count is snapped to the provider's real output and the
  *   speed becomes total tokens / elapsed generation time.
@@ -178,9 +178,67 @@ export class TokenSpeedMeter {
   }
 }
 
-/** Pi counts argument deltas of tools that write the model's output into files. */
-const FILE_WRITING_TOOLS = new Set(['edit', 'write', 'multiedit', 'notebookedit']);
+/**
+ * Codex streams reasoning summaries, not all generated tokens. Measure accepted
+ * provider usage against its paired generation clock instead of counting text.
+ * Smooth the last three intervals by time, never by averaging their rates.
+ */
+export class UsageTokenSpeedMeter {
+  private tokens = 0;
+  private elapsedMs = 0;
+  private baseline = { tokens: 0, elapsedMs: 0 };
+  private intervals: { tokens: number; elapsedMs: number }[] = [];
+  private streaming = true;
+  private invalid = false;
 
-export function isFileWritingTool(name: unknown): boolean {
-  return typeof name === 'string' && FILE_WRITING_TOOLS.has(name.toLowerCase());
+  reset(): void {
+    this.tokens = 0;
+    this.elapsedMs = 0;
+    this.baseline = { tokens: 0, elapsedMs: 0 };
+    this.intervals = [];
+    this.streaming = true;
+    this.invalid = false;
+  }
+
+  invalidate(): void {
+    this.invalid = true;
+  }
+
+  recordUsage(tokens: number, elapsedMs: number): void {
+    if (this.invalid || !this.streaming) return;
+    if (!Number.isFinite(tokens) || !Number.isFinite(elapsedMs) ||
+      tokens < this.tokens || elapsedMs < this.elapsedMs) {
+      this.invalidate();
+      return;
+    }
+    // Repeated usage cannot pair old tokens with a newer clock.
+    if (tokens === this.tokens) return;
+    this.tokens = tokens;
+    this.elapsedMs = elapsedMs;
+    const duration = elapsedMs - this.baseline.elapsedMs;
+    if (duration < 1_000) return;
+    this.intervals.push({ tokens: tokens - this.baseline.tokens, elapsedMs: duration });
+    this.intervals = this.intervals.slice(-3);
+    this.baseline = { tokens, elapsedMs };
+  }
+
+  stop(): void {
+    this.streaming = false;
+  }
+
+  snapshot(): TokenSpeedSnapshot | undefined {
+    if (this.invalid || this.tokens <= 0 || this.elapsedMs <= 0) return undefined;
+    const total = this.intervals.reduce((sum, interval) => ({
+      tokens: sum.tokens + interval.tokens,
+      elapsedMs: sum.elapsedMs + interval.elapsedMs,
+    }), { tokens: 0, elapsedMs: 0 });
+    const average = this.tokens * 1_000 / this.elapsedMs;
+    return {
+      rate: this.streaming ? (total.elapsedMs > 0 ? total.tokens * 1_000 / total.elapsedMs : 0) : average,
+      average,
+      tokens: this.tokens,
+      elapsedMs: this.elapsedMs,
+      streaming: this.streaming,
+    };
+  }
 }

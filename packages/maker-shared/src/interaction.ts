@@ -1,4 +1,5 @@
 import { presentationText, type PresentationLocalizer } from './presentationLocalization.js';
+export { splitQuestionReferences } from './questionReferences.js';
 
 export interface InteractionRequestLike {
   kind?: string;
@@ -7,6 +8,8 @@ export interface InteractionRequestLike {
 }
 
 export interface PendingInteractionLike {
+  /** Local presentation only: an answer already being edited keeps focus. */
+  retainedDraft?: boolean;
   request: InteractionRequestLike;
   persistId?: string;
 }
@@ -16,6 +19,50 @@ export interface AskQuestion {
   header?: string;
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
+}
+
+/** A late answer is ordinary user input, with the original question attached. */
+export function formatAsyncQuestionSupplement(
+  questions: readonly AskQuestion[],
+  answers: Record<string, string>,
+): string {
+  const replies = questions.flatMap((q) => {
+    const answer = answers[q.question] ?? (q.header ? answers[q.header] : undefined);
+    return typeof answer === 'string' && answer.trim()
+      ? [{ question: q.question, answer: answer.trim() }] : [];
+  });
+  return replies.map(({ question, answer }) => `${question.split('\n').map((line) => `> ${line}`).join('\n')}\n\n${answer}`).join('\n\n');
+}
+
+/** Only a confirmed cancellation permits delivery as a new user message. A
+ * missing pending request alone cannot distinguish expiry from an accepted
+ * answer whose receipt was lost (including an answer on another device). */
+export async function asyncQuestionNeedsSupplement(
+  resolve: () => Promise<{ accepted: boolean } | void>,
+  readMessage: () => Promise<unknown>,
+  requestId: string,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const receipt = await Promise.race([
+      resolve(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Interaction receipt timeout')), 15_000);
+      }),
+    ]);
+    if (receipt && receipt.accepted === true) return false;
+  } catch {
+    // Read the original Host row before deciding whether another delivery is safe.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const raw = await readMessage();
+  const content = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (content && typeof content === 'object' && 'requestId' in content && content.requestId === requestId && 'status' in content) {
+    if (content.status === 'answered') return false;
+    if (content.status === 'cancelled') return true;
+  }
+  throw new Error('Interaction decision was not confirmed');
 }
 
 export interface IssueDraft {
@@ -805,7 +852,8 @@ export function sortPendingInteractions(
 ): PendingInteractionLike[] {
   return interactions
     .map((item, index) => ({ item, index }))
-    .sort((a, b) => interactionPriority(a.item) - interactionPriority(b.item) || a.index - b.index)
+    .sort((a, b) => Number(b.item.retainedDraft === true) - Number(a.item.retainedDraft === true)
+      || interactionPriority(a.item) - interactionPriority(b.item) || a.index - b.index)
     .map(({ item }) => item);
 }
 

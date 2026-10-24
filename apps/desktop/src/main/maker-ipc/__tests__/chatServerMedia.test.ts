@@ -12,6 +12,25 @@ import type { BotGroupAttachment } from '../../../shared/botGroupChat.js';
 const attachment: BotGroupAttachment = { id: 'file', name: 'picture.png', category: 'image', mimeType: 'image/png', size: 3, url: 'cindy-media://test', path: null };
 
 describe('chat private media', () => {
+  it.each([undefined, '120'])('preserves PUT 429 Retry-After %s for settlement backoff', async retryAfter => {
+    f.read.mockResolvedValue({ buffer: Buffer.from('png') });
+    f.fetch.mockResolvedValue(new Response('', { status: 429, headers: retryAfter ? { 'Retry-After': retryAfter } : {} }));
+    const api = vi.fn(async () => ({ id: 'media', uploadUrl: 'https://upload.example.test/signed' })) as unknown as ChatApi;
+    const before = Date.now();
+    const error = await createChatMedia(api, () => true).upload('room', 'reply', [attachment], 'actor').catch(error => error);
+    expect(error).toMatchObject({ message: 'MEDIA_UPLOAD_FAILED', status: 429 });
+    if (retryAfter) expect(error.retryAt).toBeGreaterThanOrEqual(before + 120_000);
+    else expect(error.retryAt).toBeUndefined();
+    expect(vi.mocked(api).mock.calls.some(([route]) => route.endsWith('/complete'))).toBe(false);
+  });
+
+  it('does not PUT an ordinary reply after execution changes during prepare', async () => {
+    let current = true; f.read.mockResolvedValueOnce({ buffer: Buffer.from('png') }); f.fetch.mockClear();
+    const api = vi.fn(async () => { current = false; return { id: 'media', uploadUrl: 'https://upload.example.test/signed' }; }) as unknown as ChatApi;
+    await expect(createChatMedia(api, () => true).upload('room', 'reply', [attachment], 'actor', () => { if (!current) throw new Error('STALE_EXECUTOR'); })).rejects.toThrow('STALE_EXECUTOR');
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it('uploads the bytes without a Cindy token and seals before returning the message reference', async () => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png'), mimeType: 'image/png' });
     f.fetch.mockResolvedValue(new Response('', { status: 200 }));
@@ -57,6 +76,31 @@ describe('chat private media', () => {
     allowed = false;
     await expect(media.download('room', 'media')).rejects.toThrow('CONVERSATION_NOT_FOUND');
     expect(api).toHaveBeenCalledTimes(2);
+  });
+  it('keeps the status of a failed download, so a file that is gone is told from a failing server', async () => {
+    const api = vi.fn(async () => ({ name: 'p.png', type: 'image/png', size: 3, url: 'https://download.example.test/signed' })) as unknown as ChatApi;
+    f.fetch.mockResolvedValueOnce(new Response('', { status: 404 }));
+    await expect(createChatMedia(api, () => true).download('room', 'gone')).rejects.toMatchObject({ message: 'MEDIA_DOWNLOAD_FAILED', status: 404 });
+    f.fetch.mockResolvedValueOnce(new Response('', { status: 503 }));
+    await expect(createChatMedia(api, () => true).download('room', 'later')).rejects.toMatchObject({ message: 'MEDIA_DOWNLOAD_FAILED', status: 503 });
+  });
+
+  it('uploads a send\'s files three at a time and keeps their order', async () => {
+    f.read.mockResolvedValue({ buffer: Buffer.from('png') });
+    f.fetch.mockResolvedValue(new Response('', { status: 200 }));
+    const files = ['a', 'b', 'c', 'd'].map(id => ({ ...attachment, id, name: `${id}.png` }));
+    let inFlight = 0, most = 0;
+    const api = vi.fn(async (route: string, _method: string, body: { name?: string }) => {
+      if (!route.endsWith('/media')) return {};
+      inFlight += 1; most = Math.max(most, inFlight);
+      // The first file is prepared last.
+      await new Promise(resolve => setTimeout(resolve, body.name === 'a.png' ? 20 : 1));
+      inFlight -= 1;
+      return { id: `media-${body.name}`, uploadUrl: 'https://upload.example.test/signed' };
+    }) as unknown as ChatApi;
+    const blocks = await createChatMedia(api, () => true).upload('room', 'operation', files, 'actor');
+    expect(blocks.map(block => block.caption)).toEqual(['a.png', 'b.png', 'c.png', 'd.png']);
+    expect(most).toBe(3);
   });
   it('permits exact loopback media only for the explicitly isolated adapter', async () => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png') });f.fetch.mockResolvedValue(new Response('', { status: 200 }));

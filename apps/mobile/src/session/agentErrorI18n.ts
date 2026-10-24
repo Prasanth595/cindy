@@ -70,6 +70,8 @@ export function autoReviewUnavailableGuidanceCode(sessionSource: unknown): strin
 
 /** Unknown provider messages stay in diagnostic details, never in the localized summary. */
 export function unclassifiedAgentErrorI18nKey(message: string, sessionSource?: unknown): string {
+  const limitReason = /\[REMOTE_AGENT_BUSY\] \[(DEVICE_LIMIT|TOTAL_LIMIT)\]/.exec(message)?.[1];
+  if (limitReason) return `session.remoteError.REMOTE_AGENT_${limitReason}`;
   const parsed = parseAgentErrorCode(message);
   const code = parsed?.code === 'AUTO_REVIEW_UNAVAILABLE'
     ? autoReviewUnavailableGuidanceCode(sessionSource)
@@ -79,6 +81,16 @@ export function unclassifiedAgentErrorI18nKey(message: string, sessionSource?: u
   return isResponsesLiteParallelToolCallsError(message)
     ? 'session.tail.requestFormatError'
     : 'session.tail.replyFailed';
+}
+
+/**
+ * Copy for a recognized remote / runtime code in a one-shot action error (fork and the like).
+ * Unknown codes return null so the caller keeps its own fallback instead of "reply failed".
+ */
+export function remoteActionErrorI18nKey(message: string): string | null {
+  const code = parseAgentErrorCode(message)?.code;
+  const key = code ? `session.remoteError.${code}` : null;
+  return key && i18n.exists(key) ? key : null;
 }
 
 export function localizeUnclassifiedAgentError(message: string, sessionSource?: unknown): string {

@@ -399,8 +399,8 @@ export function MobileComposerInputRow({
         <GestureDetector gesture={bodyScrollGesture}>
           <ScrollView
             ref={bodyScrollRef}
-            style={styles.bodyScroll}
-            contentContainerStyle={styles.bodyScrollContent}
+            style={[styles.bodyScroll, geometricSingleLine && styles.bodyScrollCollapsed]}
+            contentContainerStyle={[styles.bodyScrollContent, geometricSingleLine && styles.bodyScrollCollapsed]}
             keyboardShouldPersistTaps="handled"
             bounces={false}
             scrollEnabled={cardLayout && bodyScrollEnabled}
@@ -504,7 +504,7 @@ function ComposerFoldingSection({ progress, children }: { progress?: SharedValue
   const style = useAnimatedStyle(() => {
     const amount = progress?.value ?? 0;
     return {
-      height: measuredHeight.value > 0 ? measuredHeight.value * (1 - amount) : 'auto' as const,
+      height: amount > 0 ? measuredHeight.value * (1 - amount) : 'auto' as const,
       opacity: 1 - amount,
       overflow: 'hidden' as const,
       flexShrink: 0,
@@ -514,7 +514,7 @@ function ComposerFoldingSection({ progress, children }: { progress?: SharedValue
     <View style={{ flexShrink: 0 }} onLayout={event => {
       // Never feed an animated/constrained measurement back into its own height.
       // Keep the natural expanded size until the gesture has fully reversed.
-      if ((progress?.value ?? 0) === 0 && event.nativeEvent.layout.height > 0) {
+      if ((progress?.value ?? 0) === 0) {
         measuredHeight.value = event.nativeEvent.layout.height;
       }
     }}>
@@ -751,8 +751,13 @@ const makeMobileComposerInputRowStyles = (colors: ThemeColors) => ({
     flexDirection: 'row',
     minWidth: 0,
   },
-  bodyScroll: { flexShrink: 1 },
-  bodyScrollContent: { flexGrow: 1 },
+  // Size the viewport to its current children. ScrollView's default flexGrow=1
+  // otherwise keeps the old attachment height and absorbs input resize changes.
+  bodyScroll: { flexGrow: 0, flexShrink: 1 },
+  bodyScrollContent: { flexGrow: 0 },
+  // 收起态胶囊(collapsedHeight)比 44pt 输入行高;viewport 与内容都要铺满胶囊,
+  // mainRow 才能在胶囊里垂直居中,否则 + 与停止钮贴顶、比浮动语音钮偏上。
+  bodyScrollCollapsed: { flexGrow: 1 },
   toolbarRow: {
     alignItems: 'center',
     flexDirection: 'row',

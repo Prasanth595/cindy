@@ -45,6 +45,8 @@ export interface SessionTailErrorBanner {
   /** 本地化展示文案；未知错误的技术原文放入 rawError。 */
   text: string;
   rawError?: string;
+  /** 错误行的稳定 reason key，供诊断提示带上。 */
+  reason?: string | null;
   summaryKey?: string;
   /** 主按钮语义:中断标记行 →「继续任务」;普通失败行 →「重试」。 */
   continueKind: 'interrupted' | 'error';
@@ -111,6 +113,7 @@ export function resolveSessionTailBanner(input: ResolveSessionTailBannerInput): 
       clientId: tail.clientId,
       text: nonRetryableGuidance ?? agentErrorGuidance ?? localizeUnclassifiedAgentError(tail.text, input.session?.source),
       rawError: tail.text,
+      reason: tail.reason,
       ...(!nonRetryableGuidance && !agentErrorGuidance ? { summaryKey: unclassifiedAgentErrorI18nKey(tail.text, input.session?.source) } : {}),
       continueKind: tail.reason === APP_EXIT_INTERRUPTED_REASON ? 'interrupted' : 'error',
       retryable: nonRetryableGuidance === null && !requiresAgentErrorConfigurationChange(tail.text),

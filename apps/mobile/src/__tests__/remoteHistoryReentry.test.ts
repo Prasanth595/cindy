@@ -85,10 +85,14 @@ describe('history reentry', () => {
     const reopened = getRemoteHistoryView('d', 's', next);
     expect(reopened.view).toBe(entry.view);
     mount(reopened, next);
-    expect(reopened.view.getSnapshot()).toMatchObject({ ready: true, loading: true });
+    expect(reopened.view.getSnapshot()).toMatchObject({ ready: true, loading: false });
+    expect(next.readHistoryView).not.toHaveBeenCalled();
     expect(reopened.view.getSnapshot().items).toBe(items);
+    // Resume belongs to the session sync coordinator, which starts one read
+    // after its subscription grace period instead of activation starting another.
+    const sync = reopened.view.refresh(false, true);
     resolve(page());
-    await reopened.view.refresh();
+    await sync;
     expect(reopened.view.getSnapshot().items).toBe(items);
     expect(first.readHistoryView).toHaveBeenCalledTimes(1);
     expect(next.readHistoryView).toHaveBeenCalledTimes(1);
@@ -256,7 +260,7 @@ describe('history reentry', () => {
 
   it('ordinary screen focus uses activation rather than destructive reset', () => {
     const source = readFileSync(new URL('../../app/sessions/[sessionId].tsx', import.meta.url), 'utf8');
-    const focus = source.slice(source.indexOf('const historyView = useRemoteHistoryView'), source.indexOf('const rawMessages = useSessionMessages'));
+    const focus = source.slice(source.indexOf('const unfilteredHistoryView = useRemoteHistoryView'), source.indexOf('const historyHandoff ='));
     expect(focus).toContain('historyView.view.setActive(true)');
     expect(focus).not.toContain('.reset()');
     expect(source).toContain('options.replaceMessages && historyView.view.getSnapshot().ready');

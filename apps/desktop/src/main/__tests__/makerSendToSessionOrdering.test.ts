@@ -109,7 +109,9 @@ describe('sendToSession ordering', () => {
     );
 
     expect(helperBlock).toContain('const result = await resolveCollabDispatchResult(');
-    expect(helperBlock).toMatch(/\(\) =>\s+session\.send\(agentMessage, \{/);
+    expect(helperBlock).toMatch(
+      /async \(\) => \{\s+const sendResult = await session\.send\((?:agentMessage|outgoingMessage), \{/,
+    );
     expect(helperBlock).toContain('planMode: false,');
     expect(helperBlock).toContain('throwOnStartFailure: true,');
     expect(helperBlock).toContain('onAccepted: async () => {');
@@ -344,6 +346,10 @@ describe('sendToSession ordering', () => {
   });
 
   it('does not let persisted sends ignore typed dispatch outcomes', () => {
+    // #6895: the final demotion fence now wraps the same dispatch notification.
+    // Keep the existing accepted/dispatch contract, including the callback body.
+    const dispatchCallback = extractBetween(source, 'const onInternalDispatching = () => {', '\n    if (targetSessionId) {');
+    expect(dispatchCallback).toContain('dispatchAgentIslandUserPrompt(targetSessionId!);');
     const helperBlock = extractBetween(
       orcaInterAgentDispatcherSource,
       'async function sendPersistedUserMessageToSession',
@@ -375,7 +381,9 @@ describe('sendToSession ordering', () => {
     expect(orcaInterAgentDispatcherSource).toContain('resolveCollabDispatchResult');
     expect(helperBlock).toContain('Promise<CollabDirectDispatchResult>');
     expect(helperBlock).toContain('const result = await resolveCollabDispatchResult(');
-    expect(helperBlock).toMatch(/\(\) =>\s+session\.send\(agentMessage, \{/);
+    expect(helperBlock).toMatch(
+      /async \(\) => \{\s+const sendResult = await session\.send\((?:agentMessage|outgoingMessage), \{/,
+    );
     expect(helperBlock).toContain('planMode: false,');
     expect(helperBlock).toContain('throwOnStartFailure: true,');
     expect(helperBlock).not.toContain('await session.send(agentMessage, {');
@@ -387,13 +395,13 @@ describe('sendToSession ordering', () => {
     expect(liveBranch).toContain('live,');
     expectOrder(liveBranch, 'message,', 'clientId,');
     expect(liveBranch).toContain('onAccepted: persistUserMessage,');
-    expect(liveBranch).toContain('onDispatching: () => dispatchAgentIslandUserPrompt(targetSessionId),');
+    expect(liveBranch).toContain('onDispatching: onInternalDispatching,');
     expect(liveBranch).toContain("assertDesktopSendDispatched(sendResult, 'send_to_session live');");
     expect(resumedBranch).toContain('const sendResult = await sendUserMessageWithAwaitedGitBaseline(');
     expect(resumedBranch).toContain('session,');
     expectOrder(resumedBranch, 'message,', 'clientId,');
     expect(resumedBranch).toContain('onAccepted: persistUserMessage,');
-    expect(resumedBranch).toContain('onDispatching: () => dispatchAgentIslandUserPrompt(targetSessionId),');
+    expect(resumedBranch).toContain('onDispatching: onInternalDispatching,');
     expect(resumedBranch).toContain("assertDesktopSendDispatched(sendResult, 'send_to_session resumed');");
   });
 
@@ -623,9 +631,15 @@ describe('sendToSession ordering', () => {
       'restoreControlStores();',
       'throw persistenceError;',
     );
-    expect(preloadSource).toContain('selection?: { effort: string | null; fastMode: boolean },');
+    // Protect the SET_MODEL wire argument order. Other preload APIs (including
+    // voice preferences) also accept `selection` and are outside this contract.
+    const preloadSetModel = extractBetween(preloadSource, '    setModel: (', '    switchSessionAgent: (');
+    // #5044 在 selection 上加了可选 thinking 载体；上游已把 fastMode 扩成 ultrafast。
+    expect(preloadSetModel).toContain(
+      "selection?: { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean },",
+    );
     expectOrder(
-      preloadSource,
+      preloadSetModel,
       'expectedAgentSwitchRevision,',
       'selection,',
     );
@@ -636,15 +650,17 @@ describe('sendToSession ordering', () => {
       'const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);',
       'applyPendingAgentSwitchIfIdle(',
     );
-    for (const operation of [
-      'reconcileBotModelRoute', 'applyPendingAgentSwitchIfIdle',
-      'applyScheduledModelSelection', 'prepareUnhealthySession',
+    for (const [operation, call] of [
+      ['reconcileBotModelRoute', 'reconcileBotModelRoute'],
+      ['applyPendingAgentSwitchIfIdle', 'applyPendingAgentSwitchIfIdle'],
+      ['applyScheduledModelSelection', 'applyScheduledProfile'],
+      ['prepareUnhealthySession', 'prepareUnhealthySession'],
     ]) {
-      expectOrder(directSendSwitchBlock, `stage = 'direct-send:${operation}'`, `${operation}(`);
+      expectOrder(directSendSwitchBlock, `stage = 'direct-send:${operation}'`, `${call}(`);
     }
     expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', "stage = 'direct-send:caller-dispatch'");
     expectOrder(directSendSwitchBlock, 'applyPendingAgentSwitchIfIdle(', 'prepareUnhealthySession');
-    expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', 'return { release, selection: resolvedSelection };');
+    expectOrder(directSendSwitchBlock, 'prepareUnhealthySession', 'return { release, selection: resolvedSelection');
   });
 
   it('仅 Device Link 归一化 SET_MODEL 的 JSON null 可选占位,本地仍走严格校验', () => {
@@ -667,7 +683,7 @@ describe('sendToSession ordering', () => {
     const makerSendCreateDbMessageBlock = extractBetween(
       source,
       'const createUserMessageDurably:',
-      'const { sendToAgentAccepted: sendToAgentAcceptedUnlocked }',
+      '    sendToAgentAccepted: sendToAgentAcceptedUnlocked,',
     );
     const makerSendPreviewHookBlock = extractBetween(
       source,
@@ -722,7 +738,7 @@ describe('sendToSession ordering', () => {
     expect(liveBranch).toContain('const sendResult = await sendUserMessageWithAwaitedGitBaseline(');
     expect(liveBranch).toContain('live,');
     expect(liveBranch).toContain('onAccepted: persistUserMessage,');
-    expect(liveBranch).toContain('onDispatching: () => dispatchAgentIslandUserPrompt(targetSessionId),');
+    expect(liveBranch).toContain('onDispatching: onInternalDispatching,');
     expect(liveBranch).not.toContain('await persistUserMessage();');
     expect(liveBranch).toContain('if (isSessionRunningError(err))');
     expect(liveBranch).toContain('await enqueueSendToSessionMessage({');
@@ -740,7 +756,7 @@ describe('sendToSession ordering', () => {
     expect(resumedBranch).toContain('const sendResult = await sendUserMessageWithAwaitedGitBaseline(');
     expect(resumedBranch).toContain('session,');
     expect(resumedBranch).toContain('onAccepted: persistUserMessage,');
-    expect(resumedBranch).toContain('onDispatching: () => dispatchAgentIslandUserPrompt(targetSessionId),');
+    expect(resumedBranch).toContain('onDispatching: onInternalDispatching,');
     expect(resumedBranch).not.toContain('await persistUserMessage();');
     expect(resumedBranch).toContain('if (isSessionRunningError(err))');
     expect(resumedBranch).toContain('await enqueueSendToSessionMessage({');
@@ -781,9 +797,45 @@ describe('sendToSession ordering', () => {
     );
     expectOrder(resumeBranch, '...directoryGrantsForRuntime(storedExtraDirs),', 'await bootstrapSession(opts);');
     expect(serviceDepsBlock).toContain('resumeWorkerSession: async (target) => {');
-    expect(serviceDepsBlock).toContain('await resumeOrcaWorkerSessionIfMissing(target);');
-    expect(switchFocusIpcBlock).toContain('const didResume = await resumeOrcaWorkerSessionIfMissing(target);');
-    expect(switchFocusMcpBlock).toContain('await resumeOrcaWorkerSessionIfMissing(target, assertCurrent);');
+expect(serviceDepsBlock).toContain('await orcaWorkerResumeScheduler.request(target);');
+    // focus 切换是纯 UI 操作：resume 只能后台调度，不能在 IPC / MCP handler 里同步 await
+    // 冷启动（首次切 dormant worker 的 ~5s 卡顿回归点）。MCP 路径仍透传 assertCurrent，
+    // 权威校验在后台预热内部继续生效。
+    expect(switchFocusIpcBlock).toContain('orcaWorkerResumeScheduler.requestInBackground(target,');
+    expect(switchFocusIpcBlock).not.toContain('await resumeOrcaWorkerSessionIfMissing(target)');
+    expect(switchFocusMcpBlock).toContain('orcaWorkerResumeScheduler.requestInBackground(');
+    expect(switchFocusMcpBlock).toContain('{ assertCurrent },');
+    expect(switchFocusMcpBlock).not.toContain('await resumeOrcaWorkerSessionIfMissing(target');
+    // 关闭协同 / 归档 / 显式 idle 与冷启动交错时，唤醒必须可取消，并在 bootstrap
+    // 返回后关掉刚拉起的 session（review P1：不得把已归档 worker 留在运行态）。
+    expect(resumeBranch).toContain('if (isCancelled?.()) return false;');
+    expect(resumeBranch).toContain('await maker.closeSession(resumedSession.id).catch((err) => {');
+    // bootstrap 之后 runtime 已存在，授权复核失败也必须先清理再抛（Security review）。
+    expect(resumeBranch).toContain("await closeResumedSession('assert-current-after-bootstrap');");
+    expect(resumeBranch).toContain('throw err;');
+    expectOrder(
+      resumeBranch,
+      'const { session: resumedSession } = await bootstrapSession(opts);',
+      "await closeResumedSession('assert-current-after-bootstrap');",
+    );
+    expectOrder(
+      resumeBranch,
+      "await closeResumedSession('assert-current-after-bootstrap');",
+      'await markOrcaRoleIfNeeded(resumedSession.id,',
+    );
+    expect(serviceDepsBlock).toContain(
+      'cancelWorkerResume: (sessionId) => orcaWorkerResumeScheduler.cancel(sessionId),',
+    );
+  });
+
+  it('cancels pending worker resumes before releasing runtimes', () => {
+    const disableOrcaBlock = extractBetween(
+      source,
+      'async function disableOrcaInternal',
+      'ipcMain.handle(MAKER_INVOKE.SESSION_DISABLE_ORCA',
+    );
+    expect(disableOrcaBlock).toContain('orcaWorkerResumeScheduler.cancel(w.sessionId);');
+    expect(orcaTeamServiceSource).toContain('deps.cancelWorkerResume?.(worker.sessionId);');
   });
 
   it('keeps IPC and MCP createWorker delegated to the shared lifecycle service', () => {

@@ -19,10 +19,10 @@ export const CHAT_HEADER_BLUR_FADE_INSIDE = 0;
 
 /**
  * 私聊与群聊共用的顶栏（C1 / G1）：返回 + 身份区（32 标记、标题 16/22 600、副标题 12/18 三级色）+
- * 设置。点身份区和设置按钮打开同一份资料 / 设置。
+ * 设置。点身份区默认与设置按钮打开同一份资料 / 设置；伙伴私聊的身份区打开近况（onOpenIdentity）。
  */
 export function ChatIdentityHeader({
-  accessory, mark, title, subtitle, identityLabel, identityHint, controlsReady = true, onBack, onOpenSettings, settingsLabel, testIDPrefix, settingsTestID,
+  accessory, mark, title, subtitle, identityLabel, identityHint, controlsReady = true, onBack, onOpenSettings, onOpenIdentity, settingsLabel, testIDPrefix, settingsTestID,
 }: {
   accessory?: ReactNode;
   mark: ReactNode;
@@ -33,8 +33,11 @@ export function ChatIdentityHeader({
   identityHint?: string;
   controlsReady?: boolean;
   onBack(): void;
-  onOpenSettings(): void;
-  settingsLabel: string;
+  /** Omitted when there is nothing to open (the identity is then plain, without a settings button). */
+  onOpenSettings?(): void;
+  /** Tapping the identity opens this instead of the settings (the teammate's 近况). */
+  onOpenIdentity?(): void;
+  settingsLabel?: string;
   testIDPrefix: string;
   /** Defaults to `${testIDPrefix}.settings`. */
   settingsTestID?: string;
@@ -42,13 +45,17 @@ export function ChatIdentityHeader({
   const { t } = useTranslation();
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const open = () => { if (controlsReady) { Keyboard.dismiss(); onOpenSettings(); } };
+  const settings = !!onOpenSettings;
+  const open = () => { if (controlsReady && onOpenSettings) { Keyboard.dismiss(); onOpenSettings(); } };
+  const identityAction = onOpenIdentity ?? onOpenSettings;
+  const openIdentity = () => { if (controlsReady && identityAction) { Keyboard.dismiss(); identityAction(); } };
   return <View style={styles.header} testID={`${testIDPrefix}.header`}>
     {/* Same system back as the task header. */}
     <NativeChromeBackButton testID={`${testIDPrefix}.back`} label={t('shared.back')} onPress={() => { Keyboard.dismiss(); onBack(); }} />
-    <Pressable style={({ pressed }) => [styles.identity, pressed && styles.pressed]} accessibilityRole="button"
-      accessibilityLabel={identityLabel} accessibilityHint={identityHint} accessibilityState={{ disabled: !controlsReady }}
-      disabled={!controlsReady} onPress={open} testID={`${testIDPrefix}.identity`}>
+    <Pressable style={({ pressed }) => [styles.identity, pressed && styles.pressed]} accessibilityRole={identityAction ? 'button' : 'header'}
+      accessibilityLabel={identityLabel} accessibilityHint={identityAction ? identityHint : undefined}
+      accessibilityState={identityAction ? { disabled: !controlsReady } : undefined}
+      disabled={!controlsReady || !identityAction} onPress={openIdentity} testID={`${testIDPrefix}.identity`}>
       <View style={styles.mark}>{mark}</View>
       <View style={styles.identityText}>
         <Text numberOfLines={1} style={styles.title}>{title}</Text>
@@ -56,9 +63,9 @@ export function ChatIdentityHeader({
       </View>
     </Pressable>
     {accessory}
-    <HomeHeaderGlassButton testID={settingsTestID ?? `${testIDPrefix}.settings`} disabled={!controlsReady} accessibilityLabel={settingsLabel} onPress={open}>
+    {settings ? <HomeHeaderGlassButton testID={settingsTestID ?? `${testIDPrefix}.settings`} disabled={!controlsReady} accessibilityLabel={settingsLabel ?? ''} onPress={open}>
       <Settings2 size={iconSize.lg} strokeWidth={CHAT_HEADER_GLYPH_STROKE} color={colors.textPrimary} />
-    </HomeHeaderGlassButton>
+    </HomeHeaderGlassButton> : null}
   </View>;
 }
 

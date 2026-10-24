@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { DirectLinkTransport } from './DirectLinkTransport';
 import { tryMobilePeerInvoke, resetMobilePeer } from './peerFileRegistry';
 import { isHistoryViewUnavailable, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import { findRemoteHistoryView } from '@/session/remoteHistoryView';
@@ -12,6 +13,7 @@ import { dispatchCredentialSwitchOutcome } from '@/session/credentialSwitchOutco
 import { mobileRuntimeIdentity } from '@/debug/mobileRuntimeIdentity';
 import {
   DeviceLinkClient,
+  createDirectRuntimeBridge,
   isSharedTaskPeer,
   probeSharedTaskHost,
   sharedTaskTopics,
@@ -38,6 +40,7 @@ import {
   type PushPayload,
   type RemoteResourceChangedPayload,
   type Topic,
+  decodeModelSpeedPayload,
 } from '@cindy/device-link';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { deviceLinkWsUrl, DEVICE_LINK_API_BASE_URL } from '@/config/env';
@@ -171,7 +174,8 @@ import type { InputProjection, PendingInteraction, RemoteMessage } from '@/sessi
 import { prepareVisualMockDeviceLinkContext } from '@/debug/visualMock';
 import { meterDeviceLinkInvokes, recordDeviceLinkPush } from '@/debug/deviceLinkTraffic';
 import { decodeGzipBase64TextBounded } from '@/utils/gzipBase64';
-import { jankMetricsEnabled, recordInvokeSent, recordPushHandled } from '@/debug/jankMetrics';
+import { jankMetricsEnabled, recordInvokeSent, recordInvokeTransfer, recordPushHandled } from '@/debug/jankMetrics';
+import { localNetworkStore, type NetworkState } from '@/device-link/localNetworkStatus';
 
 export interface DeviceLinkContextValue {
   status: DeviceLinkStatus;
@@ -188,7 +192,11 @@ export interface DeviceLinkContextValue {
   lastPresenceSnapshot: PresenceSnapshot | null;
   /** 当前 relay 连接代内的逐设备 availability；null = 本代尚无权威 verdict。 */
   getPresenceAvailability(deviceId: string): boolean | null;
-  readDeviceList(): Promise<{ devices: DeviceView[] }>;
+  /**
+   * Read the account device roster. `fresh` starts a new REST snapshot instead of
+   * joining a request that may have started before the caller's reconciliation fence.
+   */
+  readDeviceList(options?: { fresh?: boolean }): Promise<{ devices: DeviceView[] }>;
   openLink(deviceId: string): Promise<LinkAcceptPayload>;
   /** 丢弃已结算的开链缓存并真正重开；并发重开仍按设备单飞。 */
   reopenLink(deviceId: string): Promise<LinkAcceptPayload>;
@@ -205,7 +213,7 @@ export interface DeviceLinkContextValue {
     deviceId: string,
     channel: string,
     args?: unknown[],
-    opts?: { preSend?: () => void },
+    opts?: { preSend?: () => void; background?: boolean },
   ): Promise<T>;
   // `owner` is a stable id for the mounted consumer (e.g. `session:<id>`, `device:<id>`),
   // so repeated subscribes from resync/retry are idempotent and a topic is only released
@@ -379,6 +387,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
   }
 
   const auth = useAuth();
+  const [directBridge] = useState(() => createDirectRuntimeBridge());
   const sharedTaskApi = useSharedTaskApi();
   const currentDataOwnerIdRef = useRef<string | null>(auth.user?.id ?? null);
   currentDataOwnerIdRef.current = auth.user?.id ?? null;
@@ -438,6 +447,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
   const presenceAvailableByDeviceRef = useRef(new Map<string, boolean>());
   const rosterConsumerRef = useRef<(() => (devices: DeviceView[]) => void) | null>(null);
   const rosterRequestRef = useRef<{ client: DeviceLinkClient | null; epoch: number; promise: Promise<{ devices: DeviceView[] }> } | null>(null);
+  const rosterRequestGenerationRef = useRef(0);
   const presenceAvailabilityEpochsRef = useRef(createPresenceAvailabilityEpochs());
   const presencePendingRecoveryDeviceIdsRef = useRef(new Set<string>());
   const presenceUnavailableVerdictsRef = useRef(
@@ -472,15 +482,21 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
 
   // Home and direct task entry share the same in-flight roster read. Evidence
   // belongs to the connection that started it, not whichever one finishes it.
-  const readDeviceList = useCallback((): Promise<{ devices: DeviceView[] }> => {
+  const readDeviceList = useCallback((options: { fresh?: boolean } = {}): Promise<{ devices: DeviceView[] }> => {
     const client = clientRef.current;
     const epoch = connectionEpochRef.current;
     const pending = rosterRequestRef.current;
-    if (pending?.client === client && pending.epoch === epoch) return pending.promise;
+    if (!options.fresh && pending?.client === client && pending.epoch === epoch) return pending.promise;
+    const generation = ++rosterRequestGenerationRef.current;
     const apply = rosterConsumerRef.current?.();
     const promise = auth.apiFetch<{ devices: DeviceView[] }>('/api/device-link/devices', {
       baseUrl: DEVICE_LINK_API_BASE_URL, timeoutMs: 12_000,
-    }).then((result) => { apply?.(result.devices); return result; });
+    }).then((result) => {
+      // A fresh read supersedes every older roster consumer, even when the older
+      // response arrives first and would otherwise outrank the new snapshot.
+      if (rosterRequestGenerationRef.current === generation) apply?.(result.devices);
+      return result;
+    });
     rosterRequestRef.current = { client, epoch, promise };
     void promise.finally(() => {
       if (rosterRequestRef.current?.promise === promise) rosterRequestRef.current = null;
@@ -940,6 +956,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     // 会被 scheduler generation 丢弃，不能写回新账号。
     peerRecoverySchedulerRef.current?.clear();
     const client = new DeviceLinkClient({
+      directRuntime: directBridge.runtime,
       getWsUrl: () => deviceLinkWsUrl(),
       getToken: auth.getAccessToken,
       getHello: () => ({
@@ -954,6 +971,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       logger: mobileDeviceLinkLogger,
       // 弱网减流量：声明可解 gzip，大结果压缩、内容未变的结果只回标记（被控端支持时）。
       transferCodec: { gunzipBase64: decodeGzipBase64TextBounded },
+      invokeMetrics: { enabled: jankMetricsEnabled, record: recordInvokeTransfer },
       // Mobile 具备按 deviceId 独立 openLink/订阅/快照恢复能力。可靠 ACK
       // 耗尽时只复位该 peer，共享 WSS 和其它远端继续工作；恢复仍只使用所有
       // Desktop 版本都支持的 link-open，不增加 wire/capability 要求。
@@ -1346,10 +1364,12 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       report: (event) => mobileDebugLog('debug', 'device-link', 'background lifecycle', event),
     });
     noteAppLifecycleState(AppState.currentState);
+    let refreshNetworkState = () => {};
     const sub = AppState.addEventListener('change', (next) => {
       // 先于下面的恢复动作记账:回前台后 rehydrate 新发的请求属于新生命周期。
       noteAppLifecycleState(next);
       if (next === 'active') {
+        refreshNetworkState();
         diagnostics.foreground();
         const resumingFromBackground = backgroundReleaseInFlightRef.current;
         backgroundReleaseInFlightRef.current = false;
@@ -1388,10 +1408,18 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     // existing heartbeat fallback if the optional runtime module is unavailable.
     let disposed = false;
     let networkSubscription: { remove(): void } | undefined;
-    let previousNetwork: { type?: string; isConnected?: boolean; isInternetReachable?: boolean } | undefined;
-    void import('expo-network').then(({ addNetworkStateListener }) => {
+    let previousNetwork: NetworkState | undefined;
+    void import('expo-network').then(({ addNetworkStateListener, getNetworkStateAsync }) => {
       if (disposed) return;
-      networkSubscription = addNetworkStateListener((network) => {
+      let networkRevision = 0;
+      const onNetworkState = (network: NetworkState) => {
+        if (disposed) return;
+        networkRevision += 1;
+        localNetworkStore.update(network);
+        if (localNetworkStore.getSnapshot().status === 'unavailable') {
+          // A phone-wide outage is not evidence against any individual computer.
+          resetDeviceResponsivenessTracking();
+        }
         const urgent = previousNetwork !== undefined && (
           previousNetwork.type !== network.type
           || previousNetwork.isConnected !== network.isConnected
@@ -1416,7 +1444,16 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
         }
         if (AppState.currentState !== 'active' || network.isConnected === false) return;
         recoverNetwork(urgent);
-      });
+      };
+      networkSubscription = addNetworkStateListener(onNetworkState);
+      refreshNetworkState = () => {
+        if (typeof getNetworkStateAsync !== 'function') return;
+        const revision = ++networkRevision;
+        void getNetworkStateAsync().then((network) => {
+          if (!disposed && revision === networkRevision) onNetworkState(network);
+        }).catch(() => { /* Keep listener evidence when the native lookup fails. */ });
+      };
+      refreshNetworkState();
     }).catch(() => {
       console.warn('[device-link] network listener unavailable; using heartbeat recovery');
     });
@@ -1426,6 +1463,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       diagnostics.background();
       recoveryDiagnostics.delete(client);
       networkSubscription?.remove();
+      localNetworkStore.update();
       sub.remove();
       backgroundConnection.dispose();
       backgroundTransitions.current.clear();
@@ -1502,7 +1540,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     deviceId: string,
     channel: string,
     args: unknown[] = [],
-    opts?: { preSend?: () => void },
+    opts?: { preSend?: () => void; background?: boolean },
   ) => {
     const preSend = () => {
       if (presenceAvailableByDeviceRef.current.get(deviceId) === false) {
@@ -1532,10 +1570,10 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
           preSend();
           if (clientRef.current !== client) throw new DeviceLinkError('NOT_CONNECTED', 'link changed');
           if (result) {
-            return withAccessRevokedHandling(deviceId, async () => unwrapInvoke<T>(result));
+            return withAccessRevokedHandling(deviceId, async () => unwrapInvoke<T>(result, channel));
           }
         }
-        return sendInvokeWithAccessHandling<T>(client, deviceId, channel, args, { preSend });
+        return sendInvokeWithAccessHandling<T>(client, deviceId, channel, args, { preSend, background: opts?.background });
       },
     );
   }, [sendOpenLinkOnce]);
@@ -1622,7 +1660,11 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
     subscriptionVersion,
   ]);
 
-  return <DeviceLinkContext.Provider value={value}>{children}</DeviceLinkContext.Provider>;
+  return <DeviceLinkContext.Provider value={value}>
+    <DirectLinkTransport key={`${auth.accountGeneration}:${connectionEpoch}`} bridge={directBridge}
+      owner={`${auth.accountGeneration}:${connectionEpoch}`} enabled={auth.isAuthenticated && status === 'online'} />
+    {children}
+  </DeviceLinkContext.Provider>;
 }
 
 function VisualMockDeviceLinkProvider({ children }: { children: ReactNode }) {
@@ -1672,7 +1714,8 @@ export function routeFrame(env: Envelope, handlers: RouteFrameHandlers = {}): vo
   }
   if (peerLinkClosed) return;
   if (env.kind !== 'push' || !env.src) return;
-  const push = env.payload as PushPayload;
+  const rawPush = env.payload as PushPayload;
+  const push = { ...rawPush, payload: decodeModelSpeedPayload(rawPush.channel, rawPush.payload) };
   recordDeviceLinkPush(push.channel, push.payload);
   dispatchCredentialSwitchOutcome(env.src, push.channel, push.payload);
   if (push.channel === 'local-db:task-tags:changed') {
@@ -1826,7 +1869,7 @@ async function rebuildSessionSnapshot(
   const applyPending = (value: PendingInteraction[]) => {
     if (!isCurrent()) return false;
     if (Array.isArray(value)) {
-      remoteSessionStore.setPendingInteractions(sessionId, value, { finalizeStreaming: true });
+      remoteSessionStore.setPendingInteractions(sessionId, value, { finalizeStreaming: true, deviceId });
       return true;
     }
     return false;
@@ -2022,6 +2065,7 @@ async function sendOpenLink(
 
 interface SendInvokeOptions {
   preSend?: () => void;
+  background?: boolean;
   /** 同一轮明确 fan-out 共享;普通独立请求省略。 */
   responsivenessCohort?: number;
   /** 仅主动的代表性 half-open 探测允许领取 probe 席位。 */
@@ -2072,7 +2116,7 @@ async function sendInvoke<T>(
       // 长通道(media / 文件搜索 / schedule 就绪窗口等)按 invokeTimeouts 解析
       // 规则保留更长窗口,避免 mobile 收紧的默认 15s 误伤合法慢操作。
       resolveMobileInvokeTimeoutMs(channel, args),
-      { preSend: () => {
+      { background: opts?.background, preSend: () => {
         try {
           opts?.preSend?.();
         } catch (err) {
@@ -2094,7 +2138,7 @@ async function sendInvoke<T>(
   if (isInvokeResultReachabilityEvidence(result)) {
     markRemoteResponseEvidence(deviceId);
   }
-  return unwrapInvoke<T>(result);
+  return unwrapInvoke<T>(result, channel);
 }
 
 async function sendSubscribeWithAccessHandling(
@@ -2211,8 +2255,8 @@ async function sendUnsubscribe(
   unwrapInvoke(result);
 }
 
-function unwrapInvoke<T = unknown>(result: InvokeResultPayload): T {
-  if (result.ok) return result.result as T;
+function unwrapInvoke<T = unknown>(result: InvokeResultPayload, channel?: string): T {
+  if (result.ok) return decodeModelSpeedPayload(channel, result.result) as T;
   if (result.error.code === 'IPC_ERROR') throw new Error(result.error.message);
   throw new DeviceLinkError(result.error.code, result.error.message);
 }

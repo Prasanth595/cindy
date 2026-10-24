@@ -6,6 +6,24 @@ export const HISTORY_VIEW_PAGE_ITEMS = 20;
 export const HISTORY_VIEW_PAGE_BYTES = 1024 * 1024;
 export const HISTORY_DETAIL_PAGE_BYTES = 256 * 1024;
 
+/** Local ordering only: the run changes on restart, and order never uses the wall clock. */
+export interface HistoryCacheReceipt { run: string; order: number }
+const cacheReceiptRun = `${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+let cacheReceiptOrder = 0;
+export function nextHistoryCacheReceipt(): HistoryCacheReceipt {
+  return { run: cacheReceiptRun, order: ++cacheReceiptOrder };
+}
+export function isHistoryCacheReceipt(value: unknown): value is HistoryCacheReceipt {
+  const receipt = value as HistoryCacheReceipt | null;
+  return !!receipt && typeof receipt.run === 'string' && Number.isSafeInteger(receipt.order) && receipt.order > 0;
+}
+/** Only a current-run push can supersede a restored page from another run. */
+export function historyCacheReceiptFollows(receipt: unknown, read: unknown, restored = false): boolean {
+  if (!isHistoryCacheReceipt(receipt)) return false;
+  if (!isHistoryCacheReceipt(read)) return true;
+  return receipt.run === read.run ? receipt.order > read.order : restored && receipt.run === cacheReceiptRun;
+}
+
 export function isHistoryViewUnavailable(error: unknown): boolean {
   return /CHANNEL_NOT_ALLOWED|UNSUPPORTED_CAPABILITY|not registered|No handler/i.test(String(error));
 }
@@ -28,6 +46,8 @@ export interface HistoryMessageSource {
   content: unknown;
   createdAt: string;
   rowid?: number;
+  /** Controller-local order of a durable push; never a Host revision. */
+  cacheReceipt?: HistoryCacheReceipt;
   toolUseId?: string | null;
   agentMeta?: object | null;
   /** Host outline only; transferred in work summaries, never as a replacement body. */
@@ -116,6 +136,25 @@ export interface HistoryViewPage<TMessage extends HistoryMessageSource> {
   items: HistoryViewItem<TMessage>[];
   nextCursor: string | null;
   hasMore: boolean;
+}
+
+/** Keep already read pages only when the latest page proves a continuous source boundary. */
+export function retainHistoryViewPrefix<T extends HistoryMessageSource>(
+  page: HistoryViewPage<T>,
+  previous: { items: readonly HistoryViewItem<T>[]; hasMore: boolean; nextCursor: string | null } | null | undefined,
+): HistoryViewPage<T> {
+  if (!page.hasMore || !previous?.items.length) return page;
+  const firstSourceId = (item: HistoryViewItem<T> | undefined) => item?.type === 'work'
+    ? item.summary.firstMessageId : item?.messages[0]?.id;
+  const first = page.items[0];
+  const sourceId = firstSourceId(first);
+  const boundary = previous.items.findIndex(item => item.key === first?.key
+    || (sourceId !== undefined && firstSourceId(item) === sourceId));
+  // Completed groups can replace a running key while keeping its exact source start.
+  // A later overlap cannot prove continuity; a full page/rewind replaces the old view.
+  if (boundary <= 0) return page;
+  return { ...page, items: [...previous.items.slice(0, boundary), ...page.items],
+    hasMore: previous.hasMore, nextCursor: previous.nextCursor };
 }
 
 /**

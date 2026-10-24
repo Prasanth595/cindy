@@ -18,6 +18,7 @@ import {
 import { buildContinuationDirective, buildFirstTurnDirective } from '../directive';
 import { MAX_CONSECUTIVE_OVERLOAD_TURNS } from '../usageLimit';
 import { publishUiSessionIntervention, resetUiContinuationListenersForTest } from '../../maker-ipc/uiContinuationSignal';
+import { MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import type {
   AccountLimitInfo,
   GoalCompletionSummary,
@@ -70,6 +71,7 @@ function productionSteer(session: FakeSession, deliver: () => Promise<void>, rej
     },
     MAIN_OWNED_SEND_CONTEXT: Symbol(), AUTO_REVIEW_SOURCE_CONTENT: Symbol(),
     AUTO_REVIEW_DELEGATED_CONTINUATION: Symbol(), AUTO_REVIEW_USER_INTENT: Symbol(),
+    MCP_APP_MESSAGE_GUARD,
     publishUiSessionIntervention,
     noteInteractionRouteSteer: () => {},
     summarizeIpcUserMessage: () => ({}),
@@ -4424,6 +4426,27 @@ describe('GoalController', () => {
   });
 
   // ── usageLimited(账号用量受限)──
+  it('a confirmed reset resumes an existing quota wait once before the natural reset time', async () => {
+    h.setAccountLimit({ limited: true, resetAtMs: 3_601_000 });
+    await startGoal(h);
+    h.session.emitErrorTurn({ sdkError: 'rate_limit', message: 'rate limit reached' });
+    await tick();
+    h.setAccountLimit({ limited: false, resetAtMs: null });
+    await h.controller.resumeRestoredQuota(async () => true);
+    await tick();
+    expect(h.session.sends).toHaveLength(2);
+    await h.controller.resumeRestoredQuota(async () => true);
+    expect(h.session.sends).toHaveLength(2);
+  });
+
+  it('a quota refresh does not shorten an overload wait', async () => {
+    await startGoal(h);
+    h.session.emitErrorTurn({ errorStatus: 529, message: 'overloaded_error' });
+    await tick();
+    await h.controller.resumeRestoredQuota(async () => true);
+    expect(h.session.sends).toHaveLength(1);
+  });
+
   it('reactive: a usage-limit turn error → usageLimited with resetAt, no continuation', async () => {
     h.setAccountLimit({ limited: true, resetAtMs: 3_601_000 }); // 远未来 → 不在测试窗口自动续
     await startGoal(h);

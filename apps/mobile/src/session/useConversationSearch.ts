@@ -1,5 +1,5 @@
 import { useRetainedHomeState, type HomeViewSession } from './homeViewSession';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { unresponsiveDevicesStore } from '@/device-link/unresponsiveDevicesStore';
@@ -124,7 +124,9 @@ export function useConversationSearch({
     setProjectSelection('all');
   }, []);
 
-  useEffect(() => {
+  // Publish "searching" before paint, including the debounce interval. Otherwise
+  // an empty local projection can briefly claim there are no matching tasks.
+  useLayoutEffect(() => {
     const trimmed = query.trim();
     if (!enabled || !trimmed) {
       requestSeq.current += 1;

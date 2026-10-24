@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { estimateDeltaTokens, isFileWritingTool, TokenSpeedMeter } from './token-speed.js';
+import { estimateDeltaTokens, TokenSpeedMeter, UsageTokenSpeedMeter } from './token-speed.js';
 
 describe('TokenSpeedMeter (pi-token-speed algorithm)', () => {
   it('counts deltas with the word/punctuation estimate, one token per CJK character', () => {
@@ -165,9 +165,41 @@ describe('TokenSpeedMeter (pi-token-speed algorithm)', () => {
     const due = [0, 50, 100, 260, 300, 520].map((t) => meter.recordDelta('a b c d e', t));
     expect(due).toEqual([true, false, false, true, false, true]);
   });
+});
 
-  it('counts only file-writing tool arguments', () => {
-    expect(['edit', 'write', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'].every(isFileWritingTool)).toBe(true);
-    expect(['bash', 'Read', 'Grep', undefined].some(isFileWritingTool)).toBe(false);
+describe('UsageTokenSpeedMeter', () => {
+  it('uses the last three paired intervals weighted by duration, including hidden output', () => {
+    const meter = new UsageTokenSpeedMeter();
+    expect(meter.snapshot()).toBeUndefined();
+    meter.recordUsage(10, 500);
+    expect(meter.snapshot()?.rate).toBe(0);
+    meter.recordUsage(50, 1_000);
+    meter.recordUsage(150, 5_000);
+    expect(meter.snapshot()?.rate).toBe(30);
+    meter.recordUsage(190, 6_000);
+    meter.recordUsage(250, 8_000);
+    // Last three intervals: (100 + 40 + 60) / (4 + 1 + 2).
+    expect(meter.snapshot()?.rate).toBeCloseTo(200 / 7);
+    meter.recordUsage(250, 20_000);
+    expect(meter.snapshot()?.elapsedMs).toBe(8_000);
+    meter.stop();
+    expect(meter.snapshot()).toMatchObject({ streaming: false, average: 31.25, tokens: 250, elapsedMs: 8_000 });
+    meter.recordUsage(300, 30_000);
+    expect(meter.snapshot()?.tokens).toBe(250);
+  });
+
+  it('withdraws invalid or backwards measurements until the next turn', () => {
+    const meter = new UsageTokenSpeedMeter();
+    for (const [tokens, elapsed] of [[90, 2_000], [110, 900], [NaN, 2_000]]) {
+      meter.reset();
+      meter.recordUsage(100, 1_000);
+      meter.recordUsage(tokens, elapsed);
+      expect(meter.snapshot()).toBeUndefined();
+    }
+    meter.reset();
+    meter.recordUsage(20, 1_000);
+    expect(meter.snapshot()?.rate).toBe(20);
+    meter.invalidate();
+    expect(meter.snapshot()).toBeUndefined();
   });
 });

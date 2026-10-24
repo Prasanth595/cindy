@@ -15,6 +15,18 @@ import {
   CLAUDE_SUBSCRIPTION_OPUS_PLAN_MISMATCH_REASON,
 } from '../../../../shared/claudeGatewayError';
 
+// jsdom 没有布局引擎，也尚未实现 checkVisibility；只补本组需要的 CSS 显隐语义。
+Object.defineProperty(HTMLElement.prototype, 'checkVisibility', {
+  configurable: true,
+  value(this: HTMLElement) {
+    for (let element: HTMLElement | null = this; element; element = element.parentElement) {
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+  },
+});
+
 type AuthStateChangedPayload = {
   agentKind: 'claude-code' | 'codex';
   authenticated: boolean;
@@ -61,7 +73,10 @@ function deferred<T>() {
 }
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string) => key,
+    i18n: { language: 'en', exists: (key: string) => key === 'chat.remoteError.REMOTE_AGENT_GROUP_USAGE_LIMIT' },
+  }),
 }));
 
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({
@@ -92,6 +107,29 @@ describe('ErrorBanner OpenAI connection recovery', () => {
     expect(recover).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.readableHistoryRecovery' }));
     expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it.each(['live', 'persisted'])('preserves a hidden %s error when Escape exits sidebar maximize', (kind) => {
+    const dismiss = vi.fn();
+    const retry = vi.fn();
+    const exitMaximize = vi.fn();
+    const banner = kind === 'live'
+      ? <ErrorBanner error="hidden error" onRetry={retry} onCancel={dismiss} dismissOnEscape />
+      : <ErrorTailErrorBanner errorText="hidden error" onContinue={retry} onDismiss={dismiss} dismissOnEscape />;
+    const { rerender } = render(<main style={{ display: 'none' }}>{banner}</main>);
+    // 与 MainLayout 一样，退出最大化的监听不 preventDefault，且晚于横幅注册。
+    window.addEventListener('keydown', exitMaximize);
+    try {
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(exitMaximize).toHaveBeenCalledOnce();
+      expect(dismiss).not.toHaveBeenCalled();
+      expect(retry).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', exitMaximize);
+    }
+    rerender(<main>{banner}</main>);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -213,6 +251,62 @@ describe('ErrorBanner OpenAI connection recovery', () => {
       },
       openChatGPTApp: mocks.openChatGPTApp,
     };
+  });
+
+  it.each(['live', 'persisted'])('dismisses only the active %s error from the composer with Escape', (kind) => {
+    const dismiss = vi.fn();
+    const inactiveDismiss = vi.fn();
+    const retry = vi.fn();
+    const { unmount } = render(<>
+      <textarea aria-label="composer" />
+      <ErrorBanner error="inactive error" onRetry={retry} onCancel={inactiveDismiss} />
+      {kind === 'live'
+        ? <ErrorBanner error="active error" onRetry={retry} onCancel={dismiss} dismissOnEscape />
+        : <ErrorTailErrorBanner errorText="active error" onContinue={retry} onDismiss={dismiss} dismissOnEscape />}
+    </>);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(inactiveDismiss).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+    unmount();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { key: 'Enter' }, { key: 'Escape', repeat: true },
+    { key: 'Escape', isComposing: true }, { key: 'Escape', keyCode: 229 },
+    { key: 'Escape', altKey: true }, { key: 'Escape', ctrlKey: true },
+    { key: 'Escape', metaKey: true }, { key: 'Escape', shiftKey: true },
+  ])('does not dismiss errors for an unrelated or composing key: %s', (event) => {
+    const dismiss = vi.fn();
+    render(<ErrorBanner error="error" onRetry={vi.fn()} onCancel={dismiss} dismissOnEscape />);
+    fireEvent.keyDown(window, event);
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('lets a composer consume Escape before dismissing the error', () => {
+    const dismiss = vi.fn();
+    render(<>
+      <textarea onKeyDown={(event) => event.preventDefault()} />
+      <ErrorBanner error="error" onRetry={vi.fn()} onCancel={dismiss} dismissOnEscape />
+    </>);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it.each(['dialog', 'alertdialog', 'menu', 'listbox', 'morph'])('lets the %s layer handle Escape first', (layer) => {
+    const dismiss = vi.fn();
+    const banner = <ErrorBanner error="error" onRetry={vi.fn()} onCancel={dismiss} dismissOnEscape />;
+    const { rerender } = render(<>
+      {banner}
+      {layer === 'morph' ? <div data-morph-side="bottom" /> : <div role={layer} />}
+    </>);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).not.toHaveBeenCalled();
+    rerender(banner);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
   });
 
   it('localizes the Codex resume preflight marker without exposing the host envelope', () => {
@@ -1083,6 +1177,20 @@ describe('ErrorBanner OpenAI connection recovery', () => {
       expect(mocks.getCodexRateLimits).not.toHaveBeenCalled();
     },
   );
+
+  // Unit regression: a pending switch still has the previous local route in its projection.
+  // Group quota exhaustion must not offer spending a reset card on that unrelated account.
+  it('keeps group quota waits without reading the previous local account reset credits', async () => {
+    render(<ErrorBanner error="[REMOTE_AGENT_GROUP_USAGE_LIMIT] usage_limit_reached"
+      retryText="retry this turn" onRetry={vi.fn()} agentKind="codex" providerId="openai"
+      usageLimitRecovery={{ resetAtMs: null, isAccountUsageLimit: true }}
+      usageLimitWait={{ resumeAt: Date.now() + 60 * 60 * 1000 }} onCancelUsageLimitWait={vi.fn()} />);
+    await act(async () => {});
+    expect(screen.getByText('chat.remoteError.REMOTE_AGENT_GROUP_USAGE_LIMIT')).toBeTruthy();
+    expect(screen.getByText('chat.errorBanner.usageLimitAutoContinueAt')).toBeTruthy();
+    expect(mocks.getCodexRateLimits).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'codexResets.limitAction' })).toBeNull();
+  });
 
   it('explains an organization Codex limit and keeps the raw 429 response available', () => {
     const rawError =
