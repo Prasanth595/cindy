@@ -66,10 +66,13 @@ export function ChatVideoView({ src, filename, variant, sessionId }: ChatVideoVi
   const { t } = useTranslation();
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const previewTriggerRef = useRef<HTMLDivElement>(null);
-  const [errored, setErrored] = useState(false);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   // 远程会话改写到 cindy-remote-media://(OSS range 流式);本地原样。下游统一用 displaySrc。
   const displaySrc = useRemoteMediaUrl(src, sessionId);
+  // 失败态绑定到失败的那个地址:地址换了(远程改写落地、路径解析出真实文件)要重新加载,
+  // 不能沿用上一个地址的「视频不可用」。
+  const [erroredSrc, setErroredSrc] = useState<string | null>(null);
+  const errored = erroredSrc === displaySrc;
 
   if (errored) {
     return <VideoMissingPlaceholder filename={filename} />;
@@ -140,7 +143,7 @@ export function ChatVideoView({ src, filename, variant, sessionId }: ChatVideoVi
           style={style}
           className={cn(className, 'block pointer-events-none')}
           // 不挂 controls — 原位是封面状态。
-          onError={() => setErrored(true)}
+          onError={() => setErroredSrc(displaySrc)}
         />
         {/* 大 Play 按钮浮层 — 居中半透明圆 + lucide play 图标。
             点击落到外层 div,不需要这层自己处理 click。 */}
