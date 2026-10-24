@@ -18,7 +18,8 @@
  *   - 结论在组件里另存一份：共享缓存有容量上限，被其他引用挤掉后不能退回坏地址。
  *   - 没有命中 / 命中多个不是最终结论：回复可能先引用产物、文件后写出。新挂载、流式结束、
  *     窗口重新聚焦时重查一次（与图片加载失败的自然重试时机一致），重查期间照常显示拼接
- *     地址；唯一命中不重查。
+ *     地址；唯一命中不重查。流式结束 / 聚焦时若有更早发出的查找还在进行，它回来仍未命中
+ *     就再补查一次。
  *
  * 范围:
  *   只用于本机会话。远程会话的路径解析不在远端搜索（见 MarkdownRenderer 的
@@ -67,17 +68,19 @@ export function useWorkspaceMediaPath(
     enabled && src && workingDir && isRelativeLocalPath(src) && !src.includes('%') ? src : null;
   const key = href ? `${workingDir}::${href}` : null;
   const [settled, setSettled] = useState<{ key: string; result: SmartResolveResult } | null>(null);
-  // 重查时机：窗口重新聚焦、所在消息流式结束(挂载本身由下面的 effect 覆盖)。
-  const [recheck, setRecheck] = useState(0);
+  // 重查时机：窗口重新聚焦、所在消息流式结束(挂载本身由下面的 effect 覆盖)。记下发生的
+  // 时刻：那之前已发出、还没回来的查找可能已经错过新写出的文件，回来仍未命中时要再查一次。
+  const [boundary, setBoundary] = useState<{ at: number } | null>(null);
+  const handledBoundary = useRef<{ at: number } | null>(null);
   useEffect(() => {
     if (!href) return;
-    const onFocus = () => setRecheck((n) => n + 1);
+    const onFocus = () => setBoundary({ at: Date.now() });
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [href]);
   const wasStreaming = useRef(streaming);
   useEffect(() => {
-    if (wasStreaming.current && !streaming) setRecheck((n) => n + 1);
+    if (wasStreaming.current && !streaming) setBoundary({ at: Date.now() });
     wasStreaming.current = streaming;
   }, [streaming]);
 
@@ -90,17 +93,23 @@ export function useWorkspaceMediaPath(
         current?.key === key && current.result === result ? current : { key, result },
       );
     };
+    // 只有这次运行由新的时机触发时才按时机重查；挂载 / 路径变化走普通重查。
+    const boundaryAt =
+      boundary && boundary !== handledBoundary.current ? boundary.at : undefined;
+    handledBoundary.current = boundary;
     const cached = peekResolveLocalPathSmart(href, workingDir);
     if (cached) {
       apply(cached);
-      void revalidateNegativeLocalPathSmart(href, workingDir)?.then(apply);
+      void revalidateNegativeLocalPathSmart(href, workingDir, boundaryAt)?.then(apply);
     } else {
-      void resolveLocalPathSmartCached(href, workingDir).then(apply);
+      const recheck =
+        boundaryAt === undefined ? null : revalidateNegativeLocalPathSmart(href, workingDir, boundaryAt);
+      void (recheck ?? resolveLocalPathSmartCached(href, workingDir)).then(apply);
     }
     return () => {
       cancelled = true;
     };
-  }, [href, key, workingDir, recheck]);
+  }, [href, key, workingDir, boundary]);
 
   if (!href) return { src, pending: false };
   const result =

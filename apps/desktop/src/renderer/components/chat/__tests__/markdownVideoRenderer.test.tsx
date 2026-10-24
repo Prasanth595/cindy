@@ -217,6 +217,29 @@ describe('MarkdownRenderer workspace-relative media in local sessions', () => {
     expect(resolvePathBatch).toHaveBeenLastCalledWith({ hrefs, workingDir: '/task', revalidateNegative: true });
   });
 
+  // 时机到来时更早发出的查找还没回来：它可能在文件写出前就扫过了输出目录，回来仍未命中时
+  // 要再查一次，不能让这次时机白白用掉。
+  it.each(['window focus', 'the end of streaming'] as const)(
+    'checks again after a lookup that was already running at %s',
+    async (boundary) => {
+      let answer!: (batch: Record<string, unknown>) => void;
+      const { view, renderWith, resolvePathBatch } = mount(richVideo, LOCAL, new Promise((resolve) => { answer = resolve; }));
+      if (boundary === 'the end of streaming') view.rerender(renderWith(undefined, true));
+      await act(async () => {});
+      expect(resolvePathBatch).toHaveBeenCalledTimes(1);
+
+      later();
+      if (boundary === 'window focus') act(() => { window.dispatchEvent(new Event('focus')); });
+      else view.rerender(renderWith(undefined, false));
+      resolvePathBatch.mockResolvedValue(unique('renders/out/clip.mp4'));
+      await act(async () => answer(missing));
+
+      await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4')));
+      expect(resolvePathBatch).toHaveBeenCalledTimes(2);
+      expect(resolvePathBatch).toHaveBeenLastCalledWith({ hrefs: ['renders/out/clip.mp4'], workingDir: '/task', revalidateNegative: true });
+    },
+  );
+
   it('does not search again for a unique match', async () => {
     const { view, resolvePathBatch } = mount(richVideo, LOCAL, unique('renders/out/clip.mp4'));
     await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/renders/out/clip.mp4')));

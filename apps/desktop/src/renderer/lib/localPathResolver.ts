@@ -382,6 +382,8 @@ const smartResolveInflight = new Map<string, Promise<SmartResolveResult>>();
 // `revalidateNegativeLocalPathSmart`.
 const smartResolveCheckedAt = new Map<string, number>();
 const smartRevalidateInflight = new Map<string, Promise<SmartResolveResult>>();
+// When an in-flight lookup was sent to the main process (absent while queued).
+const smartLookupSentAt = new Map<string, number>();
 /** A negative answer younger than this is not re-checked (remount bursts reuse it). */
 const NEGATIVE_RECHECK_MIN_MS = 2_000;
 
@@ -478,6 +480,7 @@ function settleSmartResult(
   storeSmartResult(key, result);
   smartResolveInflight.delete(key);
   smartRevalidateInflight.delete(key);
+  smartLookupSentAt.delete(key);
   const entry = hrefMap.get(href);
   if (entry) for (const resolve of entry.resolvers) resolve(result);
 }
@@ -488,6 +491,8 @@ async function runBatchForDir(
   revalidateNegative = false,
 ): Promise<void> {
   const hrefs = [...hrefMap.keys()];
+  const sentAt = Date.now();
+  for (const href of hrefs) smartLookupSentAt.set(smartResolveCacheKey(workingDir, href), sentAt);
   const api = (typeof window !== 'undefined' ? window.electronAPI : undefined) as
     | { resolvePathBatch?: typeof window.electronAPI.resolvePathBatch }
     | undefined;
@@ -589,20 +594,55 @@ export async function resolveLocalPathSmartCached(
  * focus). The main process skips its TTL cache for these hrefs too, otherwise
  * it would hand back the same stale answer for 30s. Re-checks registered within
  * one microtask share one IPC (and one workspace walk) per workingDir, like the
- * initial batch. Returns null when there is
- * nothing to re-check: no cached answer, a unique match, or a negative answer
- * from the last `NEGATIVE_RECHECK_MIN_MS`.
+ * initial batch.
+ *
+ * Without `boundaryAt` (a new mount) a negative answer from the last
+ * `NEGATIVE_RECHECK_MIN_MS` is reused, so a burst of remounts walks once. With
+ * `boundaryAt` (stream end, window focus — the moment files may have appeared)
+ * the answer is always re-checked, and a lookup already sent before that moment
+ * is followed by one more pass if it settles negative: its walk may have passed
+ * the output directory before the file was written. A lookup still queued, or
+ * sent after the boundary, already covers it.
+ *
+ * Returns null when there is nothing to re-check: no cached answer and nothing
+ * in flight, a unique match, or a recent negative answer on a plain mount.
  */
 export function revalidateNegativeLocalPathSmart(
   href: string,
   workingDir: string,
+  boundaryAt?: number,
 ): Promise<SmartResolveResult> | null {
   const key = smartResolveCacheKey(workingDir, href);
+  if (boundaryAt !== undefined) {
+    const inflight = smartRevalidateInflight.get(key) ?? smartResolveInflight.get(key);
+    if (inflight) {
+      const sentAt = smartLookupSentAt.get(key);
+      if (sentAt === undefined || sentAt >= boundaryAt) return inflight;
+      return inflight.then((result) =>
+        result.status === 'unique' ? result : (queueNegativeRevalidation(key, href, workingDir) ?? result),
+      );
+    }
+  }
   const cached = smartResolveCache.get(key);
   if (!cached || cached.status === 'unique') return null;
   const inflight = smartRevalidateInflight.get(key);
   if (inflight) return inflight;
-  if (Date.now() - (smartResolveCheckedAt.get(key) ?? 0) < NEGATIVE_RECHECK_MIN_MS) return null;
+  if (
+    boundaryAt === undefined &&
+    Date.now() - (smartResolveCheckedAt.get(key) ?? 0) < NEGATIVE_RECHECK_MIN_MS
+  ) {
+    return null;
+  }
+  return queueNegativeRevalidation(key, href, workingDir);
+}
+
+function queueNegativeRevalidation(
+  key: string,
+  href: string,
+  workingDir: string,
+): Promise<SmartResolveResult> | null {
+  const queued = smartRevalidateInflight.get(key);
+  if (queued) return queued;
   const api = (typeof window !== 'undefined' ? window.electronAPI : undefined) as
     | { resolvePathBatch?: typeof window.electronAPI.resolvePathBatch }
     | undefined;
@@ -622,6 +662,7 @@ export function _clearSmartResolveCache(): void {
   smartResolveInflight.clear();
   smartResolveCheckedAt.clear();
   smartRevalidateInflight.clear();
+  smartLookupSentAt.clear();
   pendingBatch = new Map();
   pendingRevalidateBatch = new Map();
   flushScheduled = false;
