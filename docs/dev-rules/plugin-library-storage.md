@@ -94,7 +94,12 @@ backups）对插件不可达——路径语法段首不许点，协议层天然�
 4. **路径纪律**：相对路径四层校验（`isSafeGhostRelativePath` →
    `validateLibraryRelPath` → `isInsideDir` → realpath 祖先收敛），目标 lstat
    不穿透 symlink。写入 = staging + fsync + rename + dev/ino identity 复验
-   （对齐 `dirDeposit.writeNewSaveFile` 范式）。
+   （对齐 `dirDeposit.writeNewSaveFile` 范式）。自定义库换源归档的迁移日志使用 bigint
+   lstat，把完整 dev/ino 以十进制字符串另存，避免 Windows 64 位目录 ID 转 Number
+   后碰撞。原数字字段保留，旧版本仍可读取；普通 binding 授权记录不改格式。
+   旧日志的安全整数身份可自动续完；已丢精度的旧日志不能从当前目录补认身份，保留
+   日志和库数据并报 `legacy precision`，需核对原目录后恢复，不能当作迁移成功。
+   此限制仅针对未完成的旧迁移，不要求已安装插件重装或重配。
 5. **SQL 白名单**：better-sqlite3 无 set_authorizer，唯一可靠防线是首词允许
    清单（deny-by-default）+ prepare 单语句 + 事务/迁移/备份全宿主管理。
    ATTACH/VACUUM INTO/PRAGMA/事务语句一律 `DB_STATEMENT_REJECTED`。改白名单

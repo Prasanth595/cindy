@@ -53,6 +53,8 @@ export interface LibraryBindingFileData {
   pendingRelocation?: LibraryBindingRelocation;
 }
 
+type ExactDirectoryIdentity = { dev: string; ino: string };
+
 interface LibraryBindingRelocation {
   version: 1;
   ownerFile: string;
@@ -61,19 +63,50 @@ interface LibraryBindingRelocation {
   record: LibraryBindingRecord;
   rootIdentity: { dev: number; ino: number };
   libraryIdentity: { dev: number; ino: number } | null;
+  // Keep the old numeric fields readable on downgrade, but never compare a
+  // new journal using their potentially rounded 64-bit filesystem IDs.
+  rootIdentityExact?: ExactDirectoryIdentity;
+  libraryIdentityExact?: ExactDirectoryIdentity | null;
 }
 
-async function directoryIdentity(root: string): Promise<{ dev: number; ino: number } | null> {
+async function directoryIdentity(root: string): Promise<ExactDirectoryIdentity | null> {
   try {
-    const stat = await fs.promises.lstat(root);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.ino === 0) {
+    const stat = await fs.promises.lstat(root, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.ino === 0n) {
       throw new Error('library relocation directory identity unavailable');
     }
-    return { dev: stat.dev, ino: stat.ino };
+    return { dev: stat.dev.toString(), ino: stat.ino.toString() };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
+}
+
+function numericIdentity(identity: ExactDirectoryIdentity): { dev: number; ino: number } {
+  return { dev: Number(identity.dev), ino: Number(identity.ino) };
+}
+
+function relocationIdentity(
+  numeric: { dev: number; ino: number } | null,
+  exact: unknown,
+): ExactDirectoryIdentity | null {
+  if (exact === undefined) {
+    if (numeric === null) return null;
+    // Lost bits cannot be recovered from the current directory: it might be a
+    // replacement with the same rounded ID. Retain the old intent for recovery.
+    if (!Number.isSafeInteger(numeric.dev) || !Number.isSafeInteger(numeric.ino)) {
+      throw new Error('library relocation directory identity unavailable (legacy precision)');
+    }
+    return { dev: String(numeric.dev), ino: String(numeric.ino) };
+  }
+  if (exact === null && numeric === null) return null;
+  const identity = exact as Partial<ExactDirectoryIdentity> | null;
+  if (!identity || !numeric || typeof identity.dev !== 'string' || typeof identity.ino !== 'string' ||
+      !/^(0|[1-9][0-9]*)$/.test(identity.dev) || !/^[1-9][0-9]*$/.test(identity.ino) ||
+      Number(identity.dev) !== numeric.dev || Number(identity.ino) !== numeric.ino) {
+    throw new Error('library relocation journal is invalid');
+  }
+  return { dev: identity.dev, ino: identity.ino };
 }
 
 export async function syncDirectory(root: string): Promise<void> {
@@ -371,8 +404,9 @@ export class LibraryBindingStore {
     const realRoot = await fs.promises.realpath(pending.record.root);
     const identity = await directoryIdentity(realRoot);
     if (realRoot !== pending.record.realPathAtGrant ||
-        !isDeepStrictEqual(identity, pending.rootIdentity) ||
-        (pending.record.identity?.ino && !isDeepStrictEqual(identity, pending.record.identity))) {
+        !isDeepStrictEqual(identity, relocationIdentity(pending.rootIdentity, pending.rootIdentityExact)) ||
+        (pending.record.identity?.ino && (!identity ||
+          !isDeepStrictEqual(numericIdentity(identity), pending.record.identity)))) {
       throw new Error('library relocation root identity changed');
     }
   }
@@ -397,6 +431,7 @@ export class LibraryBindingStore {
     const afterCommit = sourceBinding === undefined && targetBinding !== undefined &&
       isDeepStrictEqual(targetBinding, pending.record);
     if (!beforeCommit && !afterCommit) throw new Error('library relocation binding generation changed');
+    const libraryIdentity = relocationIdentity(pending.libraryIdentity, pending.libraryIdentityExact);
     await this.assertRelocationRoot(pending);
     const fromRoot = path.join(pending.record.realPathAtGrant, pending.fromGhostId);
     const toRoot = path.join(pending.record.realPathAtGrant, pending.toGhostId);
@@ -406,15 +441,15 @@ export class LibraryBindingStore {
       if (sourceIdentity !== null || targetIdentity !== null || pending.record.libraryReady !== false) {
         throw new Error('library relocation directory identity changed');
       }
-    } else if (beforeCommit && isDeepStrictEqual(sourceIdentity, pending.libraryIdentity) && targetIdentity === null) {
+    } else if (beforeCommit && isDeepStrictEqual(sourceIdentity, libraryIdentity) && targetIdentity === null) {
       if (file !== this.deps.getFile()) throw new Error('library binding owner changed');
       await fs.promises.rename(fromRoot, toRoot);
-    } else if (sourceIdentity !== null || !isDeepStrictEqual(targetIdentity, pending.libraryIdentity)) {
+    } else if (sourceIdentity !== null || !isDeepStrictEqual(targetIdentity, libraryIdentity)) {
       throw new Error('library relocation directory identity changed');
     }
     await syncDirectory(pending.record.realPathAtGrant);
     await this.assertRelocationRoot(pending);
-    if (!isDeepStrictEqual(await directoryIdentity(toRoot), pending.libraryIdentity) ||
+    if (!isDeepStrictEqual(await directoryIdentity(toRoot), libraryIdentity) ||
         await directoryIdentity(fromRoot) !== null) {
       throw new Error('library relocation directory identity changed');
     }
@@ -542,8 +577,10 @@ export class LibraryBindingStore {
         fromGhostId,
         toGhostId,
         record,
-        rootIdentity,
-        libraryIdentity,
+        rootIdentity: numericIdentity(rootIdentity),
+        libraryIdentity: libraryIdentity ? numericIdentity(libraryIdentity) : null,
+        rootIdentityExact: rootIdentity,
+        libraryIdentityExact: libraryIdentity,
       };
       await this.assertRelocationRoot(data.pendingRelocation);
       await this.writeData(data, file);

@@ -455,15 +455,15 @@ describe('shared-model native fork', () => {
     if (controller === GUEST) await expect(host.handle(controller, request)).rejects.toThrow('REMOTE_AGENT_INVALID');
     expect(forkHosted).not.toHaveBeenCalled();
     await host.handle(controller, { op: 'open', runId: RUN_1, agentKind, payload: { json: openPayload('task-1') } });
-    await vi.waitFor(async () => {
-      const poll = await host.handle(controller, { op: 'poll', runs: [{ runId: RUN_1, cursor: 0 }], waitMs: 0 });
-      expect(JSON.stringify(poll)).not.toContain('"runs":[]');
-      expect(started).toHaveLength(1);
-      if (controller === GUEST) {
-        const index = JSON.parse(fs.readFileSync(path.join(runsRoot, 'guest-sessions.json'), 'utf8'));
-        expect(JSON.stringify(index)).toContain('native-source');
-      }
-    });
+    // open acknowledges receipt before workspace preparation and ownership persistence.
+    // A nonempty poll may only contain workspaceProjection; require the completed
+    // startup handshake before testing forks (Windows CI run 39894889426).
+    await waitForStarted(host, controller, RUN_1);
+    expect(started).toHaveLength(1);
+    if (controller === GUEST) {
+      const index = JSON.parse(fs.readFileSync(path.join(runsRoot, 'guest-sessions.json'), 'utf8'));
+      expect(JSON.stringify(index)).toContain('native-source');
+    }
     await expect(host.handle(controller, { ...request, model: 'claude-sonnet' })).rejects.toThrow('REMOTE_AGENT_PROVIDER_NOT_ALLOWED');
     expect(forkHosted).not.toHaveBeenCalled();
     await expect(host.handle(controller, request)).resolves.toEqual({ newSdkSessionId: 'native-child-1', uuidMap: [['a', 'b']] });
@@ -480,12 +480,11 @@ describe('shared-model native fork', () => {
       await restarted.handle(controller, { op: 'open', runId: RUN_2, agentKind, payload: { json: openPayload('task-3', {
         options: { model: 'claude-opus', resumeSessionId: 'native-child-2' },
       }) } });
-      await vi.waitFor(async () => {
-        const poll = await restarted.handle(controller, { op: 'poll', runs: [{ runId: RUN_2, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
-        expect(Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8')).toContain('"previousMirrorRoots":' + JSON.stringify([
-          path.join(sessionRoot(controller, 'task-1'), 'fs'), path.join(sessionRoot(controller, 'task-2'), 'fs'),
-        ]));
-      });
+      await waitForStarted(restarted, controller, RUN_2);
+      const poll = await restarted.handle(controller, { op: 'poll', runs: [{ runId: RUN_2, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
+      expect(Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8')).toContain('"previousMirrorRoots":' + JSON.stringify([
+        path.join(sessionRoot(controller, 'task-1'), 'fs'), path.join(sessionRoot(controller, 'task-2'), 'fs'),
+      ]));
       await restarted.handle(controller, { op: 'close', runId: RUN_2, mode: 'close', reason: 'navigation' });
       await expect(restarted.handle(controller, { ...request, relay: 'a'.repeat(32) })).rejects.toThrow('REMOTE_AGENT_INVALID');
     } finally { restarted.dispose(); }
