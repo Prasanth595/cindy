@@ -97,6 +97,7 @@ describe('production credential recovery wiring', () => {
           initialize: () => (rejects ? Promise.reject(outcome) : Promise.resolve(outcome)),
           requestStableOwnerPostCommit: vi.fn(),
           getAuthState,
+          setColdStartRecoveredHandler: vi.fn(),
         },
         authCredentialRecovery: { request },
         app: { isPackaged: true },

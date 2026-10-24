@@ -96,7 +96,7 @@ describe('authentication does not wait for optional plugin provisioning', () => 
           initialize = handler;
         },
       },
-      authManager: run,
+      authManager: { ...run, setColdStartRecoveredHandler: vi.fn() },
       authCredentialRecovery: { request: vi.fn() },
       app: { isPackaged: true },
       isCindyVersionLaunchPending: () => false,
