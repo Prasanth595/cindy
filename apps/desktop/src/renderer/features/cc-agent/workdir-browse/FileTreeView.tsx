@@ -477,7 +477,6 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
     },
     [],
   );
-
   // 右键菜单项：按 entry 类型 + 宿主提供了哪些 handler 动态生成。
   const menuActions = useMemo<TreeMenuAction[]>(() => {
     if (!menu) return [];

@@ -25,6 +25,7 @@ const families: ReadonlyArray<readonly [RegExp, string]> = [
   [/^deepseek-/, 'reasoning'],
   [/^qwen(?:\d|[-/])/, 'writingAndCoding'],
   [/^kimi-.*-code(?:-|$)/, 'coding'],
+  [/^k3(?:\.\d+)?(?:-|$)/, 'coding'],
   [/^kimi-/, 'readingAndWriting'],
   [/^glm-/, 'writingAndCoding'],
   [/^(?:doubao-)?seed-\d/, 'everydayWork'],

@@ -1436,6 +1436,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     const remoteRoute =
       opts.remoteHostId && this.deps.resolveRemoteClaudeRoute
         ? await this.deps.resolveRemoteClaudeRoute({
+            sessionId: opts.sessionId,
             providerId: opts.providerId,
             model: opts.model,
           })
@@ -7357,6 +7358,7 @@ export class ClaudeCodeAgent extends BaseAgent {
         // providerId 用调用方给的目标来源(可能正在切 provider),缺省回落会话启动值。
         if (opts.remoteHostId && resolveRemoteClaudeRoute) {
           const nextRoute = await resolveRemoteClaudeRoute({
+            sessionId: opts.sessionId,
             providerId: targetProviderId,
             model: newModel,
           });

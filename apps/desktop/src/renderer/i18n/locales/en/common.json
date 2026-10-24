@@ -3537,6 +3537,7 @@
           },
           "effortMixed": "Effort differs by engine. A selection applies to engines that support that level.",
           "protocol": {
+            "automatic": "Automatic",
             "reference": "Native API",
             "compatibility": "Compatibility mode",
             "compatibilityHint": "Compatibility mode may be unstable or behave unexpectedly. Recommended for experienced users.",
@@ -13334,7 +13335,10 @@
       "treeLoading": "Loading files…",
       "treeAction": {
         "collapseAll": "Collapse all",
-        "refresh": "Refresh"
+        "refresh": "Refresh",
+        "showIgnoredDirs": "Show ignored directories",
+        "hideIgnoredDirs": "Hide ignored directories",
+        "showIgnoredDirsUnsupported": "The remote device is running an older {{appName}} version that cannot show ignored directories"
       },
       "treeMenu": {
         "newFile": "New File",

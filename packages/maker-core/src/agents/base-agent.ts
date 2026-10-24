@@ -872,6 +872,7 @@ export interface AgentDeps {
       resumeSessionId?: string;
       /** Preview must not prepare global skills or start a local model service. */
       purpose?: 'startup' | 'preview' | 'live-refresh';
+      sessionId?: string;
     },
   ) => Promise<PiNativeProvidersResult | null>;
 
@@ -1605,6 +1606,7 @@ export interface AgentDeps {
    * 「远端恒用网关」行为。
    */
   resolveRemoteClaudeRoute?: (opts: {
+    sessionId?: string;
     providerId?: string | null;
     model: string;
   }) => Promise<RemoteClaudeRoute | null>;

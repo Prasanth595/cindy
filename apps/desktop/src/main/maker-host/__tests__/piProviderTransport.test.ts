@@ -13,6 +13,42 @@ const reply = [
 ].map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n';
 
 describe('Pi-owned transport for Cindy harnesses', () => {
+  // Tier 2: exercise official serializers, not just selected API labels. Responses
+  // input is converted once and must reach Kimi's matching endpoint and wire ID.
+  it.each(['anthropic-messages', 'openai-responses', 'openai-completions'] as const)(
+    'serializes Kimi V6 %s through the installed official adapter', async api => {
+      const provider = buildUserProvider({ id: 'kimi-v6', name: 'Kimi', runtimes: { codex: {
+        baseUrl: 'https://api.kimi.com/coding/v1', catalogPresetId: 'moonshot-kimi-code', wireProtocol: 'openai-chat',
+        models: [{ id: 'k3.1-pro', name: 'K3.1', interfaceId: `moonshot-kimi-code-${api}` }],
+      } } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+      const model = provider.models.codex![0];
+      const row = invocationModelRecord(model, model.route!.baseUrl)!;
+      let sent: Record<string, unknown> | undefined;
+      let destination = '';
+      const send = createPiProviderFetch({ row, providerId: provider.id, apiKey: 'fixture-key', fetchImpl: async (url, init) => {
+        destination = String(url);
+        sent = JSON.parse(String(init?.body));
+        const events = [
+          { type: 'message_start', message: { id: 'msg-fixture', type: 'message', role: 'assistant', model: 'k3.1-pro', content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } },
+          { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } },
+          { type: 'message_stop' },
+        ];
+        const body = api === 'openai-completions' ? reply : api === 'openai-responses'
+          ? 'data: {"type":"response.completed","response":{"id":"fixture","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}}\n\n'
+          : events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
+        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+      } });
+      const result = await (await send('https://unused.invalid', { body: JSON.stringify({
+        model: model.id, input: 'Hello', max_output_tokens: 1024, stream: true,
+      }) })).text();
+      expect(destination.split('?')[0]).toBe('https://api.kimi.com/coding' + (api === 'anthropic-messages' ? '/v1/messages' : api === 'openai-responses' ? '/v1/responses' : '/v1/chat/completions'));
+      expect(result).toContain('response.completed');
+      expect(result).not.toContain('response.failed');
+      expect(sent).toMatchObject({ model: 'k3.1-pro' });
+      expect(Array.isArray(sent?.[api === 'openai-responses' ? 'input' : 'messages'])).toBe(true);
+    },
+  );
+
   it.each([true, false, undefined])('sends discovered Sub2API effort and declared Fast (%s) through the native Chat adapter', async supportsFastMode => {
     const upstream = 'https://sub2api.example/custom/v1';
     const models = parseModelsListResponse({ data: [{ id: 'grok-4.7',

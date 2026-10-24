@@ -251,7 +251,7 @@ describe('buildProbeRequest', () => {
     });
     expect(url).toBe(expectedUrl);
     expect(JSON.parse(String(init.body))).toMatchObject({
-      model: 'MiniMax-M3',
+      model: runtime!.models[0]!.id,
       stream: false,
       store: false,
     });

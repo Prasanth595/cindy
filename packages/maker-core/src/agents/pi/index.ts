@@ -2702,8 +2702,11 @@ export class PiAgent extends BaseAgent {
     const guestOmitsGateway = guestProviderId !== undefined && !piGuestUsesGateway(guestProviderId);
     const sessionNativeProviderResolver = (): AgentDeps['resolvePiNativeProviders'] => {
       const resolve = this.deps.resolvePiNativeProviders;
-      if (!resolve || !guestProviderId) return resolve?.bind(this.deps);
-      return async (input) => restrictPiGuestNativeProviders(await resolve.call(this.deps, input), guestProviderId, hosted?.guestProvider?.modelIds);
+      if (!resolve) return undefined;
+      return async (input) => {
+        const result = await resolve.call(this.deps, { ...input, sessionId: opts.sessionId });
+        return guestProviderId ? restrictPiGuestNativeProviders(result, guestProviderId, hosted?.guestProvider?.modelIds) : result;
+      };
     };
     const resolvePiNativeProviders = sessionNativeProviderResolver();
     const sessionPiAutoCompactPct = this.deps.runtimeConfig.piAutoCompactThresholdPct;

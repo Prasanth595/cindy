@@ -3507,6 +3507,7 @@
           },
           "effortMixed": "엔진마다 추론 강도가 다릅니다. 선택한 단계를 지원하는 엔진에 적용합니다.",
           "protocol": {
+            "automatic": "자동 선택",
             "reference": "기본 API",
             "compatibility": "호환 모드",
             "compatibilityHint": "호환 모드에서는 작동이 불안정하거나 일부 기능에 문제가 생길 수 있습니다. 숙련된 사용자에게 권장합니다.",
@@ -13286,7 +13287,10 @@
       "treeLoading": "파일 불러오는 중…",
       "treeAction": {
         "collapseAll": "모두 접기",
-        "refresh": "새로 고침"
+        "refresh": "새로 고침",
+        "showIgnoredDirs": "무시된 디렉터리 표시",
+        "hideIgnoredDirs": "무시된 디렉터리 숨기기",
+        "showIgnoredDirsUnsupported": "상대 기기의 {{appName}} 버전이 오래되어 무시된 디렉터리를 표시할 수 없습니다"
       },
       "treeMenu": {
         "newFile": "새 파일",

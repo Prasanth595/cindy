@@ -107,6 +107,7 @@ function makeTree(): UseFileTreeReturn {
     loadingPaths: new Set(),
     initialLoading: false,
     loadError: null,
+    showIgnoredDirsSupported: true,
     storeKey: 'test-store',
     treeIdentityKey: 'test-store',
     toggleFolder: vi.fn(),

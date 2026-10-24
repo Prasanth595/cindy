@@ -3507,6 +3507,7 @@
           },
           "effortMixed": "各引擎的檔位不同；選擇後套用至支援該檔位的引擎。",
           "protocol": {
+            "automatic": "自動選擇",
             "reference": "原生協定",
             "compatibility": "相容模式",
             "compatibilityHint": "相容模式可能出現執行不穩定或功能異常，建議有經驗的使用者使用。",
@@ -13286,7 +13287,10 @@
       "treeLoading": "正在載入檔案…",
       "treeAction": {
         "collapseAll": "收起所有",
-        "refresh": "重新整理"
+        "refresh": "重新整理",
+        "showIgnoredDirs": "顯示被忽略的目錄",
+        "hideIgnoredDirs": "隱藏被忽略的目錄",
+        "showIgnoredDirsUnsupported": "對方裝置的 {{appName}} 版本過舊，暫不支援顯示被忽略的目錄"
       },
       "treeMenu": {
         "newFile": "新建檔案",

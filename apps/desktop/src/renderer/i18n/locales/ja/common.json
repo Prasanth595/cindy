@@ -3507,6 +3507,7 @@
           },
           "effortMixed": "推論強度はエンジンごとに異なります。選択した強度に対応するエンジンに適用します。",
           "protocol": {
+            "automatic": "自動選択",
             "reference": "ネイティブAPI",
             "compatibility": "互換モード",
             "compatibilityHint": "互換モードでは動作が不安定になったり、一部の機能が正常に動作しない場合があります。経験のあるユーザー向けです。",
@@ -13286,7 +13287,10 @@
       "treeLoading": "ファイルを読み込み中…",
       "treeAction": {
         "collapseAll": "すべて折りたたむ",
-        "refresh": "更新"
+        "refresh": "更新",
+        "showIgnoredDirs": "無視されるディレクトリを表示",
+        "hideIgnoredDirs": "無視されるディレクトリを隠す",
+        "showIgnoredDirsUnsupported": "相手デバイスの {{appName}} のバージョンが古く、無視されるディレクトリを表示できません"
       },
       "treeMenu": {
         "newFile": "新規ファイル",
