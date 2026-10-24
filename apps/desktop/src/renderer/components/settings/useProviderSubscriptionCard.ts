@@ -1,17 +1,33 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { ProviderView } from '@cindy/model-providers';
 import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
 import { matchCodexBucketForModel } from '@cindy/maker-shared/codex-usage-buckets';
-import { useAccountUsage, type RateLimitSnapshot } from '@/hooks/useAccountUsage';
-import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
-import { useClaudeSubscriptionUsage } from '@/hooks/useClaudeSubscriptionUsage';
-import { useRemoteClaudeSubscriptionUsage } from '@/hooks/useRemoteClaudeSubscriptionUsage';
+import {
+  useAccountUsage,
+  requestCodexAccountRefresh,
+  type RateLimitSnapshot,
+} from '@/hooks/useAccountUsage';
+import { useCodexRateLimits, requestCodexRateLimitsRefresh } from '@/hooks/useCodexRateLimits';
+import {
+  useClaudeSubscriptionUsage,
+  requestClaudeSubscriptionRefresh,
+} from '@/hooks/useClaudeSubscriptionUsage';
+import {
+  useRemoteClaudeSubscriptionUsage,
+  requestRemoteClaudeSubscriptionRefresh,
+} from '@/hooks/useRemoteClaudeSubscriptionUsage';
+import { useDocumentVisible } from '@/hooks/useWindowVisible';
+import { useDeviceLinkReconnectEpoch } from '@/features/device-link/useDeviceLinkReconnectEpoch';
 import {
   selectRemoteCodexAccountUsage,
   useRemoteCodexAccountUsage,
+  useRemoteCodexRateLimits,
   useRemoteXaiSubscriptionUsage,
+  requestRemoteCodexAccountRefresh,
+  requestRemoteCodexRateLimitsRefresh,
+  requestRemoteXaiSubscriptionRefresh,
 } from '@/hooks/useRemoteDeviceUsage';
 import {
   useXaiSubscriptionUsage,
@@ -64,12 +80,15 @@ export function buildSettingsCodexUsageCard(
   );
 }
 
-export function useProviderSubscriptionCard(provider?: ProviderView): UsageCardAccount | null {
+export function useProviderSubscriptionCard(
+  provider?: ProviderView,
+  options: { queueIfPending?: boolean } = {},
+): UsageCardAccount | null {
   const { t, i18n } = useTranslation();
   // Suspension only disables routing; settings must still show the saved account.
   const source = provider ? providerWeeklyQuotaSource({ ...provider, suspended: false }) : null;
   const providerId = provider?.id ?? 'openai';
-  const { snapshot } = useCodexRateLimits(source === 'codex', providerId);
+  const { snapshot } = useCodexRateLimits(source === 'codex', providerId, options);
   const account = useAccountUsage(
     undefined,
     source === 'codex' ? 'codex' : undefined,
@@ -102,8 +121,8 @@ export function useProviderSubscriptionCard(provider?: ProviderView): UsageCardA
 }
 
 /**
- * 同账号另一台电脑上一个供应商连接的订阅额度卡：经 device-link 读那台的余量镜像，与任务底部用量条
- * 读同一份(按电脑 + 供应商分开缓存)，不借用本机同名账号。Codex 取账号的通用额度槽，不取模型专属桶。
+ * 同账号另一台电脑上一个供应商连接的订阅额度卡：OpenAI 主动查询那台的原生额度，镜像仅作兜底。
+ * 按电脑 + 供应商分开缓存，不借用本机同名账号；与本机卡片共用通用额度桶的选择。
  */
 function useRemoteProviderSubscriptionCard(
   provider: ProviderView | undefined,
@@ -113,6 +132,7 @@ function useRemoteProviderSubscriptionCard(
   const source = provider && deviceId ? providerWeeklyQuotaSource({ ...provider, suspended: false }) : null;
   const providerId = provider?.id ?? 'openai';
   const codex = useRemoteCodexAccountUsage(source === 'codex' ? deviceId : null, providerId);
+  const limits = useRemoteCodexRateLimits(source === 'codex' ? deviceId : null, providerId);
   const claude = useRemoteClaudeSubscriptionUsage(source === 'claude' ? deviceId : null, providerId);
   const xai = useRemoteXaiSubscriptionUsage(source === 'xai' ? deviceId : null, providerId);
   const [nowMs, setNowMs] = useState(Date.now);
@@ -123,8 +143,8 @@ function useRemoteProviderSubscriptionCard(
   }, [source]);
   if (source === 'codex') {
     const account = selectRemoteCodexAccountUsage(codex, 'app-server');
-    return account
-      ? buildCodexUsageCard(account, null, t, nowMs, i18n?.resolvedLanguage ?? i18n?.language)
+    return limits || account
+      ? buildSettingsCodexUsageCard(limits, account, t, nowMs, i18n?.resolvedLanguage ?? i18n?.language)
       : null;
   }
   if (source === 'claude' && claude) return buildClaudeUsageCard(claude, t);
@@ -132,12 +152,67 @@ function useRemoteProviderSubscriptionCard(
   return null;
 }
 
-/** 一个供应商连接的订阅额度卡：`deviceId` 为 null 读本机账号，否则读同账号那台电脑上的账号。 */
+/** 一个供应商连接的订阅额度卡；展开的组成员用 live 开启前台刷新，收起卸载时停止。 */
 export function useDeviceProviderSubscriptionCard(
   provider: ProviderView | undefined,
   deviceId: string | null,
+  options: { live?: boolean } = {},
 ): UsageCardAccount | null {
-  const local = useProviderSubscriptionCard(deviceId === null ? provider : undefined);
-  const remote = useRemoteProviderSubscriptionCard(deviceId === null ? undefined : provider, deviceId);
+  const visible = useDocumentVisible(options.live === true);
+  const active = !options.live || visible;
+  const activeProvider = active ? provider : undefined;
+  const source = activeProvider
+    ? providerWeeklyQuotaSource({ ...activeProvider, suspended: false })
+    : null;
+  const providerId = activeProvider?.id;
+  const epoch = useDeviceLinkReconnectEpoch(
+    options.live && source ? deviceId ?? undefined : undefined,
+  );
+  const previousEpoch = useRef(epoch);
+  const local = useProviderSubscriptionCard(deviceId === null ? activeProvider : undefined, {
+    queueIfPending: options.live === true,
+  });
+  const remote = useRemoteProviderSubscriptionCard(
+    deviceId === null ? undefined : activeProvider,
+    deviceId,
+  );
+  useEffect(() => {
+    if (!options.live || !source || !providerId) return;
+    const timer = window.setInterval(
+      () => refreshSubscriptionCard(source, providerId, deviceId, false, { background: true }),
+      15_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [options.live, source, providerId, deviceId]);
+  useEffect(() => {
+    const reconnected = previousEpoch.current !== epoch;
+    previousEpoch.current = epoch;
+    // Mirrors own mount/resume reads, including queuing behind an old pending
+    // read. Only a reconnect observed while mounted needs another refresh here.
+    if (reconnected && options.live && source && providerId && deviceId) {
+      refreshSubscriptionCard(source, providerId, deviceId, true);
+    }
+  }, [options.live, source, providerId, deviceId, epoch]);
   return deviceId === null ? local : remote;
+}
+
+function refreshSubscriptionCard(
+  source: NonNullable<ReturnType<typeof providerWeeklyQuotaSource>>,
+  providerId: string,
+  deviceId: string | null,
+  queueIfPending = false,
+  scheduling?: { background?: boolean },
+): void {
+  if (deviceId) {
+    if (source === 'codex') {
+      requestRemoteCodexRateLimitsRefresh(deviceId, providerId, queueIfPending, scheduling);
+      requestRemoteCodexAccountRefresh(deviceId, providerId, queueIfPending, scheduling);
+    } else if (source === 'claude') {
+      requestRemoteClaudeSubscriptionRefresh(deviceId, providerId, queueIfPending, scheduling);
+    } else requestRemoteXaiSubscriptionRefresh(deviceId, providerId, queueIfPending, scheduling);
+  } else if (source === 'codex') {
+    requestCodexRateLimitsRefresh(providerId);
+    requestCodexAccountRefresh(providerId);
+  } else if (source === 'claude') requestClaudeSubscriptionRefresh(providerId);
+  else requestXaiSubscriptionRefresh(providerId);
 }

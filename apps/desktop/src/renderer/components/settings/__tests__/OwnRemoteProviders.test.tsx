@@ -44,6 +44,7 @@ vi.mock('@/hooks/useXaiSubscriptionUsage', () => ({
 }));
 vi.mock('@/hooks/useRemoteDeviceUsage', () => ({
   useRemoteCodexAccountUsage: () => null,
+  useRemoteCodexRateLimits: () => null,
   useRemoteXaiSubscriptionUsage: () => null,
   selectRemoteCodexAccountUsage: () => null,
 }));

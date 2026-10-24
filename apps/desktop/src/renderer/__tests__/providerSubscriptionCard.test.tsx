@@ -104,7 +104,7 @@ describe('settings subscription card', () => {
     expect(result.current?.planLabel).toBe('Pro');
     rerender({ id: 'second-account' });
     expect(result.current?.planLabel).toBe('Plus');
-    expect(mocks.rates).toHaveBeenLastCalledWith(true, 'second-account');
+    expect(mocks.rates).toHaveBeenLastCalledWith(true, 'second-account', {});
     expect(mocks.account).toHaveBeenLastCalledWith(
       undefined,
       'codex',

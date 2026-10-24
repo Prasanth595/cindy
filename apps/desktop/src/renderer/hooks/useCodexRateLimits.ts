@@ -59,6 +59,7 @@ interface CachedRateLimits {
   snapshot: MobileCodexRateLimitsResult | null;
   version: number;
   pendingReads: number;
+  queuedRefreshes: Set<{ version: number }>;
   listeners: Set<() => void>;
   unsubscribe: Array<() => void>;
   providerId: string;
@@ -77,13 +78,20 @@ function refreshEntry(entry: CachedRateLimits): void {
   // A manual/hover refresh can still read the old auth.json during re-login.
   // Wait for the main-process post-commit signal before allowing any read.
   if (entry.awaitingAuthCompletion) return;
+  entry.queuedRefreshes.clear();
   const version = ++entry.version;
   entry.pendingReads++;
   void readCodexRateLimitsSafely(readCodexRateLimitsReader(), entry.providerId).then(next => {
     if (entry.version !== version || !isDataOwnerGenerationCurrent(entry.owner)) return;
     // An unavailable read is not a logout. Explicit identity clears come by push.
     if (next !== null) publish(entry, next);
-  }).finally(() => { entry.pendingReads--; });
+  }).finally(() => {
+    entry.pendingReads--;
+    if (entry.pendingReads !== 0) return;
+    const queued = [...entry.queuedRefreshes].some(request => request.version === entry.version);
+    entry.queuedRefreshes.clear();
+    if (queued && entry.listeners.size > 0 && isDataOwnerGenerationCurrent(entry.owner)) refreshEntry(entry);
+  });
 }
 
 function cachedRateLimits(providerId: string): CachedRateLimits {
@@ -99,7 +107,7 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
   const cached = snapshots.get(providerId);
   if (cached) return cached;
   const entry: CachedRateLimits = {
-    providerId, owner, snapshot: null, version: 0, pendingReads: 0, listeners: new Set(), unsubscribe: [],
+    providerId, owner, snapshot: null, version: 0, pendingReads: 0, queuedRefreshes: new Set(), listeners: new Set(), unsubscribe: [],
     awaitingAuthCompletion: false,
   };
   snapshots.set(providerId, entry);
@@ -141,7 +149,18 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
   return entry;
 }
 
-export function useCodexRateLimits(enabled: boolean, providerId = 'openai'): CodexRateLimitsState {
+/** Visible group cards share in-flight native reads with the local settings card. */
+export function requestCodexRateLimitsRefresh(providerId = 'openai'): void {
+  const entry = cachedRateLimits(providerId);
+  if (entry.pendingReads === 0) refreshEntry(entry);
+}
+
+export function useCodexRateLimits(
+  enabled: boolean,
+  providerId = 'openai',
+  options: { queueIfPending?: boolean } = {},
+): CodexRateLimitsState {
+  const queueIfPending = options.queueIfPending === true;
   const entry = cachedRateLimits(providerId);
   const subscribe = useCallback((listener: () => void) => {
     if (!enabled) return () => {};
@@ -153,6 +172,16 @@ export function useCodexRateLimits(enabled: boolean, providerId = 'openai'): Cod
   const refresh = useCallback(() => {
     if (enabled) refreshEntry(entry);
   }, [enabled, entry]);
-  useEffect(refresh, [refresh]);
+  useEffect(() => {
+    if (!enabled) return;
+    // A resumed card keeps the pending result, then reads once more. Explicit
+    // refresh/auth events may still supersede it and invalidate this queue.
+    if (queueIfPending && entry.pendingReads > 0) {
+      const request = { version: entry.version };
+      entry.queuedRefreshes.add(request);
+      return () => { entry.queuedRefreshes.delete(request); };
+    }
+    refreshEntry(entry);
+  }, [enabled, entry, queueIfPending]);
   return { snapshot, refresh };
 }

@@ -16,13 +16,17 @@ function isSnapshotShape(value: unknown): value is Record<string, unknown> {
 
 export interface RemoteDeviceUsageMirror<T> {
   useMirror(deviceId: string | null, providerId?: string): T | null;
-  request(deviceId: string, providerId?: string, queueIfPending?: boolean): void;
+  request(deviceId: string, providerId?: string, queueIfPending?: boolean, scheduling?: { background?: boolean }): void;
   resetForTest(): void;
 }
 
 export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
   invokeChannel: string | null;
   decodeRead?: (value: unknown) => T | null | undefined;
+  /** A read may return a richer contract than its invalidation push. */
+  decodePush?: (value: unknown) => T | null | undefined;
+  /** A failed reread cannot establish that a cached native snapshot still belongs to the current account. */
+  clearOnReadFailure?: boolean;
   invokeArgs?: unknown[];
   pushChannel: string;
   defaultProviderId?: string;
@@ -34,6 +38,7 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     unsupportedUntil: number;
     pending: boolean;
     refreshQueued: boolean;
+    refreshScheduling?: { background?: boolean };
     /** Last time a read or push settled this entry; 0 = never. */
     settledAt: number;
     owner: ReturnType<typeof getDataOwnerGeneration>;
@@ -69,11 +74,16 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     entry.settledAt = Date.now();
     for (const notify of entry.listeners) notify();
   }
-  function request(deviceId: string, providerId?: string, queueIfPending = false): void {
+  function request(deviceId: string, providerId?: string, queueIfPending = false, scheduling?: { background?: boolean }): void {
     if (!cfg.invokeChannel) return;
     const entry = entryFor(deviceId, providerId);
     if (entry.pending) {
-      if (queueIfPending) entry.refreshQueued = true;
+      if (queueIfPending) {
+        // An explicit recovery must keep its foreground priority even if a
+        // background refresh was already queued behind the current read.
+        if (!entry.refreshQueued || !scheduling?.background) entry.refreshScheduling = scheduling;
+        entry.refreshQueued = true;
+      }
       return;
     }
     if (Date.now() < entry.unsupportedUntil) return;
@@ -82,8 +92,10 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     // Keep the legacy builtin call shape; scoped reads must explicitly name their provider.
     if (providerId && providerId !== cfg.defaultProviderId) args.push(providerId);
     entry.pending = true;
-    void window.electronAPI.deviceLink
-      .invoke(deviceId, cfg.invokeChannel, args)
+    const read = scheduling
+      ? window.electronAPI.deviceLink.invoke(deviceId, cfg.invokeChannel, args, scheduling)
+      : window.electronAPI.deviceLink.invoke(deviceId, cfg.invokeChannel, args);
+    void read
       .then((value) => {
         if (!isDataOwnerGenerationCurrent(entry.owner) || entry.revision !== revision) return;
         // Older hosts may ignore new optional arguments. Never accept their builtin snapshot
@@ -93,12 +105,16 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
           providerId !== cfg.defaultProviderId &&
           value !== null &&
           (!isSnapshotShape(value) || value.providerId !== providerId)
-        )
+        ) {
+          if (cfg.clearOnReadFailure) apply(entry, null);
           return;
+        }
         if (cfg.decodeRead) {
           const decoded = cfg.decodeRead(value);
           if (decoded !== undefined) apply(entry, decoded);
+          else if (cfg.clearOnReadFailure) apply(entry, null);
         } else if (value === null || isSnapshotShape(value)) apply(entry, value as T | null);
+        else if (cfg.clearOnReadFailure) apply(entry, null);
       })
       .catch((error: unknown) => {
         if (!isDataOwnerGenerationCurrent(entry.owner) || entry.revision !== revision) return;
@@ -108,12 +124,15 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
         ) {
           entry.unsupportedUntil = Date.now() + UNSUPPORTED_RETRY_AFTER_MS;
         }
+        if (cfg.clearOnReadFailure) apply(entry, null);
       })
       .finally(() => {
         entry.pending = false;
         if (entry.refreshQueued) {
+          const queuedScheduling = entry.refreshScheduling;
           entry.refreshQueued = false;
-          if (isDataOwnerGenerationCurrent(entry.owner) && entry.listeners.size > 0) request(deviceId, providerId);
+          entry.refreshScheduling = undefined;
+          if (isDataOwnerGenerationCurrent(entry.owner) && entry.listeners.size > 0) request(deviceId, providerId, false, queuedScheduling);
         }
       });
   }
@@ -131,8 +150,11 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
         entry.listeners.size > 0 &&
         entry.settledAt > 0 &&
         Date.now() - entry.settledAt < MOUNT_REUSE_MS;
+      // A pending request from before an observation gap cannot stand in for
+      // the fresh read required on resume. Concurrent live consumers still share it.
+      const resumePending = entry.listeners.size === 0 && entry.pending;
       entry.listeners.add(notify);
-      if (!settled) request(deviceId, providerId);
+      if (!settled) request(deviceId, providerId, resumePending);
       const off = window.electronAPI.deviceLink.onRemotePush((push, ownerStamp) => {
         if (
           push.deviceId !== deviceId ||
@@ -155,8 +177,10 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
           value = push.payload.snapshot;
         } else return;
         if (value !== null && !isSnapshotShape(value)) return;
+        const decoded = cfg.decodePush ? cfg.decodePush(value) : (value as T | null);
+        if (decoded === undefined) return;
         entry.unsupportedUntil = 0;
-        apply(entry, value as T | null);
+        apply(entry, decoded);
       });
       return () => {
         entry.listeners.delete(notify);
