@@ -5,7 +5,7 @@
  * 对 agent 进程树里的一切子进程(bash / 测试 / 构建)都生效:降档后 agent 照常
  * 用满空闲核,但用户前台应用永远优先,机器不再卡顿。
  *
- * 实现方式: claude 子进程由 Claude SDK 内部 spawn(host 拿不到 pid),codex 由
+ * 实现方式: claude 子进程由 Claude SDK 内部 spawn(host 拿不到 pid),codex / pi 由
  * maker-core spawn —— 统一用周期扫描:找到"当前主进程直接子进程 + 命中本产品
  * agent 二进制路径 marker"的进程,按设置档位调 os.setPriority;后续 spawn 的
  * 子进程(bash / 测试 worker)自动继承。发现窗口 ≤ intervalMs,即会话最初几秒
@@ -20,7 +20,7 @@
  *               macOS 的 taskpolicy -B 钳制清除是例外、可恢复。
  *
  * 安全边界: 只匹配 ppid == 本进程 且命令行带产品二进制 marker 的进程,绝不触碰
- * 外部安装的 claude/codex 或另一个 Cindy 实例的进程(与 claude-orphan-reaper
+ * 外部安装的 claude/codex/pi 或另一个 Cindy 实例的进程(与 claude-orphan-reaper
  * 同一套 marker 策略)。所有失败 best-effort,永不影响 agent 功能。
  */
 
@@ -35,6 +35,7 @@ import { allUserDataDirNames } from '@cindy/maker-shared/brand-identity';
 import { CURRENT_CINDY_REGION } from '../shared/brandRegion.js';
 import { buildClaudePathMarkers } from './claude-orphan-reaper.js';
 import { createLogger } from './logger';
+import { isManagedPiCommandLine, registerPiUserDataMarkers } from './pi-process-markers.js';
 import {
   readAgentResourceSettings,
   type AgentProcessPriority,
@@ -46,7 +47,7 @@ const DEFAULT_INTERVAL_MS = 15_000;
 
 export interface AgentProcessRow {
   pid: number;
-  kind: 'claude' | 'codex';
+  kind: 'claude' | 'codex' | 'pi';
 }
 
 /**
@@ -149,6 +150,7 @@ const CODEX_MARKERS = [
 const runtimeUserDataMarkers: { claude: string[]; codex: string[] } = { claude: [], codex: [] };
 
 export function registerUserDataMarkers(userDataPath: string): void {
+  registerPiUserDataMarkers(userDataPath);
   const markersFor = (kind: 'claude-code' | 'codex'): string[] => {
     const lower = userDataPath.toLowerCase();
     // 命令行里的分隔符形态可能与 app.getPath 返回值不同(Windows 下 / 与 \ 混用),
@@ -170,7 +172,7 @@ export function registerUserDataMarkers(userDataPath: string): void {
 }
 
 /** 命令行(已小写)→ agent 种类;不命中任何 marker = 不是我们的 agent 进程。 */
-export function classifyAgentCommandLine(cmdLineLower: string): 'claude' | 'codex' | null {
+export function classifyAgentCommandLine(cmdLineLower: string): AgentProcessRow['kind'] | null {
   if (
     CLAUDE_MARKERS.some((m) => cmdLineLower.includes(m)) ||
     runtimeUserDataMarkers.claude.some((m) => cmdLineLower.includes(m))
@@ -183,16 +185,13 @@ export function classifyAgentCommandLine(cmdLineLower: string): 'claude' | 'code
   ) {
     return 'codex';
   }
-  return null;
+  return isManagedPiCommandLine(cmdLineLower) ? 'pi' : null;
 }
 
 const POSIX_PS_ROW_RE = /^(\d+)\s+(\d+)\s+(.+)$/;
 
 /** POSIX: 一次 ps 全表,过滤"本进程直接子进程 + 命中 marker"。 */
-export function parsePosixAgentProcesses(
-  psOutput: string,
-  selfPid: number,
-): AgentProcessRow[] {
+export function parsePosixAgentProcesses(psOutput: string, selfPid: number): AgentProcessRow[] {
   const rows: AgentProcessRow[] = [];
   for (const raw of psOutput.split(/\r?\n/)) {
     const line = raw.trim();
@@ -222,7 +221,7 @@ async function scanPosix(): Promise<AgentProcessRow[]> {
 async function scanWindows(): Promise<AgentProcessRow[]> {
   // 与 claude-orphan-reaper 的 Windows 扫描同一套写法(含行尾管道符的坑,见其注释)。
   const script = [
-    'Get-CimInstance Win32_Process -Filter "Name=\'claude.exe\' OR Name=\'codex.exe\'" |',
+    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe' OR Name='codex.exe' OR Name='pi.exe'\" |",
     'ForEach-Object {',
     '  $cmd = ([string]$_.CommandLine) -replace "`r|`n", " "',
     '  Write-Output ("{0}|{1}|{2}" -f $_.ProcessId, $_.ParentProcessId, $cmd)',
@@ -409,7 +408,7 @@ export function createAgentProcessPriorityWatcher(
   };
 }
 
-export const __testing = { makeDefaultApplyPriority };
+export const __testing = { makeDefaultApplyPriority, defaultScanAgentProcesses };
 
 /** 生产入口:默认依赖(设置 store + 平台扫描 + os.setPriority/taskpolicy)组装并启动。 */
 export function startAgentProcessPriorityWatcher(): AgentProcessPriorityWatcher {

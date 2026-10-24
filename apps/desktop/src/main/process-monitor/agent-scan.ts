@@ -2,8 +2,7 @@
  * process-monitor/agent-scan —— 「资源用量」面板的 OS 级进程枚举。
  *
  * 为什么不复用 agent-process-priority 的扫描:那边只要 pid/kind(调优先级),
- * 这边还要 CPU / 内存与全局 PPID→children 图(树聚合 + 杀树校验),且要认 pi
- * (优先级 watcher 有意不管 pi,直接改它的 classify 会顺带改变调档行为)。
+ * 这边还要 CPU / 内存与全局 PPID→children 图(树聚合 + 杀树校验)。
  * marker 策略与安全边界与 agent-process-priority / claude-orphan-reaper 完全
  * 一致:只认「ppid == 本进程 且命令行命中本产品二进制路径 marker」的进程。
  *
@@ -18,9 +17,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { allUserDataDirNames } from '@cindy/maker-shared/brand-identity';
-
-import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import { classifyAgentCommandLine } from '../agent-process-priority.js';
 import { WINDOWS_PROCESS_SCAN_SCRIPT } from './windowsProcessScanProtocol.js';
 import { runWindowsProcessScanWorker } from './windowsProcessScanWorkerClient.js';
@@ -53,61 +49,12 @@ export interface OsProcessSnapshot {
   childrenByParent: Map<number, number[]>;
 }
 
-/**
- * pi 二进制路径 marker(与 claude/codex 的 marker 同构):生产二进制安装在
- * `<userData>/pi/<version>/`,dev/sandbox 则从仓库 `apps/pi-bin/` 启动。
- */
-export function buildPiPathMarkers(dirNames: readonly string[]): string[] {
-  return [
-    'apps\\pi-bin\\',
-    'apps/pi-bin/',
-    ...dirNames.flatMap((dirName) => {
-    const dir = dirName.toLowerCase();
-    return [
-      `appdata\\roaming\\${dir}\\pi\\`,
-      `appdata/roaming/${dir}/pi/`,
-      `/library/application support/${dir}/pi/`,
-      `/.config/${dir}/pi/`,
-    ];
-    }),
-  ];
-}
-
-const PI_MARKERS = buildPiPathMarkers(allUserDataDirNames(CURRENT_CINDY_REGION));
-
-/**
- * 运行时 userData 派生的 pi marker(XDG_CONFIG_HOME / --user-data-dir 重定向
- * 场景,与 agent-process-priority.registerUserDataMarkers 同理)。claude/codex
- * 的运行时 marker 由那边的注册函数维护,这里只补 pi 自己的。
- */
-let runtimePiMarkers: string[] = [];
-
-export function registerPiUserDataMarkers(userDataPath: string): void {
-  const lower = userDataPath.trim().toLowerCase();
-  if (!lower) {
-    runtimePiMarkers = [];
-    return;
-  }
-  const variants = new Set([lower.replace(/\\/g, '/'), lower.replace(/\//g, '\\')]);
-  runtimePiMarkers = [...variants].map((v) => {
-    const sep = v.includes('\\') ? '\\' : '/';
-    return `${v}${sep}pi${sep}`;
-  });
-}
+// Keep the resource monitor's existing public marker API backed by the shared helper.
+export { buildPiPathMarkers, registerPiUserDataMarkers } from '../pi-process-markers.js';
 
 /** 命令行(已小写)→ 受监视的 agent 种类;不命中 = 不是我们的 agent 进程。 */
-export function classifyMonitoredAgentCommandLine(
-  cmdLineLower: string,
-): MonitoredAgentKind | null {
-  const base = classifyAgentCommandLine(cmdLineLower);
-  if (base) return base;
-  if (
-    PI_MARKERS.some((m) => cmdLineLower.includes(m)) ||
-    runtimePiMarkers.some((m) => cmdLineLower.includes(m))
-  ) {
-    return 'pi';
-  }
-  return null;
+export function classifyMonitoredAgentCommandLine(cmdLineLower: string): MonitoredAgentKind | null {
+  return classifyAgentCommandLine(cmdLineLower);
 }
 
 // ps 行:pid ppid stat %cpu rss lstart command(command 可含空格,贪婪吃尾)。
@@ -207,16 +154,12 @@ export function collectDescendantPids(
 async function scanPosix(): Promise<OsProcessSnapshot> {
   // -ww:macOS ps 默认按显示宽度截断 command,截掉 marker 会静默漏认
   // (与 agent-process-priority 同一个坑)。
-  const { stdout } = await execFileAsync(
-    'ps',
-    POSIX_PS_ARGS,
-    {
-      encoding: 'utf8',
-      timeout: 5_000,
-      maxBuffer: 8 * 1024 * 1024,
-      env: buildPosixProcessScanEnv(process.env),
-    },
-  );
+  const { stdout } = await execFileAsync('ps', POSIX_PS_ARGS, {
+    encoding: 'utf8',
+    timeout: 5_000,
+    maxBuffer: 8 * 1024 * 1024,
+    env: buildPosixProcessScanEnv(process.env),
+  });
   const rows = parsePosixProcessTable(stdout);
   return { rows, childrenByParent: buildChildrenByParent(rows) };
 }
