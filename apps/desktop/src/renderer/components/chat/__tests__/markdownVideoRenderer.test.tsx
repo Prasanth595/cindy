@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 
 import { act, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// 每个播放器实例一个编号：同一地址重新加载只能靠重建播放器（失败态绑在实例上）。
+const videoMounts = vi.hoisted(() => ({ count: 0 }));
 vi.mock('../ChatVideoView', () => ({
   ChatVideoView: ({
     src,
@@ -12,7 +15,10 @@ vi.mock('../ChatVideoView', () => ({
     filename: string;
     variant: string;
     sessionId?: string;
-  }) => <video data-testid="markdown-video" data-src={src} aria-label={filename} />,
+  }) => {
+    const [instance] = useState(() => ++videoMounts.count);
+    return <video data-testid="markdown-video" data-src={src} data-instance={instance} aria-label={filename} />;
+  },
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test-owner' } }) }));
@@ -38,12 +44,14 @@ vi.mock('../ChatSessionFileContext', async (importOriginal) => ({
 import { parseRemoteMediaUrl } from '../../../../shared/remoteMediaUrl';
 import { _clearSmartResolveCache, localFileUrlToAudioUrl, toLocalFileUrl } from '@/lib/localPathResolver';
 import { MarkdownRenderer } from '../MarkdownRenderer';
+import { _clearStreamingMediaKeys } from '../useWorkspaceMediaPath';
 
 afterEach(() => {
   vi.restoreAllMocks();
   sessionFile.current = null;
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
   _clearSmartResolveCache();
+  _clearStreamingMediaKeys();
 });
 
 describe('MarkdownRenderer managed video targets', () => {
@@ -239,6 +247,32 @@ describe('MarkdownRenderer workspace-relative media in local sessions', () => {
       expect(resolvePathBatch).toHaveBeenLastCalledWith({ hrefs: ['renders/out/clip.mp4'], workingDir: '/task', revalidateNegative: true });
     },
   );
+
+  // 文件恰好写到直接拼接的位置：地址不变，但播放器之前已经加载失败，必须换一个新实例重新加载。
+  it('reloads the player when a missing file appears at the joined path itself', async () => {
+    const { view, resolvePathBatch } = mount(richVideo, LOCAL, missing);
+    const player = () => view.container.querySelector('[data-testid="markdown-video"]');
+    await waitFor(() => expect(player()?.getAttribute('data-src')).toBe(toLocalFileUrl('/task/renders/out/clip.mp4')));
+    const before = player()?.getAttribute('data-instance');
+
+    later();
+    resolvePathBatch.mockResolvedValue({ 'renders/out/clip.mp4': { status: 'unique', candidates: ['/task/renders/out/clip.mp4'], kind: 'file' } });
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(player()?.getAttribute('data-instance')).not.toBe(before));
+    expect(player()?.getAttribute('data-src')).toBe(toLocalFileUrl('/task/renders/out/clip.mp4'));
+  });
+
+  // 普通 Markdown 图片在流式结束时会随渲染方式切换重新挂载；新实例要接上「流式结束」这个时机，
+  // 即使上一次没命中的结论还不到 2 秒。
+  it('re-checks a Markdown image at the end of streaming across the remount that comes with it', async () => {
+    const { view, renderWith, resolvePathBatch } = mount('![sheet](work/sheet.jpg)', LOCAL, { 'work/sheet.jpg': { status: 'none', candidates: [] } });
+    view.rerender(renderWith(undefined, true));
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/work/sheet.jpg')));
+
+    resolvePathBatch.mockResolvedValue(unique('work/sheet.jpg'));
+    view.rerender(renderWith(undefined, false));
+    await waitFor(() => expect(mediaSrc(view.container)).toBe(toLocalFileUrl('/task/film/work/sheet.jpg')));
+  });
 
   it('does not search again for a unique match', async () => {
     const { view, resolvePathBatch } = mount(richVideo, LOCAL, unique('renders/out/clip.mp4'));

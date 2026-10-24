@@ -19,14 +19,17 @@
  *   - 没有命中 / 命中多个不是最终结论：回复可能先引用产物、文件后写出。新挂载、流式结束、
  *     窗口重新聚焦时重查一次（与图片加载失败的自然重试时机一致），重查期间照常显示拼接
  *     地址；唯一命中不重查。流式结束 / 聚焦时若有更早发出的查找还在进行，它回来仍未命中
- *     就再补查一次。
+ *     就再补查一次。流式结束常伴随重挂载（流式分块换成完整 Markdown），「这个路径在流式中
+ *     出现过」记在模块级集合里，由之后第一个以非流式运行的实例当作流式结束处理。
+ *   - 从未命中变成找到时给出新的 revision，调用方据此重建媒体元素：文件可能恰好写在直接
+ *     拼接的位置，地址不变，播放器停在失败态不会自己重试。
  *
  * 范围:
  *   只用于本机会话。远程会话的路径解析不在远端搜索（见 MarkdownRenderer 的
  *   useResolvedMarkdownTarget），调用方传 enabled=false 时原样返回。
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import {
   peekResolveLocalPathSmart,
@@ -51,11 +54,23 @@ function isSamePath(a: string, b: string): boolean {
   return a.replace(/\\/g, '/') === b.replace(/\\/g, '/');
 }
 
+/** 在流式输出中出现过、还没被当作「流式结束」处理的路径（`workingDir::href`）。 */
+const streamingMediaKeys = new Set<string>();
+
+type Shown = 'pending' | 'missing' | 'found';
+
+/** Test-only: forget which paths were seen while streaming. */
+export function _clearStreamingMediaKeys(): void {
+  streamingMediaKeys.clear();
+}
+
 export interface WorkspaceMediaPath {
   /** 用于加载的路径；pending 时为 undefined。 */
   src: string | undefined;
   /** 相对路径还在任务目录里解析，调用方此时不应加载媒体。 */
   pending: boolean;
+  /** 从未命中变成找到时递增；调用方以它为 key 重建媒体元素，清掉旧地址留下的失败态。 */
+  revision: number;
 }
 
 export function useWorkspaceMediaPath(
@@ -78,11 +93,11 @@ export function useWorkspaceMediaPath(
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [href]);
-  const wasStreaming = useRef(streaming);
   useEffect(() => {
-    if (wasStreaming.current && !streaming) setBoundary({ at: Date.now() });
-    wasStreaming.current = streaming;
-  }, [streaming]);
+    if (!key) return;
+    if (streaming) streamingMediaKeys.add(key);
+    else if (streamingMediaKeys.delete(key)) setBoundary({ at: Date.now() });
+  }, [key, streaming]);
 
   useEffect(() => {
     if (!href || !key) return;
@@ -111,16 +126,35 @@ export function useWorkspaceMediaPath(
     };
   }, [href, key, workingDir, boundary]);
 
-  if (!href) return { src, pending: false };
-  const result =
-    peekResolveLocalPathSmart(href, workingDir) ??
-    (settled?.key === key ? settled.result : undefined);
-  if (!result) return { src: undefined, pending: true };
-  if (result.status !== 'unique' || result.kind === 'directory') return { src, pending: false };
+  const result = href
+    ? (peekResolveLocalPathSmart(href, workingDir) ??
+      (settled?.key === key ? settled.result : undefined))
+    : undefined;
+  const shown: Shown = !result
+    ? 'pending'
+    : result.status === 'unique' && result.kind !== 'directory'
+      ? 'found'
+      : 'missing';
+  // 渲染期间按上一次展示的结论推进 revision（React 推荐的「随 props 调整 state」写法）。
+  const [display, setDisplay] = useState<{ key: string | null; shown: Shown; revision: number }>({
+    key,
+    shown,
+    revision: 0,
+  });
+  if (display.key !== key || display.shown !== shown) {
+    const recovered = display.key === key && display.shown === 'missing' && shown === 'found';
+    setDisplay({ key, shown, revision: display.revision + (recovered ? 1 : 0) });
+  }
+  const revision = display.revision;
+
+  if (!href) return { src, pending: false, revision };
+  if (!result) return { src: undefined, pending: true, revision };
+  if (result.status !== 'unique' || result.kind === 'directory') return { src, pending: false, revision };
   // 直接拼接本来就能找到时保持原写法，避免播放器因地址写法不同而重新加载。
   return {
     src: isSamePath(result.absPath, resolveLocalPath(href, workingDir)) ? src : result.absPath,
     pending: false,
+    revision,
   };
 }
 
@@ -143,5 +177,5 @@ export function WorkspaceMediaSrc({
   children: (src: string | undefined) => ReactNode;
 }) {
   const resolved = useWorkspaceMediaPath(src, workingDir, enabled, streaming);
-  return resolved.pending ? null : <>{children(resolved.src)}</>;
+  return resolved.pending ? null : <Fragment key={resolved.revision}>{children(resolved.src)}</Fragment>;
 }
