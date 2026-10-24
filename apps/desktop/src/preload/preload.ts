@@ -8203,6 +8203,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         scheduleName?: string;
         workingDir?: string;
         providerId?: string;
+        modelAgentDeviceId?: string;
         agentKind?: 'claude-code' | 'codex';
         model?: string;
         /** 绑定会话任务:workingDir 空时 main 按会话 meta.workDir 解析落盘/自测目录。 */

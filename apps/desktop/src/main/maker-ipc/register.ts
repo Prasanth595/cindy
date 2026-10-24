@@ -6492,11 +6492,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   const projectScheduledPreferences = (sessionId: string, saved: ScheduledModelSelection) => {
     const baseline: ScheduledModelSelection = {
       agentKind: saved.agentKind, model: saved.model, providerId: saved.providerId,
+      ...(saved.agentDeviceId !== undefined ? { agentDeviceId: saved.agentDeviceId } : {}),
       effort: saved.effort, fastMode: saved.fastMode,
     };
     return {
       ...projectSessionRuntimeControl(sessionId, baseline),
       agentKind: makerToDbAgentKind(baseline.agentKind),
+      ...(baseline.agentDeviceId !== undefined ? { agentDeviceId: baseline.agentDeviceId } : {}),
       model: baseline.model,
       providerId: baseline.providerId,
       effort: baseline.effort ?? '',
@@ -7012,6 +7014,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       supportsSchedulePreRunHook: true,
       // Full scheduled model selection, including bound Harness changes and template overrides.
       supportsScheduleModelSelection: true,
+      supportsScheduleAgentDeviceSelection: true,
     };
   });
 
@@ -11102,6 +11105,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ...agentSwitchDeps, pendingSwitches: undefined, onPendingSwitchChanged: undefined,
       }, {
         sessionId, targetAgentKind: route.agentKind, model: route.model,
+        agentDeviceId: route.agentDeviceId,
         providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
         applyNow: true, configStaged: true, signal,
       });
@@ -11141,6 +11145,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient().drizzle.select({
         agentKind: sessions.agentKind, model: sessions.model, providerId: sessions.providerId,
         effort: sessions.effort, fastMode: sessions.fastMode, baseline: sessions.scheduledModelBaseline,
+        agentDeviceId: sessions.agentDeviceId,
         status: sessions.status, botId: botProfiles.id, profileVersion: botProfiles.currentVersion,
       }).from(sessions)
         .leftJoin(botSessionLinks, and(eq(botSessionLinks.sessionId, sessions.id),
@@ -11150,6 +11155,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return row?.status === 'active' ? { baseline: row.baseline,
         profileRevision: row.botId ? JSON.stringify([row.botId, row.profileVersion]) : null, profile: {
         agentKind: dbToMakerAgentKind(row.agentKind), model: row.model, providerId: row.providerId,
+        agentDeviceId: row.agentDeviceId,
         effort: row.effort, fastMode: row.fastMode,
       } } : null;
     },
@@ -11213,9 +11219,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
     const baseline = parseScheduledModelBaseline(row?.baseline);
     if (!baseline) return false;
-    const providers = await getDesktopProviderService().listProviders({
-      allowSideEffects: false, catalog: getActiveCatalog(),
-    });
+    const providers = baseline.agentDeviceId
+      ? await readUsableAgentDeviceProviders(baseline.agentDeviceId, baseline.agentKind, baseline.model, baseline.providerId)
+      : await getDesktopProviderService().listProviders({
+        allowSideEffects: false, catalog: getActiveCatalog(),
+      });
     const providerId = baseline.providerId ??
       effectiveSourceIdForModel(providers, null, baseline.model, baseline.agentKind);
     const model = findCatalogModel(providers.find(p => p.id === providerId),

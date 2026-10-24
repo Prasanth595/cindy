@@ -647,9 +647,9 @@ SSH 主机不自动成为设备目录成员。实现与回归见 `mcp-integratio
 `maker:schedule:*` channel，参数形状不变，被控端仍由原 IPC 入口校验并执行。`schedule_list` 的
 `query` 文本筛选在发起端对返回结果做，不改请求。`device` 缺省时返回形状与原来一致，三个读取工具
 都只多出 `scope: "local"`。跨电脑读取按电脑分组，离线、未开启远程控制、撤权、超时、不支持的电脑逐台
-列出，`partial` 表示覆盖不全。`schedule_update` 跨电脑时拒绝 `bindToCurrentSession` 和
-`intervalMs` 以外的 `null` 清空（JSON 边界表达不了「带 key 的 undefined」），明确报
-`INVALID_PARAMS`，不写出与意图不符的任务。其它电脑返回的定时任务与运行记录里，`targetSessionId` / `sessionId` 加上 `deviceId::` 前缀（与历史
+列出，`partial` 表示覆盖不全。`schedule_update` 跨电脑时拒绝 `bindToCurrentSession`；除
+`intervalMs` 与下文模型选择字段外，其它字段的 `null` 清空仍明确报 `INVALID_PARAMS`，
+不写出与意图不符的任务。其它电脑返回的定时任务与运行记录里，`targetSessionId` / `sessionId` 加上 `deviceId::` 前缀（与历史
 查询同一约定），跨电脑 `schedule_update` 收到同一台电脑前缀的 `targetSessionId` 先去掉再发送，指向
 别的电脑的拒绝。被控端对 `preRunHook` 是整对象替换：跨电脑改它必须
 显式带 `timeoutMs`（数值，或 `null` 表示不限时，后者发送为不带 `timeoutMs` 的整对象），否则报 `INVALID_PARAMS`（省略会清成不限时，发起端先读后写又会覆盖并发修改）。被控端不认识这些 channel（早于完整控制面的旧版本）时
@@ -3321,6 +3321,24 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 不改变已装批准、凭证、KV、版本或原生指纹。实现与时序验证见
 [原配置页协议](../remote-plugin-oauth.md#手机原配置页授权的增量能力)。
 
+## 自动化的远程模型选择
+
+`Schedule` / 创建与更新输入增量增加可选 `modelAgentDeviceId`：缺省保持旧版绑定任务的位置继承，
+空字符串表示自动化所在电脑，非空使用既有远程／分享 Agent 标识。SQLite 新增可空文本列，
+SQL NULL 对应缺省；项目 `version: 1` 配置同样允许该字段，旧文件无需改写。
+既有 `agentDeviceId` 仍只提供新建／重建任务的默认位置；绑定任务存在时继续跟随它的当前位置。
+显式 `modelAgentDeviceId` 优先于该默认值（包括空字符串本机），仅查看或修改旧记录的非模型字段
+不会将默认位置转换为显式覆盖。MCP 的旧 `agentDeviceId: "local"` 仍沿用原协议；从
+`schedule_list_models` 选择本机并填写 `modelAgentDeviceId` 时使用空字符串，不使用 `"local"`。
+绑定任务或持续模式的 Agent 自动化显式选本机时也须有 `modelAgentKind` 与 `model`；不完整选择在保存前拒绝，
+不把“选本机”误作继承绑定任务的位置。更新可沿用已存的完整选择，恢复跟随时清除显式选择。
+`maker:get-capabilities` 返回 `supportsScheduleAgentDeviceSelection: true`。
+新调用方只有明确看到此能力才向其它电脑提交位置选择；旧端未知字段会被忽略，禁止静默降级。
+跨电脑 `schedule_update` 清空 `modelAgentDeviceId` / `modelAgentKind` / `model` / `providerId` /
+`effort` 时，同样先核验此能力，再保留可序列化的 `null` 发送；接收端 IPC 转成带 key 的
+`undefined` 后交给 Scheduler 与存储。省略字段仍是不修改，不在发送前丢掉清空意图。
+旧调用方修改新自动化的非模型字段仍保留位置；修改模型路线却未携带已固定的位置时拒绝保存，
+避免意外把另一台电脑的供应商当作本机来源。执行与恢复仍使用既有远程授权、目录与切换协议。
 
 ## 伙伴关联项目
 

@@ -332,6 +332,28 @@ describe('MakerScheduleRunner model selection', () => {
     mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active' });
   });
 
+  // Integration: a new automation must pass the remote route to createSession,
+  // retain its workspace and avoid consulting a conflicting local provider copy.
+  it.each(['claude-code', 'codex', 'pi'] as const)('creates a remote %s automation on the chosen source', async (agentKind) => {
+    const h = createSessionHarness();
+    Object.assign(h.session, { agentKind, model: 'remote-model', setFastMode: vi.fn() });
+    const checkModelRoute = vi.fn(async () => ({ kind: 'reject' as const, reason: 'explicit-source-disabled' as const }));
+    const resolveModelSelection = vi.fn(async (choice: Parameters<typeof resolveScheduledModelSelection>[0]) => ({ ...choice, effort: 'high' as const }));
+    const harness = createRunnerHarness(h, null, { resolveModelSelection, checkModelRoute });
+    const schedule = baseSchedule({ agentKind, modelAgentKind: agentKind, modelAgentDeviceId: 'shared:owner',
+      model: 'remote-model', providerId: 'remote-source', effort: 'high' });
+    const saved = structuredClone(schedule);
+    const opts = await fireToCompletion(harness, h, schedule);
+    expect(opts).toMatchObject({ agentDeviceId: 'shared:owner', agentKind, model: 'remote-model',
+      providerId: 'remote-source', workingDir: '/work', effort: 'high' });
+    expect(resolveModelSelection).toHaveBeenCalledWith(expect.objectContaining({ agentDeviceId: 'shared:owner' }),
+      { agentDeviceId: 'shared:owner' });
+    expect(checkModelRoute).not.toHaveBeenCalled();
+    expect(schedule).toEqual(saved);
+  });
+
+  // Integration: follow the production runner from model override through completion/failure.
+  // The previous route tests asserted the automation model only, never the next user's choice.
   // 2026-10-23 regression: completion restored the runtime and rebuilt a finished
   // task's context. Unit tier: real runner success/failure must leave the native
   // model untouched; the persisted owner preference is applied by the next send.
@@ -401,6 +423,27 @@ describe('MakerScheduleRunner model selection', () => {
   });
 
   describe('resolved automation selection survives the full fire', () => {
+    // Merge regression, unit: a legacy remote default must not mask an explicit
+    // local override. Cover fresh creation and persistent replacement via fire.
+    it.each([false, true])('honors local selection over a saved remote default (replacement=%s)', async (replacement) => {
+      const h = createSessionHarness();
+      Object.assign(h.session, { agentKind: 'codex', model: 'gpt-5.5' });
+      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'deleted', agentDeviceId: 'relocated' });
+      const resolveModelSelection = vi.fn(async (choice) => choice);
+      const harness = createRunnerHarness(h, null, { resolveModelSelection,
+        acquirePendingAgentSwitch: async (_id, _signal, selection) => ({ release: vi.fn(), selection: selection! }),
+      });
+      harness.runner.attachScheduler({ update: vi.fn(), isRunSilenced: () => false } as unknown as Scheduler);
+      await fireToCompletion(harness, h, baseSchedule({ agentKind: 'codex', modelAgentKind: 'codex',
+        agentDeviceId: 'studio', modelAgentDeviceId: '', model: 'gpt-5.5', providerId: 'local-provider',
+        ...(replacement ? { targetSessionId: h.session.id, persistentSession: true } : {}),
+      }));
+      expect(harness.createSession.mock.calls[0][0].agentDeviceId).toBeUndefined();
+      expect(resolveModelSelection).toHaveBeenCalledWith(expect.objectContaining({
+        agentDeviceId: null, providerId: 'local-provider',
+      }));
+    });
+
     // PR #6832: fire must resolve a replacement at the saved location from the saved
     // preferences, not the relocated target's clamped copy. Existing replacement cases
     // used identical catalogs. Minimal input: deleted persistent target on another
