@@ -1222,3 +1222,90 @@ describe('isBoundsCacheEntryStale（重开菜单刷新判定的纯函数）', ()
     expect(isBoundsCacheEntryStale(entry, 10_000 + 61_000)).toBe(true);
   });
 });
+
+
+describe('ContextWindowBudgetChip — Greptile 2026-10-24 三条 P2', () => {
+  afterEach(() => {
+    cleanup();
+    __clearAllBoundsCachesForTest();
+  });
+
+  it('re-checks the authoritative budget before skipping a no-op commit (stale cache from another window)', async () => {
+    // P2「其他窗口仍显示旧预算」：跨窗口缓存不会互相失效。窗口 A 保存了 500K 后，
+    // 窗口 B 的缓存仍是 null —— 点「模型默认」按缓存判 no-op 就会把清除请求整个吞掉。
+    // 提交前必须直查复核：发现实际 500K ≠ null，照常提交 null（清除）。
+    installElectronApi(vi.fn()
+      .mockResolvedValueOnce(boundsView({ budget: null, defaultEffectiveWindow: 1_000_000 })) // 挂载查询
+      .mockResolvedValue(boundsView({ budget: 500_000, budgetCustomized: true, defaultEffectiveWindow: 1_000_000 }))); // 提交复核直查
+    renderChip({ providers: null });
+    const options = await openTierCard();
+    // 选中态 = 缓存里的 null → 默认档；用户点「模型默认」（= 清除预算，上报 null）。
+    const defaultRow = options.find((el) => el.getAttribute('data-token') === '1000000')!;
+    fireEvent.click(defaultRow);
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledWith(SESSION_ID, { contextWindowBudget: null });
+    });
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it('re-queries the authoritative bounds when the provider catalog changes', async () => {
+    // P2「菜单仍使用旧上限」：用户改了模型级上限后，缓存的 authoritativeBounds 还是
+    // 旧值 —— 档位表必须随 providers 变化事件失效重查，否则保存后 main 按新上限收敛、
+    // 菜单却还在卖旧档位。
+    let answer: ReturnType<typeof boundsView> = boundsView({ defaultEffectiveWindow: 1_000_000, maxEffectiveWindow: 1_000_000 });
+    let fireProvidersChanged: (() => void) | null = null;
+    const getBounds = vi.fn(async () => answer);
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      deviceLink: { invoke: vi.fn().mockResolvedValue(null) },
+      maker: {
+        getSessionContextWindowBounds: getBounds,
+        onProvidersChanged: (cb: () => void) => {
+          fireProvidersChanged = cb;
+          return () => { fireProvidersChanged = null; };
+        },
+      },
+    };
+    renderChip({ providers: null });
+    const trigger = document.querySelector('[data-context-window-budget-chip]')!;
+    fireEvent.pointerEnter(trigger);
+    await waitFor(() => {
+      expect(tierTokens()).toEqual(['250000', '500000', '1000000']);
+    });
+    // 上限 1M → 200K：事件触发后档位表必须跟着收敛（200K 下只剩默认档）。
+    answer = boundsView({ defaultEffectiveWindow: 200_000, maxEffectiveWindow: 200_000 });
+    act(() => { fireProvidersChanged?.(); });
+    await waitFor(() => {
+      expect(tierTokens()).toEqual(['200000']);
+    });
+    expect(getBounds.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('locks the card read-only after the device rejects the budget channel', async () => {
+    // P2「不支持的设备仍可编辑」：CHANNEL_NOT_ALLOWED 之后只弹 toast 会让用户反复提交
+    // 必然失败的修改。第二次失败前就必须整卡只读 + 卡内说明原因。
+    const invoke = vi.fn((deviceId: string, channel: string) =>
+      channel === 'maker:get-context-window-bounds'
+        ? Promise.resolve(boundsView({
+          budget: 150_000, budgetCustomized: true,
+          defaultEffectiveWindow: 200_000, maxEffectiveWindow: 200_000,
+        }))
+        : Promise.reject(Object.assign(new Error('channel not allowed'), {
+          code: 'DEVICE_LINK_CHANNEL_NOT_ALLOWED',
+        })));
+    (window as unknown as { electronAPI: { deviceLink: { invoke: typeof invoke } } }).electronAPI = {
+      deviceLink: { invoke },
+    };
+    renderChip({ deviceId: 'device-a', providers: null });
+    const options = await openTierCard();
+    expect(options.length).toBeGreaterThan(0);
+    // 点「模型默认」档（≠ 已存 150K）：真变更路径直达提交通道，必然被拒。
+    fireEvent.click(options.find((el) => el.getAttribute('data-token') === '200000')!);
+    await waitFor(() => {
+      expect(screen.getByText('ccAgent.contextWindowBudget.remoteUnsupported')).toBeTruthy();
+    });
+    // 整卡转只读：所有档位行 disabled，不再可反复提交。
+    await waitFor(() => {
+      expect(screen.queryAllByRole('radio').every((row) => (row as HTMLButtonElement).disabled)).toBe(true);
+    });
+  });
+});

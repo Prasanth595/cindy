@@ -110,6 +110,13 @@ export function ContextWindowBudgetChip({
 }: ContextWindowBudgetChipProps) {
   const { t } = useTranslation();
   const [committing, setCommitting] = useState(false);
+  // 被控端不支持预算通道（老版本）：卡转只读直到会话换设备。
+  const [remoteUnsupported, setRemoteUnsupported] = useState(false);
+  useEffect(() => {
+    // 换设备（远程→本地 / 换被控端）后重新探测支持状态。
+    // 必须挂在组件的提前 return（约 :395）之前，否则 hooks 顺序随渲染路径漂移。
+    setRemoteUnsupported(false);
+  }, [deviceId]);
   // 卡片开合：**指针悬浮**展开（与货币 chip 的「用量明细」卡同一节奏：延迟 300ms 开、离开宽限
   // 200ms 关），键盘仍走 Radix 自己的 Enter/Space 开、Esc 关。
   const [cardOpen, setCardOpen] = useState(false);
@@ -365,9 +372,10 @@ export function ContextWindowBudgetChip({
     if (base.some((option) => option.tokens === current)) return base;
     // 已存值可能不在比例档里（旧固定档、或目录上限变过）：只按绝对值补一项，
     // **不套百分比标签**（避免「显示 50%、实际 48.8%」的误导）。
-    return [...base, { tokens: current, kind: 'current' as const }].sort(
+    const result = [...base, { tokens: current, kind: 'current' as const }].sort(
       (a, b) => a.tokens - b.tokens,
     );
+    return result;
   }, [storedBudget, effectiveDefaultWindow, effectiveMaxWindow, effectiveWindowsReported, reportedMaxWindow, modelLimit, ceiling]);
 
   useEffect(() => {
@@ -426,10 +434,27 @@ export function ContextWindowBudgetChip({
   const commit = async (tokens: number): Promise<void> => {
     // 选中「有效默认档」上报 null（跟随默认，不快照当前值）。
     const next = tokens === effectiveDefaultWindow ? null : tokens;
-    if (next === storedBudget) return;
     if (committing) return;
     setCommitting(true);
     try {
+      // 按缓存判「等于已存值」时先直查复核：跨窗口缓存不会互相失效，另一窗口
+      // 刚保存/清除过时，本地新鲜缓存仍是旧值，会被 no-op 跳过（Greptile P2，
+      // 2026-10-24 —— 点「模型默认」清不掉另一窗口保存的预算）。真变更不走这次
+      // 直查：提交后的 refresh 本来就会重拉，多查只会打乱时序。直查失败（老被控端）
+      // 退回缓存值判定，保持旧行为。
+      let current = storedBudget;
+      if (next === storedBudget) {
+        try {
+          const fresh = await queryAuthoritativeBounds(deviceId, sessionId, {
+            agent: makerAgent, providerId: providerId ?? null, model,
+          });
+          if (fresh) current = typeof fresh.budget === 'number' ? fresh.budget : null;
+        } catch {
+          // 老被控端不认识查询通道：用缓存值判等（与提交通道能力一致，见下）。
+        }
+      }
+      if (next === current) return;
+
       if (deviceId) {
         // device-link 远程任务：会话的库与运行实例都在被控端，必须走隧道命令；
         // 写本机的镜像库不会生效，还会被下一次镜像覆盖。
@@ -447,6 +472,9 @@ export function ContextWindowBudgetChip({
       refreshBounds();
     } catch (error) {
       const unsupported = extractIpcError(error)?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED';
+      // 被控端不支持该通道时记住状态：整卡转只读并说明原因，档位不再可点 ——
+      // 反复提交必然失败的修改只会制造更多错误 toast（Greptile P2，2026-10-24）。
+      if (unsupported) setRemoteUnsupported(true);
       toast.error(
         unsupported
           ? t('ccAgent.contextWindowBudget.remoteUnsupported')
@@ -462,7 +490,7 @@ export function ContextWindowBudgetChip({
     }
   };
 
-  const isDisabled = disabled || committing;
+  const isDisabled = disabled || committing || remoteUnsupported;
 
 
 
@@ -605,6 +633,12 @@ export function ContextWindowBudgetChip({
             // 而不是把所有行默默变灰。
             <p className="mt-0.5 text-12 font-normal leading-[1.5] text-[var(--text-secondary)]">
               {t('ccAgent.contextWindowBudget.readOnlyHint')}
+            </p>
+          )}
+          {remoteUnsupported && (
+            // 被控端不支持预算通道：整卡只读并说明原因，避免反复提交必然失败的修改。
+            <p className="mt-0.5 text-12 font-normal leading-[1.5] text-[var(--text-secondary)]">
+              {t('ccAgent.contextWindowBudget.remoteUnsupported')}
             </p>
           )}
         </div>
@@ -824,6 +858,25 @@ function notifyBoundsReload(exceptId: number, key: string): void {
   }
 }
 
+/**
+ * 绕过缓存的权威值直查（提交路径专用）：boundsReloadListeners 只在当前渲染进程内
+ * 生效，另一个窗口刚保存/清除预算时，本窗口 TTL 内的「新鲜」缓存仍是旧值 ——
+ * 点「模型默认」会被 no-op 判定跳过，预算永远清不掉（Greptile P2，2026-10-24）。
+ * 提交是罕见操作，直查一次即可；菜单展示仍走 TTL 缓存。
+ */
+async function queryAuthoritativeBounds(
+  deviceId: string | undefined,
+  sessionId: string,
+  route: { agent: MakerAgentKindWire; providerId: string | null; model: string },
+): Promise<SessionContextWindowBounds | null> {
+  const raw = deviceId
+    ? await window.electronAPI.deviceLink.invoke(
+        deviceId, 'maker:get-context-window-bounds', [sessionId, route],
+      )
+    : await window.electronAPI.maker.getSessionContextWindowBounds(sessionId, route);
+  return normalizeSessionContextWindowBounds(raw);
+}
+
 export function useSessionContextWindowBounds(
   deviceId: string | undefined,
   sessionId: string,
@@ -872,6 +925,19 @@ export function useSessionContextWindowBounds(
     };
   }, [key]);
 
+  // 目录/模型级上限变化（用户改了「上下文上限」）→ 权威边界必须重查：缓存的
+  // authoritativeBounds 会继续给出旧上限与旧档位表，保存后 main 却按新上限收敛，
+  // 菜单与实际生效不一致（Greptile P2，2026-10-24）。远程边界来自被控端，本机
+  // 目录变化与它无关，不订阅。
+  useEffect(() => {
+    if (deviceId || !key) return;
+    const unsubscribe = window.electronAPI?.maker?.onProvidersChanged?.(() => {
+      boundsCache.delete(key);
+      setReloadToken((token) => token + 1);
+    });
+    return () => unsubscribe?.();
+  }, [deviceId, key]);
+
   useEffect(() => {
     // eslint-disable-next-line no-console
     activeKeyRef.current = key;
@@ -889,18 +955,15 @@ export function useSessionContextWindowBounds(
       // 路由随查询一起上报：被控端/主进程按**显示路由**解析边界，而不是按会话行。
       const route = { agent: agentKind, providerId: providerId ?? null, model };
       try {
-        const view = deviceId
-          ? await window.electronAPI.deviceLink.invoke(
-              deviceId, 'maker:get-context-window-bounds', [sessionId, route],
-            )
-          : await window.electronAPI.maker.getSessionContextWindowBounds(sessionId, route);
+        const view = await queryAuthoritativeBounds(deviceId, sessionId, route);
         // 已取消的请求不得写共享缓存：否则保存预算触发的**新**查询之后，迟到的旧响应
         // 会把旧预算写回缓存并盖上新 fetchedAt，后挂载的卡片把旧数据当新数据用
         // （Greptile P2，2026-10-17）。取消的响应什么都不写。
-        // 已取消的请求不得写共享缓存（Greptile P2）：否则保存预算后的新查询之后，
-        // 迟到的旧响应会把旧预算写回缓存并盖上新 fetchedAt。
         if (cancelled) return;
-        const resolved = normalizeSessionContextWindowBounds(view);
+        // helper 已归一化；这里**不得**再 normalize 一遍：normalize 非幂等
+        // （effectiveWindowsReported 靠「键是否存在」判定，首遍会把缺省键补成
+        // 存在键，第二遍就把老被控端翻成「已申报」，档位表随之放开到 modelLimit）。
+        const resolved = view;
         const fetchedAt = Date.now();
         boundsCache.set(key, { value: resolved, fetchedAt });
         if (!cancelled && activeKeyRef.current === key) setBoundsState({ key, value: resolved, fetchedAt });
