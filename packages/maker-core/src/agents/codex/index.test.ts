@@ -5668,12 +5668,15 @@ describe('CodexAgent.refreshLocalModels', () => {
     vi.useFakeTimers();
     try {
       MockCodexTransport.dropModelList = true;
+      const transportCreated = new Promise<void>((resolve) => {
+        MockCodexTransport.onCreate = () => resolve();
+      });
       const agent = new CodexAgent(createDeps());
       const refresh = agent.refreshLocalModels({ credentialMode: 'oauth-bearer' });
       const refreshExpectation = expect(refresh).rejects.toThrow(
         'codex app-server model refresh timed out after 20000ms',
       );
-      await vi.advanceTimersByTimeAsync(0);
+      await transportCreated;
       await vi.advanceTimersByTimeAsync(20_000);
 
       await refreshExpectation;
@@ -5692,6 +5695,9 @@ describe('CodexAgent.refreshLocalModels', () => {
     vi.useFakeTimers();
     try {
       MockCodexTransport.dropInitialize = true;
+      const transportCreated = new Promise<void>((resolve) => {
+        MockCodexTransport.onCreate = () => resolve();
+      });
       const agent = new CodexAgent(createDeps({}, {
         onCodexLocalModelsListed: vi.fn().mockResolvedValue(undefined),
       }));
@@ -5699,7 +5705,7 @@ describe('CodexAgent.refreshLocalModels', () => {
       const refreshExpectation = expect(refresh).rejects.toThrow(
         'codex app-server model refresh timed out after 20000ms',
       );
-      await vi.advanceTimersByTimeAsync(0);
+      await transportCreated;
       await vi.advanceTimersByTimeAsync(20_000);
 
       await refreshExpectation;
