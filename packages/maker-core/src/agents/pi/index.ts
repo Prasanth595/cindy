@@ -7910,7 +7910,12 @@ export class PiAgent extends BaseAgent {
         }
         if (level) {
           if (restoredConfirmed && appliedEffort === restoredConfirmed) {
-            // 恢复门刚按落定快照确认过同档，不再重发同值（归一化只兜底未恢复的场景）。
+            // 恢复门刚按落定快照确认过同档：只省重复 RPC，确认成功后的状态更新仍要做——
+            // 显式 thinkingEnabled 载体必须清掉 thinkingExplicitlyOff，否则随后的无载体
+            // 切模仍按「用户明确关过思考」跳过恢复，刚重新开启的档位被误判回关闭。
+            if (appliedEffort) mutableEffort = appliedEffort;
+            if (explicitThinking === true) thinkingExplicitlyOff = false;
+            else if (explicitThinking === false) thinkingExplicitlyOff = true;
           } else {
             // 拒绝可能是瞬时（例如 Pi 正在处理前一条档位请求）：重试一次再放弃。
             // 仍失败只告警：模型路由已经确认，抛出会让上层回滚它。

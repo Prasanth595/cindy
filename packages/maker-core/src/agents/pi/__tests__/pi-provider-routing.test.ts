@@ -7022,6 +7022,76 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("clears the explicitly-off marker when a thinkingEnabled carrier re-opens thinking", async () => {
+    // 用户先关思考，再带 thinkingEnabled:true + 原档位切到另一个推理模型：恢复门与
+    // 归一化算出同一档，去重分支只省重复 RPC，仍必须清掉 thinkingExplicitlyOff——
+    // 否则紧随的无载体切模仍按「用户明确关过」跳过恢复，刚重新开启的思考被误判回关闭。
+    const denseMap = {
+      minimal: "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    } as const;
+    const agent = new PiAgent(
+      byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-a",
+              name: "Native A",
+              baseUrl: "http://a.test",
+              api: "openai-responses",
+              models: [
+                { id: "model-a", reasoning: true, thinkingLevelMap: { ...denseMap } },
+                { id: "model-b", reasoning: true, thinkingLevelMap: { ...denseMap } },
+                { id: "model-c", reasoning: true, thinkingLevelMap: { ...denseMap } },
+              ],
+            },
+          ],
+          env: {},
+        }),
+        [
+          { id: "model-a", displayName: "A", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+          { id: "model-b", displayName: "B", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+          { id: "model-c", displayName: "C", contextWindow: 200_000, efforts: ["low", "high"], defaultEffort: "low" },
+        ],
+      ),
+    );
+    const handle = await agent.startSession({
+      sessionId: "thinking-reopen-clears-off-marker",
+      workingDir: cwd,
+      model: "model-a",
+      providerId: "native-a",
+      effort: "high",
+    });
+
+    await handle.setThinkingEnabled!(false);
+    const beforeReopen = captured.requests.length;
+    await handle.setModel!("model-b", {
+      providerId: "native-a",
+      effort: "high",
+      thinkingEnabled: true,
+    });
+    // 载体切模本身必须应用 high（恢复门）。
+    expect(
+      captured.requests.slice(beforeReopen).filter(
+        (request) => request.type === "set_thinking_level",
+      ),
+    ).toEqual([{ type: "set_thinking_level", level: "high" }]);
+
+    // 紧随的无载体切模：关闭标记已被清除，档位恢复必须继续生效。
+    const beforeCarrierless = captured.requests.length;
+    await handle.setModel!("model-c", { providerId: "native-a" });
+    expect(
+      captured.requests.slice(beforeCarrierless).filter(
+        (request) => request.type === "set_thinking_level",
+      ),
+    ).toEqual([{ type: "set_thinking_level", level: "high" }]);
+    await handle.close();
+  });
+
   it("does not realign the thinking tier snapshot when the model switch fails", async () => {
     // 对账发生在切模的最早入口（成员校验 / effort 校验 / set_model RPC 之前）。若在那里
     // 就改写 activeEffortSnapshot，set_model 被拒后子进程仍停在旧模型，快照却已是失败
