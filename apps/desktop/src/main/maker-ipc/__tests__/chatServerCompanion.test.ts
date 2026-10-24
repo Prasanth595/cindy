@@ -150,6 +150,32 @@ describe('Chat Server cloud companions', () => {
     expect(calls('/executions/claim')).toHaveLength(0);
   });
 
+  it('publishes a renamed companion without replacing the cloud avatar with the local stand-in', async () => {
+    service.dispose();
+    const files = new Map<string, string>();
+    host = {
+      ...host,
+      openState: (_endpoint, _human, current) => {
+        const state = createCompanionCloudState({ filePath: 'state.json', current,
+          io: { read: path => files.get(path) ?? null, write: (path, contents) => { files.set(path, contents); } } });
+        state.update('local-bot', botActor, entry => { entry.avatarKept = true; });
+        return state;
+      },
+    } as typeof host;
+    deps = { ...deps, companionCloud: host } as BotGroupChatServiceDeps;
+    service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+    fixture.profiles = [{ id: 'local-bot', displayName: 'Mia (renamed)', avatar: '🤖', status: 'active' }];
+    home = 'desk-1';
+    claimed = true;
+    fixture.handle.mockImplementation((route, method, body) => route === '/actors' && method === 'GET'
+      ? { body: [{ id: botActor, kind: 'bot', externalId: 'local-bot', name: 'Mia', avatar: 'https://cdn.example/old.png', avatarSource: 'cloud', homeDeviceId: 'desk-1' }] }
+      : respond(route, method, body));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(calls(`/actors/${botActor}/profile`, 'POST').map(call => call[2])).toEqual([
+      { name: 'Mia (renamed)', avatar: 'https://cdn.example/old.png', avatarSource: 'cloud' },
+    ]);
+  });
+
   it('publishes each companion\'s name on its own, so one broken avatar never blocks the others', async () => {
     const broken = '60000000-0000-4000-8000-0000000000b2';
     fixture.profiles = [{ id: 'broken-bot', displayName: 'Bad', avatar: 'cindy-media://missing', status: 'active' },

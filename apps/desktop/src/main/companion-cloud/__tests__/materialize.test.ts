@@ -227,6 +227,16 @@ describe('materializeCompanion', () => {
     expect(backupHome).toHaveBeenCalledTimes(1);
   });
 
+  it('finishes take-over with the default avatar without letting that default replace the cloud image', async () => {
+    const { api } = cloud([profilePref]);
+    const local = fakeLocal({ updateProfile: vi.fn(async () => ({ avatarFallback: true })) });
+    local.setProfile({ status: 'active', displayName: 'Old', description: '' });
+    const { state } = memoryState();
+    await materializeCompanion({ api, state, host: local.host, actor: { ...actor, avatar: 'https://cdn/a.png' }, roomId: async () => ROOM });
+    expect(state.bot('bot_mia')?.demoted).toBeUndefined();
+    expect(state.bot('bot_mia')?.avatarKept).toBe(true);
+  });
+
   it('stays demoted when the cloud avatar cannot be restored, and backs the copy up only once', async () => {
     const { api } = cloud([profilePref]);
     const backupHome = vi.fn(async () => '/backup');

@@ -28,17 +28,21 @@ export interface CompanionWriteFence {
 /** Local profile, Bot Home and Session operations, all through the existing services. */
 export interface CompanionMaterializeHost {
   readProfile: (botId: string) => Promise<CompanionLocalProfile | null>;
-  /** The cloud avatar must be restored (an image that cannot be downloaded fails the call). */
+  /**
+   * The cloud avatar is restored when its bytes are still available. A temporary download failure
+   * rejects; a permanent one stores the default avatar and returns `avatarFallback`, which must
+   * not be published back over the cloud address.
+   */
   createProfile: (input: {
     id: string; name: string; description: string; identitySource: string; userContextSource: string; avatar: string | null;
-  }, fence: CompanionWriteFence) => Promise<void>;
+  }, fence: CompanionWriteFence) => Promise<{ avatarFallback?: boolean } | void>;
   /**
-   * Also makes the profile active again. Undefined fields stay unchanged; a cloud avatar replaces
-   * the local one (failing like createProfile), since the home publishes its avatar back.
+   * Also makes the profile active again. Undefined fields stay unchanged; a restored cloud avatar
+   * replaces the local one. A permanent download failure uses the default and returns `avatarFallback`.
    */
   updateProfile: (input: {
     id: string; name: string; description?: string; identitySource?: string; userContextSource?: string; avatar: string | null;
-  }, fence: CompanionWriteFence) => Promise<void>;
+  }, fence: CompanionWriteFence) => Promise<{ avatarFallback?: boolean } | void>;
   writeSystemPrompt: (botId: string, text: string, fence: CompanionWriteFence) => Promise<void>;
   /** Copy the companion's Home (identity, prompt, user file, memories, skills) aside; returns where. */
   backupHome?: (botId: string, fence: CompanionWriteFence) => Promise<string | null>;
@@ -145,13 +149,11 @@ export async function materializeCompanion(input: {
     state.update(botId, actor.id, entry => { entry.backedUp = true; });
   }
   const name = text(profile?.name)?.trim() || actor.name || local?.displayName || '伙伴';
-  if (!local) {
-    await step(() => host.createProfile({ id: botId, name, description: text(profile?.description) ?? '',
-      identitySource: text(profile?.soul) ?? '', userContextSource: text(profile?.user) ?? '', avatar: actor.avatar }, fence));
-  } else {
-    await step(() => host.updateProfile({ id: botId, name, description: text(profile?.description),
-      identitySource: text(profile?.soul), userContextSource: text(profile?.user), avatar: actor.avatar }, fence));
-  }
+  const profileInput = { id: botId, name, description: text(profile?.description), identitySource: text(profile?.soul), userContextSource: text(profile?.user), avatar: actor.avatar };
+  const restored = !local
+    ? await step(() => host.createProfile({ ...profileInput, description: profileInput.description ?? '', identitySource: profileInput.identitySource ?? '', userContextSource: profileInput.userContextSource ?? '' }, fence))
+    : await step(() => host.updateProfile(profileInput, fence));
+  const avatarFallback = restored?.avatarFallback === true;
   const systemPrompt = text(profile?.systemPrompt);
   if (systemPrompt !== undefined) await step(() => host.writeSystemPrompt(botId, systemPrompt, fence));
 
@@ -267,6 +269,9 @@ export async function materializeCompanion(input: {
     delete entry.demoted;
     // The next take-over (after this copy hands the companion away again) backs it up anew.
     delete entry.backedUp;
+    // A stand-in avatar stays local. Publishing it would replace the cloud image that could not be read.
+    if (avatarFallback) entry.avatarKept = true;
+    else delete entry.avatarKept;
   });
   return { created: !local, inserted, rebuild, ...(backup !== undefined ? { backup } : {}) };
 }

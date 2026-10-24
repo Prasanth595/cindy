@@ -107,6 +107,10 @@ export interface CompanionCloudRuntime {
   retire: (botId: string) => Promise<void>;
   /** Demoted here, or homed on this device but owned by another Cindy installation. */
   isShadowed: (botId: string) => boolean;
+  /** The local avatar is only a stand-in; do not publish it over the cloud image. */
+  avatarKeptOnCloud: (botId: string) => boolean;
+  /** The companion now has a real local image, so the cloud address may be replaced. */
+  releaseKeptAvatar: (botId: string) => void;
   /** This installation is confirmed to run the companion (always true without an install guard). */
   installConfirmed: (botId: string) => boolean;
   /** Every shadowed local companion id (persisted by the caller). */
@@ -816,6 +820,15 @@ export function startCompanionCloud(input: {
     },
 
     isShadowed: botId => state.isDemoted(botId) || installOwner(botId) === 'other',
+    avatarKeptOnCloud: botId => {
+      const actor = actorOf(botId);
+      return !!actor && state.bot(botId)?.actorId === actor.id && state.bot(botId)?.avatarKept === true;
+    },
+    releaseKeptAvatar: botId => {
+      const actor = actorOf(botId);
+      if (!actor || state.bot(botId)?.actorId !== actor.id || !state.bot(botId)?.avatarKept) return;
+      state.update(botId, actor.id, entry => { delete entry.avatarKept; });
+    },
     installConfirmed: botId => installOwner(botId) === 'mine',
     shadowIds: () => [...new Set([...state.demotedBotIds(),
       ...[...installs].flatMap(([botId, value]) => value.owner === 'other' ? [botId] : [])])].sort(),

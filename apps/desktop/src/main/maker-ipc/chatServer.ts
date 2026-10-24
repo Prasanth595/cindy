@@ -718,6 +718,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // Only the confirmed home installation publishes (same predicate as claiming work).
     if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id)
       || !companion?.installConfirmed(profile.id))) return;
+    // A take-over that could not read the cloud image stores a default locally. Publishing that
+    // default would replace the address; a later real image is the first one allowed back up.
+    const keepCloudAvatar = !!companion?.avatarKeptOnCloud(profile.id) && !profile.avatar?.startsWith('cindy-media://');
+    if (keepCloudAvatar) {
+      if (found.name === profile.displayName) return;
+      await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar: found.avatar ?? null, avatarSource: found.avatarSource ?? null });
+      found.name = profile.displayName;
+      return;
+    }
     const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
     let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
     if (source && found.avatarSource !== source) {
@@ -732,6 +741,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (found.name === profile.displayName && (found.avatar ?? null) === avatar && (found.avatarSource ?? null) === source) return;
     await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar, avatarSource: source });
     Object.assign(found, { name: profile.displayName, avatar, avatarSource: source });
+    if (source) companion?.releaseKeptAvatar(profile.id);
   }
   /**
    * Read and send paths use the registration they already have and refresh it in the background

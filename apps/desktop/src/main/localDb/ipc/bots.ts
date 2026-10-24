@@ -38,6 +38,7 @@ import {
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer.js';
 import { isDeviceLinkInvoke } from '../../device-link/invoke-context.js';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate.js';
+import { collectPresentBotRemoteResourceSources } from './botRemoteResourceAbsence.js';
 import { isBotVisibleRemotely } from './botRemoteVisibility.js';
 import { readRemoteBotSessionAccess, readRemoteBotSessionAccessBatch } from './botRemoteSessionAccess.js';
 import { setRemoteBotSessionLookup } from '../../device-link/remoteBotSessionBoundary.js';
@@ -1509,12 +1510,12 @@ export async function listBotRemoteResourceSources(): Promise<BotRemoteResourceS
   owner.assertCurrent();
   // The roster reads only identity + canonical preview, never runtime snapshots
   // or every historical task attached to a long-lived companion.
-  const sources: BotRemoteResourceSource[] = [];
   // A large roster must not occupy one DB RPC slot per companion at once.
-  for (const { id } of profiles) {
-    owner.assertCurrent();
-    sources.push(await readBotRemoteResourceSource(client, id));
-  }
+  const sources = await collectPresentBotRemoteResourceSources(
+    profiles.map((profile) => profile.id),
+    (id) => readBotRemoteResourceSource(client, id),
+    () => owner.assertCurrent(),
+  );
   owner.assertCurrent();
   return sources;
 }
