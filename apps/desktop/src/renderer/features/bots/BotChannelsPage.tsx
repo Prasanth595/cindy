@@ -9,13 +9,15 @@
  */
 
 import { HookConnectionsSection } from '@/components/settings/HookConnectionsSection';
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Briefcase, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
+import { Archive, Briefcase, ChevronRight, ChevronUp, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
+import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { Button } from '@/components/ui/button';
+import { Collapse } from '@/components/ui/collapse';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { FormField } from '@/components/ui/form-field';
 import { Input } from '@/components/ui/input';
@@ -24,6 +26,7 @@ import { Select } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { WechatBotSection } from '@/components/settings/WechatBotSection';
 import { cn } from '@/lib/utils';
+import { toast } from '@/lib/toast';
 import { formatRelative } from '@/hooks/useRelativeTime';
 import { extractIpcError } from '@/utils/ipcError';
 import type {
@@ -41,6 +44,8 @@ import { useBotTranslation } from './botPronounContext';
 import type { BotProfile } from './botStore';
 import {
   addBotImConnection,
+  archiveBotImConnectionLane,
+  botImConnectionLaneArchiveSupported,
   adoptPersonalBot,
   botImConnectionGroupsSupported,
   botImConnectionLanesSupported,
@@ -215,7 +220,7 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
                   <ConnectionGroups connectionId={view.id} botName={bot.name} />
                 ) : null}
                 {view.botContextId && botImConnectionLanesSupported() ? (
-                  <ConnectionLanes connectionId={view.id} botId={bot.id} botName={bot.name} />
+                  <ConnectionLanes connectionId={view.id} botId={bot.id} botName={bot.name} platform={platformName(view)} />
                 ) : null}
               </li>
             );
@@ -358,35 +363,42 @@ const LANE_KIND_KEY: Record<BotImConnectionLane['kind'], string> = {
  * 显示状态、最近活动和当前上下文里的消息数; 卡住时可以让某一条重新开始(同一条任务,
  * 记录保留, 下一条消息换干净的上下文)。点击记录复用主界面的只读历史页, 不取消隐藏。
  */
-function ConnectionLanes({ connectionId, botId, botName }: { connectionId: string; botId: string; botName: string }) {
+function ConnectionLanes({ connectionId, botId, botName, platform }: { connectionId: string; botId: string; botName: string; platform: string }) {
   const { t } = useBotTranslation();
   const navigate = useNavigate();
   const { confirm } = useConfirmDialog();
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
+  const [archivePendingId, setArchivePendingId] = useState<string | null>(null);
+  const archiveConfirmRef = useRef<HTMLButtonElement>(null);
   const [lanes, setLanes] = useState<BotImConnectionLane[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [resettingId, setResettingId] = useState<string | null>(null);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'done' | 'failed'; text: string } | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [now, setNow] = useState(() => Date.now());
-  const resettingRef = useRef(false);
+  const mutatingRef = useRef(false);
+  const loadGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     const load = () => {
+      const generation = loadGeneration.current;
       void listBotImConnectionLanes(connectionId)
         .then((payload) => {
-          if (cancelled) return;
+          if (cancelled || generation !== loadGeneration.current || mutatingRef.current) return;
           setLanes(payload.lanes);
           setLoadFailed(false);
           setNow(Date.now());
         })
         .catch(() => {
-          if (!cancelled) setLoadFailed(true);
+          if (!cancelled && generation === loadGeneration.current && !mutatingRef.current) setLoadFailed(true);
         });
     };
     load();
     const timer = setInterval(() => {
-      if (!document.hidden && !resettingRef.current) load();
+      if (!document.hidden && !mutatingRef.current) load();
     }, LANES_REFRESH_MS);
     return () => {
       cancelled = true;
@@ -394,38 +406,71 @@ function ConnectionLanes({ connectionId, botId, botName }: { connectionId: strin
     };
   }, [connectionId, reloadToken]);
 
+  // Match SessionItem's inline archive confirmation: 4s or an outside click dismisses it.
+  useEffect(() => {
+    if (!archivePendingId) return;
+    if (!expanded) {
+      setArchivePendingId(null);
+      return;
+    }
+    const dismiss = () => setArchivePendingId(null);
+    const timer = setTimeout(dismiss, 4000);
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.target instanceof Node && archiveConfirmRef.current?.contains(event.target)) return;
+      dismiss();
+    };
+    document.addEventListener('mousedown', onMouseDown, true);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('mousedown', onMouseDown, true);
+    };
+  }, [archivePendingId, expanded]);
+
   const laneName = (lane: BotImConnectionLane) =>
     lane.kind === 'owner-dm' ? t('bots.channels.lanes.ownerName') : lane.name || lane.chatId || '';
 
-  const reset = async (lane: BotImConnectionLane) => {
-    if (resettingRef.current) return;
+  const mutate = async (lane: BotImConnectionLane, action: 'reset' | 'archive') => {
+    if (mutatingRef.current) return;
+    mutatingRef.current = true;
+    loadGeneration.current += 1;
     const name = laneName(lane);
-    const ok = await confirm({
-      title: t('bots.channels.lanes.resetConfirm.title', { lane: name }),
-      description: t(
-        lane.kind === 'owner-dm'
-          ? 'bots.channels.lanes.resetConfirm.ownerDescription'
-          : 'bots.channels.lanes.resetConfirm.description',
-        { name: botName },
-      ),
-      confirmText: t('bots.channels.lanes.resetConfirm.confirm'),
-      cancelText: t('bots.channels.lanes.resetConfirm.cancel'),
-    });
-    if (!ok) return;
-    resettingRef.current = true;
-    setResettingId(lane.sessionId);
-    setNotice(null);
+    const previousLanes = lanes;
     try {
-      const payload = await resetBotImConnectionLane(connectionId, lane.sessionId);
+      if (action === 'reset') {
+        const ok = await confirm({
+          title: t('bots.channels.lanes.resetConfirm.title', { lane: name }),
+          description: t(
+            lane.kind === 'owner-dm'
+              ? 'bots.channels.lanes.resetConfirm.ownerDescription'
+              : 'bots.channels.lanes.resetConfirm.description',
+            { name: botName },
+          ),
+          confirmText: t('bots.channels.lanes.resetConfirm.confirm'),
+          cancelText: t('bots.channels.lanes.resetConfirm.cancel'),
+        });
+        if (!ok) return;
+      }
+      if (action === 'reset') setResettingId(lane.sessionId);
+      else {
+        setArchivePendingId(null);
+        setArchivingId(lane.sessionId);
+        setLanes((current) => current?.filter((row) => row.sessionId !== lane.sessionId) ?? null);
+      }
+      setNotice(null);
+      const payload = await (action === 'reset' ? resetBotImConnectionLane : archiveBotImConnectionLane)(connectionId, lane.sessionId);
       setLanes(payload.lanes);
       setNow(Date.now());
-      setNotice({ tone: 'done', text: t('bots.channels.lanes.resetDone', { lane: name }) });
+      if (action === 'reset') setNotice({ tone: 'done', text: t('bots.channels.lanes.resetDone', { lane: name }) });
     } catch {
-      setNotice({ tone: 'failed', text: t('bots.channels.lanes.resetFailed') });
+      if (action === 'archive') {
+        setLanes(previousLanes);
+        toast.error(t('bots.channels.lanes.archiveFailed'));
+      } else setNotice({ tone: 'failed', text: t('bots.channels.lanes.resetFailed') });
       setReloadToken((value) => value + 1);
     } finally {
-      resettingRef.current = false;
+      mutatingRef.current = false;
       setResettingId(null);
+      setArchivingId(null);
     }
   };
 
@@ -433,7 +478,19 @@ function ConnectionLanes({ connectionId, botId, botName }: { connectionId: strin
   const others = (lanes ?? []).filter((lane) => lane.kind !== 'owner-dm');
   return (
     <div className="mt-3 flex flex-col gap-2 border-t border-[var(--border-default)] pt-3">
-      <div className="text-12 font-medium text-[var(--text-primary)]">{t('bots.channels.lanes.title')}</div>
+      <div className="flex items-center justify-between text-12 font-medium text-[var(--text-primary)]">
+        <span>{t('bots.channels.lanes.title', { platform })}</span>
+        <ChromeIconButton
+          className="-my-[5px] shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          aria-label={t(expanded ? 'bots.channels.lanes.collapse' : 'bots.channels.lanes.expand', { platform })}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? <ChevronUp size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+        </ChromeIconButton>
+      </div>
+      <Collapse open={expanded} id={contentId} inert={!expanded} innerClassName="flex flex-col gap-2">
       <p className="text-11 leading-[1.5] text-[var(--text-tertiary)]">
         {t('bots.channels.lanes.hint', { name: botName })}
       </p>
@@ -487,18 +544,50 @@ function ConnectionLanes({ connectionId, botId, botName }: { connectionId: strin
                 </span>
                 <span className="block text-11 leading-[1.5] text-[var(--text-tertiary)]">{meta.join(' · ')}</span>
             </button>
+            <div className="flex shrink-0 items-center gap-1">
+            {botImConnectionLaneArchiveSupported() ? (
+              <div className="relative flex h-7 w-7 shrink-0 items-center justify-end">
+              {archivePendingId === lane.sessionId ? (
+                <Button
+                  ref={archiveConfirmRef}
+                  type="button"
+                  variant="secondary"
+                  tone="danger-surface"
+                  size="xs"
+                  compact
+                  className="absolute right-0 top-1/2 w-max min-w-14 -translate-y-1/2 whitespace-nowrap"
+                  aria-label={t('ccAgent.sidebar.sessionMenu.archived')}
+                  disabled={archivingId !== null || resettingId !== null}
+                  onClick={() => void mutate(lane, 'archive')}
+                >
+                  {t('ccAgent.sidebar.sessionMenu.archived')}
+                </Button>
+              ) : (
+                <ChromeIconButton
+                  className="shrink-0 text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                  aria-label={t('bots.channels.lanes.archiveAria', { lane: name })}
+                  tooltip={t('ccAgent.sidebar.sessionMenu.archived')}
+                  disabled={archivingId !== null || resettingId !== null}
+                  onClick={() => setArchivePendingId(lane.sessionId)}
+                >
+                  <Archive size={14} strokeWidth={2} aria-hidden />
+                </ChromeIconButton>
+              )}
+              </div>
+            ) : null}
             <Button
               type="button"
               variant="secondary"
               size="md"
               compact
               loading={resettingId === lane.sessionId}
-              disabled={resettingId !== null && resettingId !== lane.sessionId}
+              disabled={archivingId !== null || (resettingId !== null && resettingId !== lane.sessionId)}
               aria-label={t('bots.channels.lanes.resetAria', { lane: name })}
-              onClick={() => void reset(lane)}
+              onClick={() => void mutate(lane, 'reset')}
             >
               {t('bots.channels.lanes.reset')}
             </Button>
+            </div>
           </div>
         );
       })}
@@ -518,6 +607,7 @@ function ConnectionLanes({ connectionId, botId, botName }: { connectionId: strin
           {notice.text}
         </p>
       ) : null}
+      </Collapse>
     </div>
   );
 }

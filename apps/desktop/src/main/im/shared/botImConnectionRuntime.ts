@@ -26,6 +26,7 @@ import { botProfiles } from '../../localDb/schema';
 import { withBotProfileLocks } from '../../maker-ipc/botProfileLock';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer';
 import { throwIpcError } from '../../utils/ipcValidate';
+import { isIpcError } from '../../../shared/ipc-errors';
 import { ownerScopedImSecrets } from '../ownerScopedStorage';
 import { readWechatChannelSettings, writeWechatCompanionBinding } from '../wechat/channelSettings';
 import {
@@ -53,7 +54,7 @@ import {
   updateBotImConnectionRecord,
 } from './botImConnectionStore';
 import { companionConnectionRouteKeyPrefix } from './imBotBindingRoute';
-import { listBotImConnectionLanes, resetBotImConnectionLane } from './botImLaneRuntime';
+import { archiveBotImConnectionLane, listBotImConnectionLanes, resetBotImConnectionLane } from './botImLaneRuntime';
 import type { ImOrchestrator } from './orchestrator';
 
 const log = createLogger('im:bot-connections');
@@ -783,6 +784,22 @@ export function registerBotImConnectionIpc(): void {
       throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
     }
     return resetBotImConnectionLane(p.id, p.sessionId, laneOptions);
+  });
+  ipcMain.handle('botImConnection:archive-lane', (e, payload) => {
+    assertTrustedAppRendererEvent(e);
+    const p = (payload ?? {}) as { id?: unknown; sessionId?: unknown };
+    if (!isBotImConnectionId(p.id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
+    if (typeof p.sessionId !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(p.sessionId)) {
+      throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
+    }
+    return archiveBotImConnectionLane(p.id, p.sessionId, laneOptions).catch((error: unknown) => {
+      if (isIpcError(error)) throw error;
+      if (error instanceof Error && (error.message === 'ARCHIVE_CAPACITY_REACHED' || error.message === 'OWNER_CHANGED')) {
+        throwIpcError('PRECONDITION_FAILED', error.message);
+      }
+      // Storage errors can include owner-specific absolute paths; keep them in main.
+      throwIpcError('INTERNAL', 'LANE_ARCHIVE_FAILED');
+    });
   });
 }
 
