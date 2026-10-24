@@ -1292,6 +1292,8 @@ async function readProfile(
         ? config.mcpServers.filter((item): item is string => typeof item === 'string')
         : [],
       memory: config.memory !== false,
+      allowSchedulerFollow: config.allowSchedulerFollow === true,
+      inputHandoff: config.inputHandoff !== false,
       permissions: config.permissions === 'trusted' || config.permissions === 'auto' ? config.permissions : 'ask',
     },
     sessions: links.flatMap((link) => {
