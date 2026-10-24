@@ -39,6 +39,8 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   registerStatusBarCard,
+  STATUS_CARD_HOVER_OPEN_DELAY_MS,
+  STATUS_CARD_HOVER_CLOSE_GRACE_MS,
   type StatusBarCardHandle,
 } from '@/lib/statusBarCards';
 import { useApiKey } from '@/hooks/useApiKey';
@@ -145,8 +147,6 @@ type MetricKey = 'daily' | 'monthly' | 'credit' | 'session';
 // daily / monthly 与 credit 来自服务端两种不同的额度语义(周期配额 vs 额度池账本),
 // 按账号所属租户二选一下发, 两组互斥, 同一形态下不会都占位。
 const PRIMARY_GATEWAY_METRICS: readonly MetricKey[] = ['daily', 'credit', 'session'];
-const QUOTA_POPOVER_OPEN_DELAY_MS = 300;
-const QUOTA_POPOVER_CLOSE_GRACE_MS = 200;
 const DEFAULT_MONEY_SYMBOL = DEFAULT_USAGE_CURRENCY === 'CNY' ? '¥' : '$';
 const DEFAULT_MONEY_PLACEHOLDER = `${DEFAULT_MONEY_SYMBOL}—`;
 
@@ -1140,7 +1140,7 @@ export function TodaySpendChip({
       quotaPopoverOpenSourceRef.current = 'hover';
       setWindowLabelNowMs(Date.now());
       setQuotaPopoverOpen(true);
-    }, QUOTA_POPOVER_OPEN_DELAY_MS);
+    }, STATUS_CARD_HOVER_OPEN_DELAY_MS);
   }, [clearQuotaPopoverCloseTimer, clearQuotaPopoverOpenTimer]);
   const scheduleQuotaPopoverClose = React.useCallback(() => {
     clearQuotaPopoverOpenTimer();
@@ -1149,7 +1149,7 @@ export function TodaySpendChip({
       quotaPopoverCloseTimerRef.current = null;
       setQuotaPopoverOpen(false);
       restoreQuotaPopoverFocus();
-    }, QUOTA_POPOVER_CLOSE_GRACE_MS);
+    }, STATUS_CARD_HOVER_CLOSE_GRACE_MS);
   }, [clearQuotaPopoverCloseTimer, clearQuotaPopoverOpenTimer, restoreQuotaPopoverFocus]);
   const handleQuotaPopoverMouseEnter = React.useCallback(() => {
     quotaPopoverPointerInsideRef.current = true;
@@ -1189,7 +1189,7 @@ export function TodaySpendChip({
       statusCardHandleRef.current?.release();
       return;
     }
-    // 注册 effect 更早声明，挂载时句柄已就位；若还没就位（首帧即开着）则下帧重试。
+    // 注册 effect 更早声明，挂载时句柄已就位。
     statusCardHandleRef.current?.request();
   }, [quotaPopoverOpen]);
 
