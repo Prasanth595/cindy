@@ -1875,7 +1875,10 @@ export class Session {
 
   // ── 运行时切换 ─────────────────────────────────────────────────────────────
 
-  async setModel(model: string, opts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean }): Promise<void> {
+  async setModel(
+    model: string,
+    opts?: { providerId?: string | null; effort?: Effort; contextWindowBudget?: number | null; thinkingEnabled?: boolean },
+  ): Promise<void> {
     if (!this.capabilities.switchModel.supported) {
       throw new NotSupportedError('switchModel', this.capabilities.switchModel);
     }
@@ -1887,7 +1890,7 @@ export class Session {
 
   async previewModelSwitch(
     model: string,
-    opts?: { providerId?: string | null },
+    opts?: { providerId?: string | null; contextWindowBudget?: number | null },
   ): Promise<PiModelSwitchPreview | undefined> {
     return this.handle.previewModelSwitch?.(model, opts);
   }
